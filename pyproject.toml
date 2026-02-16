@@ -10,7 +10,7 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 authors = [
-    { name = "Scitrera", email = "info@scitrera.ai" },
+    { name = "Scitrera", email = "open-source-team@scitrera.com" },
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

@@ -1,0 +1,684 @@
+"""Tests for sparkrun.recipe module."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from sparkrun.recipe import Recipe, RecipeError, find_recipe, list_recipes
+
+
+def test_load_v2_recipe(tmp_recipe_dir: Path):
+    """Load a v2 YAML recipe file and verify all fields are correctly parsed.
+
+    Tests that a v2 recipe file is loaded with all expected fields:
+    name, model, runtime, container, mode, defaults, env, and command.
+    """
+    recipe_path = tmp_recipe_dir / "test-vllm.yaml"
+    recipe = Recipe.load(recipe_path)
+
+    assert recipe.name == "Test vLLM Recipe"
+    assert recipe.description == "A test recipe for vLLM"
+    assert recipe.model == "meta-llama/Llama-2-7b-hf"
+    assert recipe.runtime == "vllm"
+    assert recipe.mode == "auto"
+    assert recipe.container == "scitrera/dgx-spark-vllm:latest"
+    assert recipe.sparkrun_version == "2"
+
+    # Verify defaults
+    assert recipe.defaults["port"] == 8000
+    assert recipe.defaults["host"] == "0.0.0.0"
+    assert recipe.defaults["tensor_parallel"] == 1
+    assert recipe.defaults["gpu_memory_utilization"] == 0.9
+
+    # Verify env
+    assert recipe.env["VLLM_BATCH_INVARIANT"] == "1"
+
+    # Verify command
+    assert recipe.command == "vllm serve {model} --port {port} --host {host}"
+
+
+def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
+    """Load a v1 recipe with mods/build_args and verify it migrates to eugr-vllm runtime.
+
+    Tests the v1->v2 migration path for eugr-style recipes that require
+    custom build arguments and patches.
+    """
+    recipe_path = tmp_recipe_dir / "test-eugr.yaml"
+    recipe = Recipe.load(recipe_path)
+
+    assert recipe.name == "Test EUGR Recipe"
+    assert recipe.model == "meta-llama/Llama-2-7b-hf"
+    assert recipe.sparkrun_version == "1"
+
+    # Should migrate to eugr-vllm because of build_args and mods
+    assert recipe.runtime == "eugr-vllm"
+
+    # build_args and mods should be in runtime_config
+    assert recipe.runtime_config["build_args"] == ["ARG1=value1"]
+    assert recipe.runtime_config["mods"] == ["mod1.patch"]
+
+
+def test_load_v1_recipe_no_mods_stays_vllm(tmp_recipe_dir: Path):
+    """Load a v1 recipe without mods and verify runtime stays as vllm.
+
+    Tests that v1 recipes without eugr-specific features (build_args, mods)
+    remain as the standard vllm runtime.
+    """
+    recipe_path = tmp_recipe_dir / "test-plain-v1.yaml"
+    recipe = Recipe.load(recipe_path)
+
+    assert recipe.name == "Test Plain v1 Recipe"
+    assert recipe.model == "meta-llama/Llama-2-7b-hf"
+    assert recipe.sparkrun_version == "1"
+
+    # Should stay vllm (no build_args or mods)
+    assert recipe.runtime == "vllm"
+
+    # No runtime_config should be set for these keys
+    assert recipe.runtime_config.get("build_args", []) == []
+    assert recipe.runtime_config.get("mods", []) == []
+
+
+def test_recipe_from_dict(sample_v2_recipe_data: dict[str, Any]):
+    """Create a recipe from a dict and verify all fields are correctly set.
+
+    Tests the Recipe.from_dict() factory method.
+    """
+    recipe = Recipe.from_dict(sample_v2_recipe_data)
+
+    assert recipe.name == "Sample vLLM Recipe"
+    assert recipe.model == "meta-llama/Llama-2-7b-hf"
+    assert recipe.runtime == "vllm"
+    assert recipe.mode == "auto"
+    assert recipe.min_nodes == 1
+    assert recipe.max_nodes == 4
+    assert recipe.container == "scitrera/dgx-spark-vllm:0.16.0"
+    assert recipe.defaults["port"] == 8000
+    assert recipe.env["CUDA_VISIBLE_DEVICES"] == "0,1"
+
+
+def test_recipe_name_defaults_to_unnamed():
+    """Recipe without name and no source_path should default to 'unnamed'."""
+    recipe = Recipe.from_dict({"model": "test-model"})
+    assert recipe.name == "unnamed"
+
+
+def test_recipe_name_defaults_to_filename(tmp_path):
+    """Recipe without name should derive name from source filename."""
+    recipe_file = tmp_path / "my-cool-recipe.yaml"
+    recipe_file.write_text("model: test-model\nruntime: vllm\n")
+    recipe = Recipe.load(recipe_file)
+    assert recipe.name == "my-cool-recipe"
+
+
+def test_recipe_name_explicit_overrides_filename(tmp_path):
+    """Explicit name in YAML should override filename-derived default."""
+    recipe_file = tmp_path / "some-file.yaml"
+    recipe_file.write_text("name: My Custom Name\nmodel: test-model\nruntime: vllm\n")
+    recipe = Recipe.load(recipe_file)
+    assert recipe.name == "My Custom Name"
+
+
+def test_recipe_slug():
+    """Test slug generation from recipe names with spaces and special characters.
+
+    Verifies that recipe names are correctly converted to URL/filesystem-safe slugs.
+    """
+    recipe1 = Recipe.from_dict({"name": "My Test Recipe", "model": "test"})
+    assert recipe1.slug == "my-test-recipe"
+
+    recipe2 = Recipe.from_dict({"name": "Recipe!!!With@Special#Chars", "model": "test"})
+    assert recipe2.slug == "recipe-with-special-chars"
+
+    recipe3 = Recipe.from_dict({"name": "  Extra   Spaces  ", "model": "test"})
+    assert recipe3.slug == "extra-spaces"
+
+    recipe4 = Recipe.from_dict({"name": "CamelCaseRecipe", "model": "test"})
+    assert recipe4.slug == "camelcaserecipe"
+
+
+def test_recipe_validate_valid(sample_v2_recipe_data: dict[str, Any]):
+    """Validate a valid recipe and verify it returns an empty error list.
+
+    Tests that a well-formed recipe passes validation without issues.
+    """
+    recipe = Recipe.from_dict(sample_v2_recipe_data)
+    issues = recipe.validate()
+    assert issues == []
+
+
+def test_recipe_validate_missing_name():
+    """Validate a recipe with empty name field and verify error is returned.
+
+    Tests validation error detection for empty required field.
+    Note: Recipe defaults missing 'name' to 'unnamed', so we must
+    explicitly pass an empty string to trigger the validation error.
+    """
+    recipe = Recipe.from_dict({"name": "", "model": "test-model", "runtime": "vllm"})
+    issues = recipe.validate()
+    assert len(issues) > 0
+    assert any("name" in issue.lower() for issue in issues)
+
+
+def test_recipe_validate_missing_model():
+    """Validate a recipe with missing model field and verify error is returned.
+
+    Tests validation error detection for missing required field.
+    """
+    recipe = Recipe.from_dict({"name": "Test", "runtime": "vllm"})
+    issues = recipe.validate()
+    assert len(issues) > 0
+    assert any("model" in issue.lower() for issue in issues)
+
+
+def test_recipe_validate_invalid_mode():
+    """Validate a recipe with invalid mode and verify error is generated.
+
+    Tests that invalid mode values are caught during validation.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "mode": "invalid_mode"
+    })
+    issues = recipe.validate()
+    assert len(issues) > 0
+    assert any("mode" in issue.lower() for issue in issues)
+
+
+def test_recipe_validate_min_max_nodes():
+    """Validate that max_nodes < min_nodes generates an error.
+
+    Tests validation of node count constraints.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "min_nodes": 4,
+        "max_nodes": 2
+    })
+    issues = recipe.validate()
+    assert len(issues) > 0
+    assert any("max_nodes" in issue and "min_nodes" in issue for issue in issues)
+
+
+def test_recipe_build_config_chain(sample_v2_recipe_data: dict[str, Any]):
+    """Build a config chain with CLI overrides and verify override precedence.
+
+    Tests that CLI overrides take precedence over recipe defaults in the
+    configuration chain.
+    """
+    recipe = Recipe.from_dict(sample_v2_recipe_data)
+
+    # CLI overrides should take precedence
+    cli_overrides = {"port": 9000, "tensor_parallel": 4}
+    config = recipe.build_config_chain(cli_overrides)
+
+    # Override values should be used
+    assert config.get("port") == 9000
+    assert config.get("tensor_parallel") == 4
+
+    # Defaults should still be present for non-overridden values
+    assert config.get("host") == "0.0.0.0"
+    assert config.get("gpu_memory_utilization") == 0.9
+
+    # Model should be injected
+    assert config.get("model") == "meta-llama/Llama-2-7b-hf"
+
+
+def test_recipe_render_command(sample_v2_recipe_data: dict[str, Any]):
+    """Render a recipe command template and verify placeholders are substituted.
+
+    Tests that command templates correctly substitute values from the config chain.
+    """
+    recipe = Recipe.from_dict(sample_v2_recipe_data)
+    config = recipe.build_config_chain({"port": 9000})
+
+    rendered = recipe.render_command(config)
+
+    assert rendered is not None
+    assert "{model}" not in rendered
+    assert "{port}" not in rendered
+    assert "{tensor_parallel}" not in rendered
+    assert "meta-llama/Llama-2-7b-hf" in rendered
+    assert "9000" in rendered  # Overridden port
+
+
+def test_recipe_render_command_no_template():
+    """Test that a recipe without a command template returns None.
+
+    Tests behavior when no command template is defined in the recipe.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+    })
+    config = recipe.build_config_chain()
+    rendered = recipe.render_command(config)
+
+    assert rendered is None
+
+
+def test_find_recipe_direct_path(tmp_recipe_dir: Path):
+    """Find a recipe by direct file path and verify it's located correctly.
+
+    Tests that find_recipe can locate recipes by direct file path.
+    """
+    recipe_path = tmp_recipe_dir / "test-vllm.yaml"
+    found = find_recipe(str(recipe_path))
+
+    assert found == recipe_path
+    assert found.exists()
+
+
+def test_find_recipe_by_name(tmp_recipe_dir: Path):
+    """Find a recipe by name in search paths and verify it's located.
+
+    Tests recipe discovery by name across configured search paths.
+    """
+    found = find_recipe("test-vllm", search_paths=[tmp_recipe_dir])
+
+    assert found.name == "test-vllm.yaml"
+    assert found.exists()
+
+
+def test_find_recipe_not_found(tmp_recipe_dir: Path):
+    """Verify that find_recipe raises RecipeError when recipe is not found.
+
+    Tests error handling for non-existent recipes.
+    """
+    with pytest.raises(RecipeError) as exc_info:
+        find_recipe("nonexistent-recipe", search_paths=[tmp_recipe_dir])
+
+    assert "not found" in str(exc_info.value).lower()
+
+
+def test_list_recipes(tmp_recipe_dir: Path):
+    """List recipes from a directory with multiple YAML files.
+
+    Tests recipe listing functionality across a directory of recipe files.
+    """
+    recipes = list_recipes(search_paths=[tmp_recipe_dir])
+
+    # Should find all recipes in the directory
+    assert len(recipes) >= 4  # At least the 4 we created
+
+    recipe_names = {r["file"] for r in recipes}
+    assert "test-vllm" in recipe_names
+    assert "test-sglang" in recipe_names
+    assert "test-eugr" in recipe_names
+    assert "test-plain-v1" in recipe_names
+
+    # Verify recipe metadata
+    vllm_recipe = next(r for r in recipes if r["file"] == "test-vllm")
+    assert vllm_recipe["name"] == "Test vLLM Recipe"
+    assert vllm_recipe["runtime"] == "vllm"
+    assert "path" in vllm_recipe
+
+
+def test_recipe_get_default():
+    """Test Recipe.get_default() method for retrieving default values.
+
+    Verifies that default values can be retrieved with optional fallback.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "defaults": {
+            "port": 8000,
+            "host": "0.0.0.0",
+        }
+    })
+
+    assert recipe.get_default("port") == 8000
+    assert recipe.get_default("host") == "0.0.0.0"
+    assert recipe.get_default("nonexistent") is None
+    assert recipe.get_default("nonexistent", "fallback") == "fallback"
+
+
+def test_recipe_load_nonexistent_file():
+    """Verify that Recipe.load() raises RecipeError for non-existent files.
+
+    Tests error handling when attempting to load a recipe file that doesn't exist.
+    """
+    with pytest.raises(RecipeError) as exc_info:
+        Recipe.load("/nonexistent/path/recipe.yaml")
+
+    assert "not found" in str(exc_info.value).lower()
+
+
+def test_recipe_v1_cluster_only_migration(tmp_path: Path):
+    """Test that v1 cluster_only flag correctly sets min_nodes and mode.
+
+    Verifies v1->v2 migration of cluster topology constraints.
+    """
+    recipe_data = {
+        "recipe_version": "1",
+        "name": "Cluster Only Test",
+        "model": "test-model",
+        "cluster_only": True,
+    }
+
+    recipe_file = tmp_path / "cluster-only.yaml"
+    with open(recipe_file, "w") as f:
+        yaml.dump(recipe_data, f)
+
+    recipe = Recipe.load(recipe_file)
+
+    assert recipe.min_nodes == 2
+    assert recipe.mode == "cluster"
+
+
+def test_recipe_v1_solo_only_migration(tmp_path: Path):
+    """Test that v1 solo_only flag correctly sets max_nodes and mode.
+
+    Verifies v1->v2 migration of solo-only topology constraints.
+    """
+    recipe_data = {
+        "recipe_version": "1",
+        "name": "Solo Only Test",
+        "model": "test-model",
+        "solo_only": True,
+    }
+
+    recipe_file = tmp_path / "solo-only.yaml"
+    with open(recipe_file, "w") as f:
+        yaml.dump(recipe_data, f)
+
+    recipe = Recipe.load(recipe_file)
+
+    assert recipe.max_nodes == 1
+    assert recipe.mode == "solo"
+
+
+def test_recipe_runtime_config_catchall():
+    """Test that unknown top-level keys are swept into runtime_config."""
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "build_args": ["--pre-tf"],
+        "mods": ["mods/fix-something"],
+        "custom_field": "custom_value",
+    })
+    assert recipe.runtime_config["build_args"] == ["--pre-tf"]
+    assert recipe.runtime_config["mods"] == ["mods/fix-something"]
+    assert recipe.runtime_config["custom_field"] == "custom_value"
+    # Known keys should NOT be in runtime_config
+    assert "name" not in recipe.runtime_config
+    assert "model" not in recipe.runtime_config
+
+
+def test_recipe_runtime_settings_from_extra():
+    """Test backward compatibility: 'extra' key maps to runtime_settings."""
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "extra": {"build_args": ["arg1"], "custom": "val"},
+    })
+    assert recipe.runtime_settings["build_args"] == ["arg1"]
+    assert recipe.runtime_settings["custom"] == "val"
+
+
+def test_recipe_runtime_settings_preferred_over_extra():
+    """Test that runtime_settings takes precedence over extra."""
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime_settings": {"key": "from_settings"},
+        "extra": {"key": "from_extra"},
+    })
+    assert recipe.runtime_settings["key"] == "from_settings"
+
+
+def test_recipe_solo_only_v2():
+    """Test solo_only as a v2 field (not just v1 migration)."""
+    recipe = Recipe.from_dict({
+        "sparkrun_version": "2",
+        "name": "Test",
+        "model": "test-model",
+        "solo_only": True,
+    })
+    assert recipe.max_nodes == 1
+    assert recipe.mode == "solo"
+
+
+def test_recipe_cluster_only_v2():
+    """Test cluster_only as a v2 field (not just v1 migration)."""
+    recipe = Recipe.from_dict({
+        "sparkrun_version": "2",
+        "name": "Test",
+        "model": "test-model",
+        "cluster_only": True,
+    })
+    assert recipe.min_nodes == 2
+    assert recipe.mode == "cluster"
+
+
+class TestRecipeMetadata:
+    """Test recipe metadata section parsing and validation."""
+
+    def test_metadata_parsing(self):
+        """Test that metadata section is parsed correctly."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_dtype": "float16",
+                "model_params": "7B",
+                "kv_dtype": "bfloat16",
+                "num_layers": 32,
+                "num_kv_heads": 8,
+                "head_dim": 128,
+            }
+        })
+        assert recipe.metadata["model_dtype"] == "float16"
+        assert recipe.metadata["model_params"] == "7B"
+        assert recipe.metadata["kv_dtype"] == "bfloat16"
+        assert recipe.metadata["num_layers"] == 32
+        assert recipe.metadata["num_kv_heads"] == 8
+        assert recipe.metadata["head_dim"] == 128
+
+    def test_no_metadata(self):
+        """Test that recipes without metadata have empty metadata dict."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.metadata == {}
+
+    def test_metadata_not_in_runtime_config(self):
+        """Test that metadata does NOT leak into runtime_config."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_dtype": "float16"},
+        })
+        assert "metadata" not in recipe.runtime_config
+
+    def test_validate_bad_metadata_dtype(self):
+        """Test validation catches invalid metadata dtype."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_dtype": "invalid_dtype_xyz"},
+        })
+        issues = recipe.validate()
+        assert any("model_dtype" in i for i in issues)
+
+    def test_validate_bad_metadata_params(self):
+        """Test validation catches invalid model_params."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_params": "not_a_number"},
+        })
+        issues = recipe.validate()
+        assert any("model_params" in i for i in issues)
+
+    def test_validate_bad_kv_dtype(self):
+        """Test validation catches invalid kv_dtype."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"kv_dtype": "bogus_type"},
+        })
+        issues = recipe.validate()
+        assert any("kv_dtype" in i for i in issues)
+
+    def test_validate_good_metadata(self):
+        """Test that valid metadata passes validation without issues."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_dtype": "float16",
+                "model_params": "7B",
+                "kv_dtype": "bfloat16",
+            },
+        })
+        issues = recipe.validate()
+        assert issues == []
+
+    def test_metadata_with_vram_overrides(self):
+        """Test that model_vram and kv_vram_per_token are stored in metadata."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_vram": 5.2,
+                "kv_vram_per_token": 0.00004,
+            },
+        })
+        assert recipe.metadata["model_vram"] == 5.2
+        assert recipe.metadata["kv_vram_per_token"] == 0.00004
+
+    def test_estimate_vram_with_metadata(self):
+        """Test estimate_vram() with full metadata (no HF detection)."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_dtype": "float16",
+                "model_params": "7B",
+                "kv_dtype": "bfloat16",
+                "num_layers": 32,
+                "num_kv_heads": 32,
+                "head_dim": 128,
+            },
+            "defaults": {
+                "max_model_len": 4096,
+                "tensor_parallel": 1,
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=False)
+        assert est.model_weights_gb > 0
+        assert est.kv_cache_total_gb is not None
+        assert est.kv_cache_total_gb > 0
+        assert est.total_per_gpu_gb > 0
+        assert est.tensor_parallel == 1
+
+    def test_estimate_vram_with_overrides(self):
+        """Test estimate_vram() with model_vram and kv_vram_per_token overrides."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_vram": 5.0,
+                "kv_vram_per_token": 0.0001,
+            },
+            "defaults": {
+                "max_model_len": 10000,
+                "tensor_parallel": 1,
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=False)
+        assert est.model_weights_gb == 5.0
+        assert est.kv_cache_total_gb is not None
+        assert abs(est.kv_cache_total_gb - 1.0) < 0.001
+        assert abs(est.total_per_gpu_gb - 6.0) < 0.01
+
+    def test_estimate_vram_cli_override_tp(self):
+        """Test that CLI tensor_parallel override is respected."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_vram": 10.0},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(cli_overrides={"tensor_parallel": 2}, auto_detect=False)
+        assert est.tensor_parallel == 2
+        assert abs(est.total_per_gpu_gb - 5.0) < 0.01
+
+    def test_estimate_vram_cli_override_max_model_len(self):
+        """Test that CLI max_model_len override is respected."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"kv_vram_per_token": 0.001},
+            "defaults": {"max_model_len": 1000},
+        })
+        est1 = recipe.estimate_vram(auto_detect=False)
+        est2 = recipe.estimate_vram(cli_overrides={"max_model_len": 2000}, auto_detect=False)
+        assert est2.kv_cache_total_gb > est1.kv_cache_total_gb
+
+    def test_estimate_vram_kv_cache_dtype_from_defaults(self):
+        """Test that kv_cache_dtype from defaults is used for estimation."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_params": "7B",
+                "model_dtype": "float16",
+                "num_layers": 32,
+                "num_kv_heads": 32,
+                "head_dim": 128,
+            },
+            "defaults": {
+                "max_model_len": 4096,
+                "kv_cache_dtype": "fp8",
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=False)
+        assert est.kv_dtype == "fp8"
+
+    def test_estimate_vram_gpu_memory_utilization(self):
+        """Test that gpu_memory_utilization from defaults flows through."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "model_vram": 10.0,
+                "num_layers": 32,
+                "num_kv_heads": 32,
+                "head_dim": 128,
+            },
+            "defaults": {
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.9,
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=False)
+        assert est.gpu_memory_utilization == 0.9
+        assert est.usable_gpu_memory_gb is not None
+        assert est.available_kv_gb is not None
+        assert est.max_context_tokens is not None
+        assert est.context_multiplier is not None
+
+    def test_estimate_vram_gpu_mem_cli_override(self):
+        """Test that CLI gpu_memory_utilization override works."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_vram": 10.0},
+            "defaults": {"gpu_memory_utilization": 0.9},
+        })
+        est = recipe.estimate_vram(
+            cli_overrides={"gpu_memory_utilization": 0.5},
+            auto_detect=False,
+        )
+        assert est.gpu_memory_utilization == 0.5

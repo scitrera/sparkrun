@@ -1,0 +1,120 @@
+"""User configuration management for sparkrun."""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
+
+from vpd.next.util import read_yaml
+
+if TYPE_CHECKING:
+    from scitrera_app_framework.api.variables import Variables
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "sparkrun"
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparkrun"
+DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
+
+
+def get_config_root(v: Variables | None = None) -> Path:
+    """Config root from SAF stateful root, falling back to DEFAULT_CONFIG_DIR."""
+    if v is not None:
+        from scitrera_app_framework.core.core import is_stateful_ready
+        stateful_root = is_stateful_ready(v)
+        if stateful_root:
+            return Path(stateful_root)
+    return DEFAULT_CONFIG_DIR
+
+
+class SparkrunConfig:
+    """Manages sparkrun user configuration."""
+
+    def __init__(self, config_path: Path | None = None):
+        self.config_path = config_path or (DEFAULT_CONFIG_DIR / "config.yaml")
+        self._data: dict[str, Any] = {}
+        self._load()
+
+    def _load(self):
+        if self.config_path.exists():
+            self._data = read_yaml(str(self.config_path)) or {}
+        else:
+            self._data = {}
+
+    @property
+    def cache_dir(self) -> Path:
+        return Path(self._data.get("cache_dir", str(DEFAULT_CACHE_DIR)))
+
+    @property
+    def hf_cache_dir(self) -> Path:
+        return Path(self._data.get("hf_cache_dir", str(DEFAULT_HF_CACHE_DIR)))
+
+    @property
+    def default_hosts(self) -> list[str]:
+        cluster = self._data.get("cluster", {})
+        return cluster.get("hosts", [])
+
+    @property
+    def default_image_prefix(self) -> str:
+        defaults = self._data.get("defaults", {})
+        return defaults.get("image_prefix", "")
+
+    @property
+    def default_transformers_tag(self) -> str:
+        defaults = self._data.get("defaults", {})
+        return defaults.get("transformers", "t4")
+
+    @property
+    def ssh_user(self) -> str | None:
+        ssh = self._data.get("ssh", {})
+        return ssh.get("user")
+
+    @property
+    def ssh_key(self) -> str | None:
+        ssh = self._data.get("ssh", {})
+        key = ssh.get("key")
+        return os.path.expanduser(key) if key else None
+
+    @property
+    def ssh_options(self) -> list[str]:
+        ssh = self._data.get("ssh", {})
+        return ssh.get("options", [])
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a config value by dot-separated key path."""
+        parts = key.split(".")
+        current = self._data
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return default
+        return current
+
+    def get_recipe_search_paths(self) -> list[Path]:
+        """Return ordered list of paths to search for recipes."""
+        paths = []
+        # 1. Current directory recipes/
+        cwd_recipes = Path.cwd() / "recipes"
+        if cwd_recipes.is_dir():
+            paths.append(cwd_recipes)
+        # 2. User config recipes/
+        user_recipes = DEFAULT_CONFIG_DIR / "recipes"
+        if user_recipes.is_dir():
+            paths.append(user_recipes)
+        # 3. Extra search paths from config
+        for extra in self._data.get("recipe_paths", []):
+            p = Path(os.path.expanduser(extra))
+            if p.is_dir():
+                paths.append(p)
+        return paths
+
+    def get_registry_manager(self) -> RegistryManager:
+        """Create a RegistryManager using the config root and cache dir."""
+        from sparkrun.registry import RegistryManager
+        return RegistryManager(
+            config_root=self.config_path.parent if self.config_path else DEFAULT_CONFIG_DIR,
+            cache_root=self.cache_dir / "registries",
+        )

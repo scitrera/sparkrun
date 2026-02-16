@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.omc/
+.claude/
+.venv/
+*.env
+.env
+uv.lock
+reference_materials/
+.coverage
+/src/sparkrun.egg-info/

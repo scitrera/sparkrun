@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparkrun"
+version = "0.1.0"
+description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.12"
+authors = [
+    { name = "Scitrera", email = "info@scitrera.ai" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Clustering",
+]
+dependencies = [
+    "scitrera-app-framework>=0.0.55",
+    "vpd>=0.9.5",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "huggingface_hub>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.scripts]
+sparkrun = "sparkrun.cli:main"
+
+[project.entry-points."sparkrun.runtimes"]
+vllm = "sparkrun.runtimes.vllm:VllmRuntime"
+sglang = "sparkrun.runtimes.sglang:SglangRuntime"
+eugr-vllm = "sparkrun.runtimes.eugr_vllm:EugrVllmRuntime"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"sparkrun.scripts" = ["*.sh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

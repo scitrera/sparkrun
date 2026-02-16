@@ -12,6 +12,49 @@ from sparkrun import __version__
 logger = logging.getLogger(__name__)
 
 
+def _coerce_value(value: str):
+    """Auto-coerce a string value to int, float, or bool if appropriate."""
+    if value.lower() in ("true", "yes"):
+        return True
+    if value.lower() in ("false", "no"):
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _parse_options(options: tuple[str, ...]) -> dict:
+    """Parse --option key=value pairs into a dict.
+
+    Values are auto-coerced to int/float/bool where possible.
+    """
+    result = {}
+    for opt in options:
+        if "=" not in opt:
+            click.echo(
+                "Error: --option must be key=value, got: %s" % opt,
+                err=True,
+            )
+            sys.exit(1)
+        key, _, value = opt.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            click.echo(
+                "Error: --option has empty key: %s" % opt,
+                err=True,
+            )
+            sys.exit(1)
+        result[key] = _coerce_value(value)
+    return result
+
+
 def _get_config_and_registry(config_path=None):
     """Create SparkrunConfig and RegistryManager."""
     from sparkrun.config import SparkrunConfig
@@ -112,7 +155,6 @@ def main(ctx, verbose):
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
 @click.option("--solo", is_flag=True, help="Force single-node mode")
-@click.option("--cluster-id", default="sparkrun0", help="Cluster identifier for container naming")
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
@@ -123,16 +165,19 @@ def main(ctx, verbose):
 @click.option("--init-port", type=int, default=25000, help="SGLang distributed init port")
 @click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node")
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port")
-@click.option("--setup", is_flag=True, help="Pull image and download model before running")
+@click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
+@click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--skip-ib", is_flag=True, help="Skip InfiniBand detection")
 @click.option("--config", "config_path", default=None, help="Path to config file")
+@click.option("--option", "-o", "options", multiple=True,
+              help="Override any recipe default: -o key=value (repeatable)")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, port, tensor_parallel,
+def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         gpu_mem, image, cache_dir, ray_port, init_port, dashboard, dashboard_port, setup,
-        dry_run, foreground, skip_ib, config_path, extra_args):
+        dry_run, foreground, no_follow, skip_ib, config_path, options, extra_args):
     """Run an inference recipe.
 
     RECIPE_NAME can be a recipe file path or a name to search for.
@@ -146,6 +191,8 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
       sparkrun run glm-4.7-flash-awq --cluster mylab
 
       sparkrun run my-recipe.yaml --port 9000 --gpu-mem 0.8
+
+      sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.recipe import Recipe, find_recipe, RecipeError
@@ -172,8 +219,9 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
         for issue in issues:
             click.echo(f"Warning: {issue}", err=True)
 
-    # Build overrides from CLI options
-    overrides = {}
+    # Build overrides from --option flags first (lowest priority)
+    overrides = _parse_options(options)
+    # Dedicated CLI params override --option values
     if port is not None:
         overrides["port"] = port
     if tensor_parallel is not None:
@@ -251,6 +299,10 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
                 )
                 host_list = trimmed
 
+    # Derive deterministic cluster_id from recipe + hosts
+    from sparkrun.orchestration.docker import generate_cluster_id
+    cluster_id = generate_cluster_id(recipe, host_list)
+
     # Determine mode
     is_solo = solo or len(host_list) <= 1
     if recipe.mode == "cluster" and is_solo and not solo:
@@ -261,9 +313,17 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
-    # Setup phase (pull image + download model) — skip for delegating runtimes
-    if setup and not runtime.is_delegating_runtime():
-        _run_setup(container_image, recipe.model, host_list, cache_dir, config, dry_run)
+    # Distribution phase: ensure image/model locally, distribute to hosts,
+    # detect IB for NCCL env + fast transfer routing.
+    # Always runs for non-delegating runtimes (hash checks make it cheap
+    # when resources are already present on all hosts).
+    nccl_env = None
+    if not runtime.is_delegating_runtime():
+        nccl_env = _distribute_resources(
+            container_image, recipe.model, host_list,
+            cache_dir or str(config.hf_cache_dir),
+            config, dry_run, skip_ib,
+        )
 
     # Generate serve command for display
     serve_command = runtime.generate_command(
@@ -278,6 +338,7 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
     click.echo(f"Runtime:   {runtime.runtime_name}")
     click.echo(f"Image:     {container_image}")
     click.echo(f"Model:     {recipe.model}")
+    click.echo(f"Cluster:   {cluster_id}")
     if is_solo:
         click.echo("Mode:      solo")
     else:
@@ -301,7 +362,9 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
         click.echo(f"  {line}")
     click.echo()
 
-    # Launch — the runtime controls solo vs cluster orchestration
+    # Launch — the runtime controls solo vs cluster orchestration.
+    # If distribution pre-detected IB, pass nccl_env through to avoid
+    # redundant detection inside the runtime.
     rc = runtime.run(
         hosts=host_list,
         image=container_image,
@@ -314,13 +377,22 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, cluster_id, por
         config=config,
         dry_run=dry_run,
         detached=not foreground,
-        skip_ib_detect=skip_ib,
-        setup=setup,
+        skip_ib_detect=nccl_env is not None or skip_ib,
+        nccl_env=nccl_env,
         ray_port=ray_port,
         dashboard_port=dashboard_port,
         dashboard=dashboard,
         init_port=init_port,
     )
+
+    # Follow container logs after a successful detached launch
+    if rc == 0 and not foreground and not dry_run and not no_follow:
+        runtime.follow_logs(
+            hosts=host_list,
+            cluster_id=cluster_id,
+            config=config,
+            dry_run=dry_run,
+        )
 
     sys.exit(rc)
 
@@ -342,11 +414,15 @@ def list_cmd(ctx, config_path):
         click.echo("No recipes found.")
         return
 
-    # Table header
-    click.echo(f"{'Name':<35} {'Runtime':<12} {'File':<30}")
-    click.echo("-" * 77)
+    # Compute column widths from data
+    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
+    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
+    w_file = max(len("File"), *(len(r["file"]) for r in recipes))
+
+    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'File':<{w_file}}")
+    click.echo("-" * (w_name + w_rt + w_file + 2))
     for r in recipes:
-        click.echo(f"{r['name']:<35} {r['runtime']:<12} {r['file']:<30}")
+        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {r['file']:<{w_file}}")
 
 
 def _display_recipe_detail(recipe, show_vram=True, registry_name=None):
@@ -411,16 +487,16 @@ def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
         click.echo(f"\n  GPU Memory Budget:")
         click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
         click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB"
-                    f" ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})")
+                   f" ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})")
         click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GB")
         if est.max_context_tokens is not None:
             click.echo(f"    Max context tokens:    {est.max_context_tokens:,}")
             if est.context_multiplier is not None and est.max_model_len:
                 click.echo(f"    Context multiplier:    {est.context_multiplier:.1f}x"
-                            f" (vs max_model_len={est.max_model_len:,})")
+                           f" (vs max_model_len={est.max_model_len:,})")
                 if est.context_multiplier < 1.0:
                     click.echo(f"    WARNING: max_model_len exceeds available KV budget"
-                                f" ({est.context_multiplier:.1%} fits)")
+                               f" ({est.context_multiplier:.1%} fits)")
 
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
@@ -542,28 +618,42 @@ def validate(ctx, recipe_name, config_path):
 
 
 @main.command()
+@click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--hosts", "-H", default=None, help="Comma-separated host list")
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
-@click.option("--cluster-id", default="sparkrun0", help="Cluster identifier")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def stop(ctx, hosts, hosts_file, cluster_name, cluster_id, dry_run, config_path):
+def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path):
     """Stop a running workload.
+
+    RECIPE_NAME identifies the recipe so the correct containers can be found.
 
     Examples:
 
-      sparkrun stop --hosts 192.168.11.13,192.168.11.14
+      sparkrun stop glm-4.7-flash-awq --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun stop --cluster mylab
+      sparkrun stop glm-4.7-flash-awq --cluster mylab
     """
     from sparkrun.config import SparkrunConfig
     from sparkrun.hosts import resolve_hosts
     from sparkrun.cluster_manager import ClusterManager
     from sparkrun.config import get_config_root
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
 
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+
+    # Load recipe for cluster_id derivation
+    try:
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
     cluster_mgr = ClusterManager(get_config_root())
     host_list = resolve_hosts(
         hosts=hosts,
@@ -578,8 +668,9 @@ def stop(ctx, hosts, hosts_file, cluster_name, cluster_id, dry_run, config_path)
         sys.exit(1)
 
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
-    from sparkrun.orchestration.docker import generate_container_name
+    from sparkrun.orchestration.docker import generate_container_name, generate_cluster_id
 
+    cluster_id = generate_cluster_id(recipe, host_list)
     ssh_kwargs = build_ssh_kwargs(config)
 
     # Build list of all possible container names for this cluster_id
@@ -601,6 +692,78 @@ def stop(ctx, hosts, hosts_file, cluster_name, cluster_id, dry_run, config_path)
 
     click.echo("Workload stopped on %d host(s)." % len(host_list))
     sys.exit(0)
+
+
+@main.command()
+@click.argument("recipe_name", type=RECIPE_NAME)
+@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
+@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
+@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@click.option("--tail", type=int, default=100, help="Number of log lines before following")
+@click.option("--config", "config_path", default=None, help="Path to config file")
+@click.pass_context
+def log(ctx, recipe_name, hosts, hosts_file, cluster_name, tail, config_path):
+    """Re-attach to logs of a running workload.
+
+    RECIPE_NAME identifies the recipe so the correct containers can be found.
+
+    Examples:
+
+      sparkrun log glm-4.7-flash-awq --hosts 192.168.11.13
+
+      sparkrun log glm-4.7-flash-awq --cluster mylab --tail 200
+    """
+    from sparkrun.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.hosts import resolve_hosts
+    from sparkrun.cluster_manager import ClusterManager
+    from sparkrun.config import get_config_root
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+    from sparkrun.orchestration.docker import generate_cluster_id
+
+    v = init_sparkrun()
+    _setup_logging(ctx.obj["verbose"])
+    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+
+    # Load recipe
+    try:
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # Resolve hosts
+    cluster_mgr = ClusterManager(get_config_root(v))
+    host_list = resolve_hosts(
+        hosts=hosts,
+        hosts_file=hosts_file,
+        cluster_name=cluster_name,
+        cluster_manager=cluster_mgr,
+        config_default_hosts=config.default_hosts,
+    )
+
+    if not host_list:
+        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
+        sys.exit(1)
+
+    cluster_id = generate_cluster_id(recipe, host_list)
+
+    # Resolve runtime so we call the correct follow_logs implementation
+    try:
+        runtime = get_runtime(recipe.runtime, v)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    runtime.follow_logs(
+        hosts=host_list,
+        cluster_id=cluster_id,
+        config=config,
+        tail=tail,
+    )
 
 
 @main.group()
@@ -825,12 +988,17 @@ def recipe_list(ctx, registry, query, config_path):
         click.echo("No recipes found.")
         return
 
-    # Table header
-    click.echo(f"{'Name':<30} {'Runtime':<12} {'Registry':<20} {'File':<25}")
-    click.echo("-" * 87)
-    for r in recipes:
-        reg_name = r.get("registry", "local")
-        click.echo(f"{r['name']:<30} {r['runtime']:<12} {reg_name:<20} {r['file']:<25}")
+    # Compute column widths from data
+    reg_names = [r.get("registry", "local") for r in recipes]
+    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
+    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
+    w_reg = max(len("Registry"), *(len(n) for n in reg_names)) + 2
+    w_file = max(len("File"), *(len(r["file"]) for r in recipes))
+
+    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'Registry':<{w_reg}} {'File':<{w_file}}")
+    click.echo("-" * (w_name + w_rt + w_reg + w_file + 3))
+    for r, reg_name in zip(recipes, reg_names):
+        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {reg_name:<{w_reg}} {r['file']:<{w_file}}")
 
 
 @recipe.command("search")
@@ -848,13 +1016,18 @@ def recipe_search(ctx, query, config_path):
         click.echo(f"No recipes found matching '{query}'.")
         return
 
-    # Table header
-    click.echo(f"{'Name':<30} {'Runtime':<12} {'Model':<30} {'Registry':<20}")
-    click.echo("-" * 92)
-    for r in recipes:
-        model = r.get("model", "")[:28] + ".." if len(r.get("model", "")) > 30 else r.get("model", "")
-        reg_name = r.get("registry", "local")
-        click.echo(f"{r['name']:<30} {r['runtime']:<12} {model:<30} {reg_name:<20}")
+    # Compute column widths from data
+    models = [r.get("model", "") for r in recipes]
+    reg_names = [r.get("registry", "local") for r in recipes]
+    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
+    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
+    w_model = max(len("Model"), *(len(m) for m in models)) + 2
+    w_reg = max(len("Registry"), *(len(n) for n in reg_names))
+
+    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'Model':<{w_model}} {'Registry':<{w_reg}}")
+    click.echo("-" * (w_name + w_rt + w_model + w_reg + 3))
+    for r, model, reg_name in zip(recipes, models, reg_names):
+        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {model:<{w_model}} {reg_name:<{w_reg}}")
 
 
 @recipe.command("show")
@@ -969,39 +1142,107 @@ def recipe_remove_registry(ctx, name, config_path):
         sys.exit(1)
 
 
-def _run_setup(image: str, model: str, hosts: list[str],
-               cache_dir: str | None, config, dry_run: bool):
-    """Pull image and download model."""
+def _distribute_resources(
+        image: str,
+        model: str,
+        host_list: list[str],
+        cache_dir: str,
+        config,
+        dry_run: bool,
+        skip_ib: bool,
+) -> dict[str, str] | None:
+    """Detect IB, distribute container image and model to target hosts.
+
+    Performs InfiniBand detection (for both NCCL env and IB transfer IPs),
+    then distributes the container image and model from local to all
+    remote hosts using the fast IB network when available.
+
+    For localhost targets, only ensures the image/model exist locally.
+
+    Args:
+        image: Container image reference.
+        model: HuggingFace model identifier (may be empty).
+        host_list: Target hostnames/IPs.
+        cache_dir: HuggingFace cache directory.
+        config: SparkrunConfig instance.
+        dry_run: Show what would be done without executing.
+        skip_ib: Skip InfiniBand detection.
+
+    Returns:
+        Pre-detected NCCL environment dict, or ``None`` if IB detection
+        was skipped or not applicable (localhost).  The caller should
+        pass this to ``runtime.run(nccl_env=...)`` to avoid redundant
+        IB detection.
+    """
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+    from sparkrun.containers.distribute import distribute_image_from_local
     from sparkrun.containers.registry import ensure_image
-    from sparkrun.containers.sync import sync_image_to_hosts
+    from sparkrun.models.distribute import distribute_model_from_local
     from sparkrun.models.download import download_model
-    from sparkrun.models.sync import sync_model_to_hosts
 
-    click.echo("Setup: Ensuring container image is available...")
-    ensure_image(image, dry_run=dry_run)
+    is_local = (
+            len(host_list) <= 1
+            and host_list[0] in ("localhost", "127.0.0.1", "")
+    )
 
-    if hosts and len(hosts) > 1:
-        click.echo(f"Setup: Syncing image to {len(hosts)} hosts...")
-        sync_image_to_hosts(
-            image, hosts,
-            ssh_user=config.ssh_user,
-            ssh_key=config.ssh_key,
-            dry_run=dry_run,
+    if is_local:
+        # Local-only: just ensure image and model exist, no SSH needed
+        click.echo("Ensuring container image is available locally...")
+        ensure_image(image, dry_run=dry_run)
+        if model:
+            click.echo(f"Ensuring model {model} is available locally...")
+            download_model(model, cache_dir=cache_dir, dry_run=dry_run)
+        return None  # let runtime handle its own local IB detection
+
+    ssh_kwargs = build_ssh_kwargs(config)
+    nccl_env: dict[str, str] = {}
+    transfer_hosts: list[str] | None = None
+
+    # Step 1: Detect InfiniBand for NCCL env + transfer routing
+    if not skip_ib:
+        click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
+        ib_result = detect_ib_for_hosts(
+            host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
-
-    if model:
-        click.echo(f"Setup: Downloading model {model}...")
-        download_model(model, cache_dir=cache_dir, dry_run=dry_run)
-
-        if hosts and len(hosts) > 1:
-            click.echo(f"Setup: Syncing model to {len(hosts)} hosts...")
-            sync_model_to_hosts(
-                model, hosts,
-                cache_dir=cache_dir,
-                ssh_user=config.ssh_user,
-                ssh_key=config.ssh_key,
-                dry_run=dry_run,
+        nccl_env = ib_result.nccl_env
+        if ib_result.ib_ip_map:
+            transfer_hosts = [
+                ib_result.ib_ip_map.get(h, h) for h in host_list
+            ]
+            click.echo(
+                f"  Using IB network for transfers "
+                f"({len(ib_result.ib_ip_map)}/{len(host_list)} hosts)"
             )
 
-    click.echo("Setup complete.")
+    # Step 2: Distribute container image
+    click.echo(f"Distributing image to {len(host_list)} host(s)...")
+    img_failed = distribute_image_from_local(
+        image, host_list,
+        transfer_hosts=transfer_hosts,
+        dry_run=dry_run, **ssh_kwargs,
+    )
+    if img_failed:
+        click.echo(
+            "Warning: Image distribution failed on: %s" % ", ".join(img_failed),
+            err=True,
+        )
+
+    # Step 3: Distribute model
+    if model:
+        click.echo(f"Distributing model {model} to {len(host_list)} host(s)...")
+        mdl_failed = distribute_model_from_local(
+            model, host_list,
+            cache_dir=cache_dir,
+            transfer_hosts=transfer_hosts,
+            dry_run=dry_run, **ssh_kwargs,
+        )
+        if mdl_failed:
+            click.echo(
+                "Warning: Model distribution failed on: %s" % ", ".join(mdl_failed),
+                err=True,
+            )
+
+    click.echo("Distribution complete.")
     click.echo()
+    return nccl_env

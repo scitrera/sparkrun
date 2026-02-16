@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import yaml
-from scitrera_app_framework.api.variables import Variables
+from scitrera_app_framework import Variables, get_working_path
 
 from sparkrun.runtimes.base import RuntimePlugin
 
@@ -29,11 +29,13 @@ class EugrVllmRuntime(RuntimePlugin):
     because we're running their code, not reimplementing it.
     """
 
+    _v: Variables = None
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
 
     def initialize(self, v: Variables, logger_arg: Logger) -> EugrVllmRuntime:
         """Initialize the eugr-vllm runtime plugin."""
+        self._v = v
         return self
 
     def is_delegating_runtime(self) -> bool:
@@ -50,23 +52,33 @@ class EugrVllmRuntime(RuntimePlugin):
         """Generate command -- eugr scripts handle command generation internally."""
         return recipe.command or ""
 
-    def ensure_repo(self, cache_dir: Path | None = None) -> Path:
-        """Clone or update the eugr repo in sparkrun's cache."""
+    def ensure_repo(
+        self,
+        cache_dir: Path | None = None,
+        registry_cache_root: Path | None = None,
+    ) -> Path:
+        """Clone or update the eugr repo in sparkrun's cache.
+
+        If the registry system already has a cached clone of the eugr-vllm
+        repo (from recipe syncing), reuses it instead of cloning a second
+        copy.  Sparse checkout is disabled on the registry clone so that
+        scripts like ``run-recipe.sh`` are available.
+        """
+        # Check if registry already has this repo cloned
+        if registry_cache_root is not None:
+            registry_repo = registry_cache_root / "eugr-vllm"
+            if (registry_repo / ".git").exists():
+                logger.info("Reusing eugr repo from registry cache: %s", registry_repo)
+                self._ensure_full_checkout(registry_repo)
+                self._update_repo(registry_repo)
+                return registry_repo
+
         if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "sparkrun"
+            cache_dir = Path(get_working_path(v=self._v)) / "cache"
         repo_dir = cache_dir / "eugr-spark-vllm-docker"
 
         if repo_dir.exists() and (repo_dir / ".git").exists():
-            logger.info("Updating eugr/spark-vllm-docker repo...")
-            result = subprocess.run(
-                ["git", "-C", str(repo_dir), "pull", "--ff-only"],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "Failed to update eugr repo (continuing with existing): %s",
-                    result.stderr.strip()
-                )
+            self._update_repo(repo_dir)
         else:
             logger.info("Cloning eugr/spark-vllm-docker...")
             repo_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +92,32 @@ class EugrVllmRuntime(RuntimePlugin):
                 )
 
         return repo_dir
+
+    @staticmethod
+    def _ensure_full_checkout(repo_dir: Path) -> None:
+        """Disable sparse checkout so all repo files are available."""
+        sparse_file = repo_dir / ".git" / "info" / "sparse-checkout"
+        if not sparse_file.exists():
+            return  # not sparse, nothing to do
+        logger.debug("Disabling sparse checkout on %s", repo_dir)
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "sparse-checkout", "disable"],
+            capture_output=True, text=True,
+        )
+
+    @staticmethod
+    def _update_repo(repo_dir: Path) -> None:
+        """Pull latest changes for an existing repo clone."""
+        logger.info("Updating eugr/spark-vllm-docker repo...")
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to update eugr repo (continuing with existing): %s",
+                result.stderr.strip(),
+            )
 
     def write_eugr_recipe(self, recipe: Recipe, repo_dir: Path) -> Path:
         """Convert sparkrun v2 recipe back to eugr v1 format."""
@@ -110,12 +148,13 @@ class EugrVllmRuntime(RuntimePlugin):
     def run_delegated(self, recipe: Recipe, overrides: dict[str, Any],
                       hosts: list[str] | None = None, solo: bool = False,
                       setup: bool = False, dry_run: bool = False,
-                      cache_dir: Path | None = None) -> int:
+                      cache_dir: Path | None = None,
+                      registry_cache_root: Path | None = None) -> int:
         """Delegate entirely to eugr's run-recipe.sh.
 
         Returns the process exit code.
         """
-        repo_dir = self.ensure_repo(cache_dir)
+        repo_dir = self.ensure_repo(cache_dir, registry_cache_root=registry_cache_root)
         recipe_path = self.write_eugr_recipe(recipe, repo_dir)
 
         run_script = repo_dir / "run-recipe.sh"
@@ -151,30 +190,49 @@ class EugrVllmRuntime(RuntimePlugin):
             issues.append("[eugr-vllm] command template is recommended for eugr recipes")
         return issues
 
+    # --- Log following ---
+
+    def follow_logs(
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config=None,
+            dry_run: bool = False,
+            tail: int = 100,
+    ) -> None:
+        """No-op — eugr-vllm delegates to external scripts."""
+        pass
+
     # --- Launch / Stop ---
 
     def run(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config=None,
-        dry_run: bool = False,
-        detached: bool = True,
-        skip_ib_detect: bool = False,
-        setup: bool = False,
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
+            setup: bool = False,
+            **kwargs,
     ) -> int:
         """Launch via eugr delegation.
 
         Wraps :meth:`run_delegated` with the standard runtime interface.
         """
+        # Derive registry cache root from config so ensure_repo() can
+        # reuse an existing registry clone instead of double-cloning.
+        registry_cache_root = None
+        if config is not None:
+            registry_cache_root = Path(config.cache_dir) / "registries"
+
         is_solo = len(hosts) <= 1
         return self.run_delegated(
             recipe=recipe,
@@ -184,4 +242,5 @@ class EugrVllmRuntime(RuntimePlugin):
             setup=setup,
             dry_run=dry_run,
             cache_dir=Path(cache_dir) if cache_dir else None,
+            registry_cache_root=registry_cache_root,
         )

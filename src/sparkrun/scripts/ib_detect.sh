@@ -1,102 +1,125 @@
 #!/bin/bash
 # InfiniBand/RDMA detection for DGX Spark
-# Outputs key=value pairs for NCCL configuration
+# Outputs key=value pairs on stdout for NCCL configuration.
+# Diagnostic messages go to stderr so they don't pollute parsing.
+#
+# Based on the proven detection in scripts/infiniband-detect.sh.
 
 set -uo pipefail
 
-# Check for RDMA devices
-if ! command -v ibstat &>/dev/null && ! [ -d /sys/class/infiniband ]; then
+# --- Helper: Find RoCEv2 GID Index via show_gids ---
+find_rocev2_ipv4_index() {
+    local hca=$1
+    if ! command -v show_gids &>/dev/null; then
+        return 1
+    fi
+    show_gids \
+    | awk -v dev="$hca" \
+      '$1 == dev && $6 == "v2" && $5 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}'
+}
+
+echo "Running InfiniBand detection..." >&2
+
+if ! [ -d /sys/class/infiniband ]; then
     echo "IB_DETECTED=0"
     exit 0
 fi
 
-# Find active InfiniBand ports
-IB_DEVICES=()
-if [ -d /sys/class/infiniband ]; then
-    for dev in /sys/class/infiniband/*/ports/*/state; do
-        if [ -f "$dev" ] && grep -q "ACTIVE" "$dev" 2>/dev/null; then
-            dev_path=$(dirname $(dirname "$dev"))
-            dev_name=$(basename "$dev_path")
-            port_num=$(basename $(dirname "$dev"))
-            IB_DEVICES+=("${dev_name}:${port_num}")
+ACTIVE_HCAS=()
+ACTIVE_NETIFS=()
+UCX_DEVS=()
+GID_INDEX=""
+
+# Iterate over InfiniBand devices in sysfs
+for ib_path in /sys/class/infiniband/*; do
+    [ -e "$ib_path" ] || continue
+    hca_name=$(basename "$ib_path")
+
+    # Check Port 1 state
+    state_file="$ib_path/ports/1/state"
+    if [ ! -f "$state_file" ]; then continue; fi
+
+    state_val=$(cat "$state_file" 2>/dev/null)
+
+    if [[ "$state_val" == *"ACTIVE"* ]]; then
+        ACTIVE_HCAS+=("$hca_name")
+        UCX_DEVS+=("${hca_name}:1")
+
+        # Determine GID Index (run once on first active card)
+        if [ -z "$GID_INDEX" ]; then
+            idx=$(find_rocev2_ipv4_index "$hca_name")
+            if [ -n "$idx" ]; then
+                GID_INDEX=$idx
+                echo "Device $hca_name: Active (RoCEv2 GID Index: $idx)" >&2
+            else
+                # Fallback: scan sysfs gid_attrs for RoCE v2
+                port_gid_dir="$ib_path/ports/1/gid_attrs/types"
+                if [ -d "$port_gid_dir" ]; then
+                    for type_file in "$port_gid_dir"/*; do
+                        gid_type=$(cat "$type_file" 2>/dev/null || true)
+                        if [[ "$gid_type" == *"RoCE v2"* ]] || [[ "$gid_type" == *"RoCEv2"* ]]; then
+                            GID_INDEX=$(basename "$type_file")
+                            echo "Device $hca_name: Active (RoCEv2 GID Index: $GID_INDEX via sysfs)" >&2
+                            break
+                        fi
+                    done
+                fi
+                if [ -z "$GID_INDEX" ]; then
+                    echo "Device $hca_name: Active (GID detect failed, defaulting to 3)" >&2
+                    GID_INDEX=3
+                fi
+            fi
+        else
+            echo "Device $hca_name: Active" >&2
         fi
-    done
-fi
 
-if [ ${#IB_DEVICES[@]} -eq 0 ]; then
-    echo "IB_DETECTED=0"
-    exit 0
-fi
-
-# Build HCA list
-HCA_LIST=""
-for dev_port in "${IB_DEVICES[@]}"; do
-    dev_name="${dev_port%%:*}"
-    if [ -z "$HCA_LIST" ]; then
-        HCA_LIST="$dev_name"
-    else
-        HCA_LIST="$HCA_LIST,$dev_name"
+        # Find Ethernet interface backing this device
+        net_dir="$ib_path/device/net"
+        if [ -d "$net_dir" ]; then
+            net_if=$(ls "$net_dir" | head -n 1)
+            [ -n "$net_if" ] && ACTIVE_NETIFS+=("$net_if")
+        fi
     fi
 done
 
-# Detect GID index (prefer RoCE v2 = GID index 3, fall back to 0)
-FIRST_DEV="${IB_DEVICES[0]}"
-DEV_NAME="${FIRST_DEV%%:*}"
-PORT_NUM="${FIRST_DEV##*:}"
-GID_INDEX=0
-GID_DIR="/sys/class/infiniband/${DEV_NAME}/ports/${PORT_NUM}/gids"
-if [ -d "$GID_DIR" ]; then
-    for gid_file in "$GID_DIR"/*; do
-        idx=$(basename "$gid_file")
-        gid_val=$(cat "$gid_file" 2>/dev/null || true)
-        type_file="/sys/class/infiniband/${DEV_NAME}/ports/${PORT_NUM}/gid_attrs/types/${idx}"
-        if [ -f "$type_file" ]; then
-            gid_type=$(cat "$type_file" 2>/dev/null || true)
-            if [[ "$gid_type" == *"RoCE v2"* ]] || [[ "$gid_type" == *"RoCEv2"* ]]; then
-                GID_INDEX="$idx"
-                break
-            fi
-        fi
-    done
+if [ ${#ACTIVE_HCAS[@]} -eq 0 ]; then
+    echo "No active RDMA devices found." >&2
+    echo "IB_DETECTED=0"
+    exit 0
 fi
 
-# Detect management network interface (default route interface)
+# Detect management network interface (default route)
 DEFAULT_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' || echo "eth0")
 
-# Build net device list from RDMA links
-NET_LIST=""
-UCX_LIST=""
-if command -v rdma &>/dev/null; then
-    while IFS= read -r line; do
-        netdev=$(echo "$line" | grep -oP 'netdev \K\S+' || true)
-        rdma_dev=$(echo "$line" | sed -n 's|^\([0-9]*\): \([^ ]*\)/.*|\2|p' || true)
-        if [ -n "$netdev" ]; then
-            if [ -z "$NET_LIST" ]; then
-                NET_LIST="$netdev"
-            else
-                NET_LIST="$NET_LIST,$netdev"
-            fi
-        fi
-        if [ -n "$rdma_dev" ]; then
-            port=$(echo "$line" | sed -n 's|.*/\([0-9]*\).*|\1|p' || true)
-            ucx_entry="${rdma_dev}:${port:-1}"
-            if [ -z "$UCX_LIST" ]; then
-                UCX_LIST="$ucx_entry"
-            else
-                UCX_LIST="$UCX_LIST,$ucx_entry"
-            fi
-        fi
-    done < <(rdma link show 2>/dev/null || true)
-fi
+# Build comma-separated lists
+HCA_LIST=$(IFS=,; echo "${ACTIVE_HCAS[*]}")
+NET_LIST=$(IFS=,; echo "${ACTIVE_NETIFS[*]}")
+UCX_LIST=$(IFS=,; echo "${UCX_DEVS[*]}")
 
-# Fall back to default interface if no RDMA net devices found
-if [ -z "$NET_LIST" ]; then
-    NET_LIST="$DEFAULT_IF"
-fi
+# Resolve IPv4 addresses of active IB network interfaces
+IB_IPS=()
+for net_if in "${ACTIVE_NETIFS[@]}"; do
+    ip_addr=$(ip -4 addr show "$net_if" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
+    if [ -n "$ip_addr" ]; then
+        IB_IPS+=("$ip_addr")
+    fi
+done
+IB_IP_LIST=$(IFS=,; echo "${IB_IPS[*]}")
 
+echo "---------------------------------------------------" >&2
+echo "Detection complete:" >&2
+echo "  HCA_LIST   = $HCA_LIST" >&2
+echo "  NET_LIST   = $NET_LIST" >&2
+echo "  IB_IPS     = $IB_IP_LIST" >&2
+echo "  GID_INDEX  = $GID_INDEX" >&2
+echo "  DEFAULT_IF = $DEFAULT_IF" >&2
+echo "---------------------------------------------------" >&2
+
+# Output key=value pairs on stdout (parsed by sparkrun)
 echo "IB_DETECTED=1"
 echo "DETECTED_GID_INDEX=$GID_INDEX"
 echo "DETECTED_HCA_LIST=$HCA_LIST"
 echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"
 echo "DETECTED_UCX_LIST=$UCX_LIST"
+echo "DETECTED_IB_IPS=$IB_IP_LIST"

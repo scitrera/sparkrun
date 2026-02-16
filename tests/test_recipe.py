@@ -62,11 +62,12 @@ def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
     assert recipe.runtime_config["mods"] == ["mod1.patch"]
 
 
-def test_load_v1_recipe_no_mods_stays_vllm(tmp_recipe_dir: Path):
-    """Load a v1 recipe without mods and verify runtime stays as vllm.
+def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
+    """Load a v1 recipe without mods and verify runtime is eugr-vllm.
 
-    Tests that v1 recipes without eugr-specific features (build_args, mods)
-    remain as the standard vllm runtime.
+    The v1 format is the eugr native format, so all v1 vllm recipes
+    should resolve to eugr-vllm regardless of whether build_args or
+    mods are present.
     """
     recipe_path = tmp_recipe_dir / "test-plain-v1.yaml"
     recipe = Recipe.load(recipe_path)
@@ -75,8 +76,8 @@ def test_load_v1_recipe_no_mods_stays_vllm(tmp_recipe_dir: Path):
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.sparkrun_version == "1"
 
-    # Should stay vllm (no build_args or mods)
-    assert recipe.runtime == "vllm"
+    # v1 format always maps to eugr-vllm
+    assert recipe.runtime == "eugr-vllm"
 
     # No runtime_config should be set for these keys
     assert recipe.runtime_config.get("build_args", []) == []

@@ -8,6 +8,10 @@ They do not execute Docker commands directly.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sparkrun.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +75,15 @@ def docker_run_cmd(
     if command:
         parts.append(command)
 
-    return " ".join(parts)
+    result = " ".join(parts)
+
+    if env:
+        logger.debug("docker run %s env (%d vars):", container_name or image, len(env))
+        for key, value in sorted(env.items()):
+            logger.debug("  %s=%s", key, value)
+    logger.debug("docker run command: %s", result)
+
+    return result
 
 
 def docker_exec_cmd(
@@ -162,6 +174,23 @@ def docker_logs_cmd(
         parts.extend(["--tail", str(tail)])
     parts.append(container_name)
     return " ".join(parts)
+
+
+def generate_cluster_id(recipe: "Recipe", hosts: list[str]) -> str:
+    """Deterministic cluster identifier from recipe and host set.
+
+    Takes the full Recipe and host list so the hash inputs can be
+    expanded later (e.g. adding port, tensor_parallel) without
+    changing the function signature.
+
+    Currently hashes: runtime + model + sorted hosts.
+    """
+    import hashlib
+
+    parts = [recipe.runtime, recipe.model] + sorted(hosts)
+    key = "\0".join(parts)
+    digest = hashlib.sha256(key.encode()).hexdigest()[:12]
+    return "sparkrun_%s" % digest
 
 
 def generate_container_name(cluster_id: str, role: str = "head") -> str:

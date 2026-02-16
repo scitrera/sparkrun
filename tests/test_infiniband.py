@@ -15,10 +15,10 @@ def test_generate_ib_detect_script_is_bash():
 
 
 def test_generate_ib_detect_script_contains_key_checks():
-    """Script checks for ibstat and /sys/class/infiniband."""
+    """Script checks for show_gids and /sys/class/infiniband."""
     script = generate_ib_detect_script()
 
-    assert "ibstat" in script
+    assert "show_gids" in script
     assert "/sys/class/infiniband" in script
     assert "IB_DETECTED" in script
 
@@ -94,7 +94,7 @@ def test_generate_nccl_env_with_ib():
     # Check detected values
     assert env["NCCL_IB_GID_INDEX"] == "3"
     assert env["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
-    assert env["NCCL_SOCKET_IFNAME"] == "eth0"
+    assert env["NCCL_SOCKET_IFNAME"] == "=ib0,=ib1"
     assert env["MN_IF_NAME"] == "ib0,ib1"
     assert env["OMPI_MCA_btl_tcp_if_include"] == "ib0,ib1"
     assert env["GLOO_SOCKET_IFNAME"] == "ib0,ib1"

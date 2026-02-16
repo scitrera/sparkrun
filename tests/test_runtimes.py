@@ -1,11 +1,52 @@
 """Unit tests for sparkrun.runtimes module."""
 
+import re
+from unittest import mock
+
 import pytest
+from sparkrun.orchestration.docker import generate_cluster_id
 from sparkrun.recipe import Recipe
 from sparkrun.runtimes.vllm import VllmRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
 from sparkrun.runtimes.eugr_vllm import EugrVllmRuntime
 from sparkrun.runtimes.base import RuntimePlugin
+
+
+# --- generate_cluster_id Tests ---
+
+class TestGenerateClusterId:
+    """Test deterministic cluster ID generation."""
+
+    def _make_recipe(self, runtime="vllm", model="meta-llama/Llama-2-7b-hf"):
+        return Recipe.from_dict({
+            "name": "test", "runtime": runtime, "model": model,
+        })
+
+    def test_deterministic(self):
+        """Same inputs produce the same cluster ID."""
+        recipe = self._make_recipe()
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        assert generate_cluster_id(recipe, hosts) == generate_cluster_id(recipe, hosts)
+
+    def test_host_order_independent(self):
+        """Host ordering does not affect the ID (sorted internally)."""
+        recipe = self._make_recipe()
+        id_a = generate_cluster_id(recipe, ["10.0.0.1", "10.0.0.2"])
+        id_b = generate_cluster_id(recipe, ["10.0.0.2", "10.0.0.1"])
+        assert id_a == id_b
+
+    def test_different_hosts_differ(self):
+        """Different host sets produce different IDs."""
+        recipe = self._make_recipe()
+        id_a = generate_cluster_id(recipe, ["10.0.0.1"])
+        id_b = generate_cluster_id(recipe, ["10.0.0.2"])
+        assert id_a != id_b
+
+    def test_prefix_and_format(self):
+        """Result starts with 'sparkrun_' followed by 12 hex characters."""
+        recipe = self._make_recipe()
+        cid = generate_cluster_id(recipe, ["host1"])
+        assert re.fullmatch(r"sparkrun_[0-9a-f]{12}", cid)
 
 
 # --- VllmRuntime Tests ---
@@ -356,6 +397,42 @@ def test_base_runtime_is_not_delegating():
     assert runtime.is_delegating_runtime() is False
 
 
+def test_vllm_cluster_injects_ray_backend_into_template():
+    """Cluster mode injects --distributed-executor-backend ray into command templates."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "nvidia/some-model",
+        "runtime": "vllm",
+        "command": "vllm serve {model} -tp {tensor_parallel} --port {port}",
+        "defaults": {"tensor_parallel": 2, "port": 8000},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmRuntime()
+
+    # Solo mode: no injection
+    cmd_solo = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--distributed-executor-backend" not in cmd_solo
+
+    # Cluster mode: auto-injected
+    cmd_cluster = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2)
+    assert "--distributed-executor-backend ray" in cmd_cluster
+
+
+def test_vllm_cluster_preserves_existing_backend_in_template():
+    """Cluster mode does not double-add if template already has the flag."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "nvidia/some-model",
+        "runtime": "vllm",
+        "command": "vllm serve {model} --distributed-executor-backend ray",
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmRuntime()
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2)
+    assert cmd.count("--distributed-executor-backend") == 1
+
+
 def test_vllm_overrides_in_command():
     """Test that CLI overrides properly override defaults."""
     recipe_data = {
@@ -388,3 +465,125 @@ def test_sglang_overrides_in_command():
     cmd = runtime.generate_command(recipe, {"port": 31000}, is_cluster=False)
     assert "--port 31000" in cmd
     assert "--port 30000" not in cmd
+
+
+# --- follow_logs() Tests ---
+
+class _StubRuntime(RuntimePlugin):
+    """Minimal concrete runtime for testing base class behaviour."""
+
+    runtime_name = "stub"
+
+    def generate_command(self, recipe, overrides, is_cluster, num_nodes=1, head_ip=None):
+        return ""
+
+    def resolve_container(self, recipe, overrides=None):
+        return "stub:latest"
+
+
+class TestBaseFollowLogs:
+    """Test base RuntimePlugin.follow_logs()."""
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_solo(self, mock_stream):
+        """Base follow_logs calls stream_remote_logs with solo container name."""
+        runtime = _StubRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="mytest0",
+            config=None,
+            dry_run=False,
+            tail=50,
+        )
+
+        mock_stream.assert_called_once_with(
+            "10.0.0.1", "mytest0_solo",
+            tail=50, dry_run=False,
+        )
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_localhost_default(self, mock_stream):
+        """Base follow_logs with empty hosts uses localhost."""
+        runtime = _StubRuntime()
+        runtime.follow_logs(hosts=[], cluster_id="sparkrun0")
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "localhost"
+        assert args[0][1] == "sparkrun0_solo"
+
+
+class TestVllmFollowLogs:
+    """Test VllmRuntime.follow_logs()."""
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_solo_tails_serve_log(self, mock_stream):
+        """Single-host vllm tails serve log in solo container."""
+        runtime = VllmRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="test0",
+        )
+
+        mock_stream.assert_called_once()
+        assert mock_stream.call_args[0][0] == "10.0.0.1"
+        assert mock_stream.call_args[0][1] == "test0_solo"
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_cluster_tails_serve_log_on_head(self, mock_stream):
+        """Multi-host vllm tails serve log in _head container on hosts[0]."""
+        runtime = VllmRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1", "10.0.0.2"],
+            cluster_id="mycluster",
+        )
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "10.0.0.1"
+        assert args[0][1] == "mycluster_head"
+
+
+class TestSglangFollowLogs:
+    """Test SglangRuntime.follow_logs()."""
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_solo_delegates_to_base(self, mock_stream):
+        """Single-host sglang delegates to base (solo container)."""
+        runtime = SglangRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="test0",
+        )
+
+        mock_stream.assert_called_once()
+        assert mock_stream.call_args[0][1] == "test0_solo"
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_cluster_uses_node_0(self, mock_stream):
+        """Multi-host sglang follows the _node_0 container on hosts[0]."""
+        runtime = SglangRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1", "10.0.0.2"],
+            cluster_id="mycluster",
+        )
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "10.0.0.1"
+        assert args[0][1] == "mycluster_node_0"
+
+
+class TestEugrFollowLogs:
+    """Test EugrVllmRuntime.follow_logs() is a no-op."""
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_is_noop(self, mock_stream):
+        """eugr-vllm follow_logs does not call stream_remote_logs."""
+        runtime = EugrVllmRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="test0",
+        )
+
+        mock_stream.assert_not_called()

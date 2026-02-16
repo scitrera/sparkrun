@@ -1,0 +1,36 @@
+model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+runtime: vllm  # will handle additional logistics related to distributed inference
+min_nodes: 2
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+
+metadata:
+  description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4) -- cluster or solo
+  maintainer: scitrera.ai <open-source-team@scitrera.com>
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.8
+  max_model_len: 200000
+  served_model_name: nemotron3-30b-a3b
+  tool_call_parser: qwen3_coder
+
+env:
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+
+command: |
+  vllm serve \
+      {model} \
+      --served-model-name {served_model_name} \
+      --max-model-len {max_model_len} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      -tp {tensor_parallel} \
+      --host {host} \
+      --port {port} \
+      --enable-auto-tool-choice \
+      --tool-call-parser {tool_call_parser} \
+      --enable-auto-tool-choice \
+      --reasoning-parser-plugin nano_v3_reasoning_parser.py \
+      --reasoning-parser nano_v3 \
+      --trust-remote-code

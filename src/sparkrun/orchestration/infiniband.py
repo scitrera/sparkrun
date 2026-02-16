@@ -8,10 +8,27 @@ via SSH bash -s.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 from sparkrun.scripts import read_script
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IBDetectionResult:
+    """Aggregated IB detection results across multiple hosts.
+
+    Contains NCCL env vars (from head) and per-host IB IP mappings
+    for fast internal transfers.
+    """
+
+    nccl_env: dict[str, str] = field(default_factory=dict)
+    ib_ip_map: dict[str, str] = field(default_factory=dict)
+    """Mapping of management host → first IB interface IP.
+
+    Empty for hosts where no IB was detected or no IB IP was found.
+    """
 
 
 def generate_ib_detect_script() -> str:
@@ -81,10 +98,11 @@ def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
         env["NCCL_IB_GID_INDEX"] = ib_info["DETECTED_GID_INDEX"]
     if ib_info.get("DETECTED_HCA_LIST"):
         env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
-    if ib_info.get("DETECTED_SOCKET_IFNAME"):
-        env["NCCL_SOCKET_IFNAME"] = ib_info["DETECTED_SOCKET_IFNAME"]
     if ib_info.get("DETECTED_NET_LIST"):
         net_list = ib_info["DETECTED_NET_LIST"]
+        # NCCL_SOCKET_IFNAME uses '=' prefix per interface to pin exact devices
+        nccl_socket = ",".join("=" + if_ for if_ in net_list.split(","))
+        env["NCCL_SOCKET_IFNAME"] = nccl_socket
         env["MN_IF_NAME"] = net_list
         env["OMPI_MCA_btl_tcp_if_include"] = net_list
         env["GLOO_SOCKET_IFNAME"] = net_list
@@ -93,3 +111,83 @@ def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
         env["UCX_NET_DEVICES"] = ib_info["DETECTED_UCX_LIST"]
 
     return env
+
+
+def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
+    """Extract InfiniBand interface IPv4 addresses from detection results.
+
+    Args:
+        ib_info: Parsed output from :func:`parse_ib_detect_output`.
+
+    Returns:
+        List of IB interface IPs (may be empty if no IB or no IPs found).
+    """
+    raw = ib_info.get("DETECTED_IB_IPS", "")
+    if not raw:
+        return []
+    return [ip.strip() for ip in raw.split(",") if ip.strip()]
+
+
+def detect_ib_for_hosts(
+    hosts: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+) -> IBDetectionResult:
+    """Run IB detection on all hosts and return aggregated results.
+
+    Detects InfiniBand on all hosts in parallel, computes NCCL env
+    from the head (``hosts[0]``), and builds a mapping of management
+    host → first IB IP for use as transfer targets.
+
+    Args:
+        hosts: Management hostnames/IPs.
+        ssh_kwargs: SSH connection parameters.
+        dry_run: Log without executing.
+
+    Returns:
+        :class:`IBDetectionResult` with NCCL env and IB IP mapping.
+    """
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+    if not hosts:
+        return IBDetectionResult()
+
+    kw = ssh_kwargs or {}
+    head_host = hosts[0]
+
+    logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
+    ib_script = generate_ib_detect_script()
+    ib_results = run_remote_scripts_parallel(
+        hosts, ib_script, timeout=30, dry_run=dry_run, **kw,
+    )
+
+    nccl_env: dict[str, str] = {}
+    ib_ip_map: dict[str, str] = {}
+
+    for result in ib_results:
+        if not result.success:
+            continue
+        ib_info = parse_ib_detect_output(result.stdout)
+
+        # NCCL env from head host
+        if result.host == head_host and not nccl_env:
+            nccl_env = generate_nccl_env(ib_info)
+            if nccl_env:
+                logger.info("  InfiniBand detected on %s, NCCL configured", head_host)
+
+        # IB IP for transfer routing
+        ib_ips = extract_ib_ips(ib_info)
+        if ib_ips:
+            ib_ip_map[result.host] = ib_ips[0]
+            logger.debug("  %s IB transfer IP: %s", result.host, ib_ips[0])
+
+    if not nccl_env:
+        logger.info("  No InfiniBand detected, using default networking")
+
+    if ib_ip_map:
+        logger.info("  IB transfer IPs resolved for %d/%d host(s)",
+                    len(ib_ip_map), len(hosts))
+    else:
+        logger.info("  No IB IPs found, transfers will use management network")
+
+    return IBDetectionResult(nccl_env=nccl_env, ib_ip_map=ib_ip_map)

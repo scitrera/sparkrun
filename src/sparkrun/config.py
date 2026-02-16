@@ -22,7 +22,7 @@ DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
 def get_config_root(v: Variables | None = None) -> Path:
     """Config root from SAF stateful root, falling back to DEFAULT_CONFIG_DIR."""
     if v is not None:
-        from scitrera_app_framework.core.core import is_stateful_ready
+        from scitrera_app_framework.core import is_stateful_ready
         stateful_root = is_stateful_ready(v)
         if stateful_root:
             return Path(stateful_root)

@@ -26,6 +26,25 @@ _KNOWN_KEYS = {
 }
 
 
+def _effective_runtime(data: dict[str, Any]) -> str:
+    """Determine the effective runtime from raw recipe data.
+
+    Detects eugr-vllm recipes via two signals:
+    1. ``recipe_version: "1"`` — the eugr native format.
+    2. Presence of ``build_args`` or ``mods`` keys — eugr-specific fields
+       that are a dead giveaway even without an explicit version declaration.
+    """
+    runtime = data.get("runtime", "vllm")
+    if runtime != "vllm":
+        return runtime
+    version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
+    if version == "1":
+        return "eugr-vllm"
+    if data.get("build_args") or data.get("mods"):
+        return "eugr-vllm"
+    return runtime
+
+
 class RecipeError(Exception):
     """Raised when a recipe is invalid or cannot be loaded."""
 
@@ -96,6 +115,13 @@ class Recipe:
         if self.sparkrun_version == "1":
             self._migrate_v1(data)
 
+        # build_args / mods are eugr-specific fields — a dead giveaway
+        # even without an explicit v1 declaration
+        if self.runtime == "vllm" and (
+            self.runtime_config.get("build_args") or self.runtime_config.get("mods")
+        ):
+            self.runtime = "eugr-vllm"
+
         # Handle solo_only/cluster_only as first-class fields (works for both v1 and v2)
         if data.get("cluster_only"):
             self.min_nodes = max(self.min_nodes, 2)
@@ -105,11 +131,15 @@ class Recipe:
             self.mode = "solo"
 
     def _migrate_v1(self, data: dict[str, Any]):
-        """Map eugr v1 recipe fields to v2 schema."""
+        """Map eugr v1 recipe fields to v2 schema.
+
+        The v1 format is the eugr/spark-vllm-docker native format.
+        Recipes declaring ``recipe_version: "1"`` with a vllm target
+        should use the ``eugr-vllm`` runtime which delegates to eugr's
+        own scripts and container builds.
+        """
         if not self.runtime or self.runtime == "vllm":
-            # Check runtime_config for eugr-specific fields (build_args, mods)
-            if self.runtime_config.get("build_args") or self.runtime_config.get("mods"):
-                self.runtime = "eugr-vllm"
+            self.runtime = "eugr-vllm"
 
     @property
     def slug(self) -> str:
@@ -385,7 +415,7 @@ def list_recipes(search_paths: list[Path] | None = None,
                         "name": data.get("name", stem) if isinstance(data, dict) else stem,
                         "file": stem,
                         "path": str(f),
-                        "runtime": data.get("runtime", "vllm") if isinstance(data, dict) else "unknown",
+                        "runtime": _effective_runtime(data) if isinstance(data, dict) else "unknown",
                     }
                     if registry_name:
                         entry["registry"] = registry_name

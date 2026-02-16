@@ -50,6 +50,26 @@ def image_exists_locally(image: str) -> bool:
     return result.returncode == 0
 
 
+def get_image_id(image: str) -> str | None:
+    """Get the Docker image ID (digest) for a local image.
+
+    Args:
+        image: Image reference to inspect.
+
+    Returns:
+        Image ID string (e.g. ``"sha256:abc123..."``) or None if the
+        image does not exist locally.
+    """
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
 def ensure_image(image: str, dry_run: bool = False) -> int:
     """Ensure an image exists locally, pulling if needed.
 

@@ -233,6 +233,9 @@ sparkrun setup ssh --hosts 192.168.11.13,192.168.11.14 --user ubuntu
 
 # Or use a saved cluster
 sparkrun setup ssh --cluster mylab
+
+# Or if you've set your default cluster -- it'll just use that
+sparkrun setup ssh
 ```
 
 You will be prompted for passwords on first connection to each host. After that, all hosts can SSH to each

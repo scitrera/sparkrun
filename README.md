@@ -13,9 +13,10 @@ machine with SSH access.
 
 ```
 # uv is preferred mechanism for managing python environments
-pip install uv
+# To install uv:
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# automatic installation via uvx (installs virtual environment and 
+# automatic installation via uvx (manages virtual environment and 
 # creates alias in your shell, sets up autocomplete too!)
 uvx sparkrun setup install
 
@@ -23,6 +24,8 @@ uvx sparkrun setup install
 pip install sparkrun
 -- or --
 uv pip install sparkrun
+
+But autocomplete setup is easiest with the uvx approach.
 ```
 
 ## Quick Start
@@ -185,16 +188,21 @@ runtime_config:
 ## How It Works
 
 **Recipes** are YAML files that describe an inference workload: the model, container image, runtime, and default
-parameters. sparkrun ships bundled recipes and supports custom registries (any git repo with YAML files). Sparkrun includes
-limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running to eugr's repo also...). 
-The idea in the long-run is to merge recipes from multiple registries into a single unified catalog. And be able to run them
-even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing to worry about the underlying command differences.
+parameters. sparkrun ships bundled recipes and supports custom registries (any git repo with YAML files). Sparkrun
+includes
+limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running to eugr's
+repo also...).
+The idea in the long-run is to merge recipes from multiple registries into a single unified catalog. And be able to run
+them
+even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing to worry about the underlying
+command differences.
 
 **Runtimes** are plugins that know how to launch a specific inference engine. sparkrun discovers them via Python entry
 points, so custom runtimes can be added by installing a package.
 
 **Orchestration** is handled over SSH. sparkrun detects InfiniBand/RDMA interfaces on your hosts, distributes container
-images and models from local to remote (using the ethernet interfaces of the RDMA interfaces for fast transfers when available), configures NCCL environment
+images and models from local to remote (using the ethernet interfaces of the RDMA interfaces for fast transfers when
+available), configures NCCL environment
 variables, and launches containers with the right networking.
 
 Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `--tp 2` means 2 hosts.

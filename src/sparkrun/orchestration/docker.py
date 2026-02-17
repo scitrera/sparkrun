@@ -193,6 +193,71 @@ def generate_cluster_id(recipe: "Recipe", hosts: list[str]) -> str:
     return "sparkrun_%s" % digest
 
 
+def save_job_metadata(
+    cluster_id: str,
+    recipe: "Recipe",
+    hosts: list[str],
+    overrides: dict | None = None,
+    cache_dir: str | None = None,
+) -> None:
+    """Persist job metadata so ``cluster status`` can display recipe info.
+
+    Writes a small YAML file to ``{cache_dir}/jobs/{hash}.yaml`` where
+    *hash* is the 12-char hex portion of *cluster_id*.
+    """
+    from pathlib import Path
+    import yaml
+
+    if cache_dir is None:
+        from sparkrun.config import DEFAULT_CACHE_DIR
+        cache_dir = str(DEFAULT_CACHE_DIR)
+
+    digest = cluster_id.removeprefix("sparkrun_")
+    jobs_dir = Path(cache_dir) / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    tp = None
+    if overrides:
+        tp = overrides.get("tensor_parallel")
+    if tp is None and recipe.defaults:
+        tp = recipe.defaults.get("tensor_parallel")
+
+    meta = {
+        "cluster_id": cluster_id,
+        "recipe": recipe.name,
+        "model": recipe.model,
+        "runtime": recipe.runtime,
+        "hosts": hosts,
+    }
+    if tp is not None:
+        meta["tensor_parallel"] = int(tp)
+
+    meta_path = jobs_dir / f"{digest}.yaml"
+    with open(meta_path, "w") as f:
+        yaml.safe_dump(meta, f, default_flow_style=False)
+    logger.debug("Saved job metadata to %s", meta_path)
+
+
+def load_job_metadata(cluster_id: str, cache_dir: str | None = None) -> dict | None:
+    """Load job metadata for a cluster_id.  Returns ``None`` if not found."""
+    from pathlib import Path
+    import yaml
+
+    if cache_dir is None:
+        from sparkrun.config import DEFAULT_CACHE_DIR
+        cache_dir = str(DEFAULT_CACHE_DIR)
+
+    digest = cluster_id.removeprefix("sparkrun_")
+    meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
+    if not meta_path.exists():
+        return None
+    try:
+        with open(meta_path) as f:
+            return yaml.safe_load(f)
+    except Exception:
+        return None
+
+
 def generate_container_name(cluster_id: str, role: str = "head") -> str:
     """Generate a deterministic container name.
 

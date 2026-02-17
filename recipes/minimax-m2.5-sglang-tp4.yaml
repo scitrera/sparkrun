@@ -4,7 +4,7 @@ min_nodes: 4
 container: scitrera/dgx-spark-sglang:0.5.8-t5
 
 metadata:
-  description: MiniMax-M2.5 (upstrea, no quant) SGLang Cluster (4 nodes+)
+  description: MiniMax-M2.5 (upstream, no quant) SGLang Cluster (4 nodes+)
   maintainer: scitrera.ai <open-source-team@scitrera.com>
   model_params: 229B
   model_dtype: fp8

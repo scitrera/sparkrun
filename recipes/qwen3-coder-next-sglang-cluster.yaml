@@ -1,13 +1,13 @@
-model: Qwen/Qwen3-Coder-Next-FP8
+model: Qwen/Qwen3-Coder-Next
 runtime: sglang  # will handle additional logistics related to distributed inference
 min_nodes: 2
 container: scitrera/dgx-spark-sglang:0.5.8-t5
 
 metadata:
-  description: Qwen3 Coder Next (upstream FP8 quant) -- cluster only
+  description: Qwen3 Coder Next (upstream, no quant) -- cluster only
   maintainer: scitrera.ai <open-source-team@scitrera.com>
   model_params: 80B
-  model_dtype: fp8
+  model_dtype: bf16
 
 defaults:
   port: 8000
@@ -18,7 +18,6 @@ defaults:
   served_model_name: qwen3-coder-next
   attention_backend: triton  # NOTE: triton required for distributed sglang MoE here
   tool_call_parser: qwen3_coder
-  fp8_gemm_backend: "cutlass"  # TODO: decide on cutlass or flashinfer_trtllm; NOTE: auto/deep_gemm won't work right now
 
 command: |
   python3 -m sglang.launch_server \
@@ -30,5 +29,5 @@ command: |
       --host {host} \
       --port {port} \
       --attention-backend {attention_backend} \
-      --fp8-gemm-backend {fp8_gemm_backend} \
       --tool-call-parser {tool_call_parser}
+#      --load-format fastsafetensors  # TODO: future: work on fastsafetensors support

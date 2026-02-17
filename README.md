@@ -11,7 +11,7 @@ your Spark cluster automatically.
 sparkrun does not need to run on a member of the cluster. You can coordinate one or more DGX Sparks from any Linux
 machine with SSH access.
 
-```
+```bash
 # uv is preferred mechanism for managing python environments
 # To install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -19,36 +19,33 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # automatic installation via uvx (manages virtual environment and
 # creates alias in your shell, sets up autocomplete too!)
 uvx sparkrun setup install
-
-# power users may prefer to manage their own setup -- so there is always:
-pip install sparkrun
--- or --
-uv pip install sparkrun
-
-But autocomplete setup is easiest with the uvx approach.
 ```
+
+<details>
+<summary>Alternative: manual pip install</summary>
+
+```bash
+pip install sparkrun
+# or
+uv pip install sparkrun
+```
+
+With a manual install you will need to run `sparkrun setup completion` separately for tab completion.
+
+</details>
 
 ## Quick Start
 
-### Run an inference job
+### Tab completion
+
+> **Note:** If you installed via `sparkrun setup install`, tab completion is already set up — you can skip this step.
 
 ```bash
-# Single node
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --solo
-
-# Multi-node (2-node tensor parallel)
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13,192.168.11.14
-
-# Override settings on the fly
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13 --port 9000 --gpu-mem 0.9
-sparkrun run nemotron3-nano-30b-nvfp4-vllm -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
-
-# GGUF quantized models via llama.cpp
-sparkrun run qwen3-1.7b-llama-cpp --solo
+sparkrun setup completion          # auto-detects your shell
+sparkrun setup completion --shell zsh
 ```
 
-sparkrun always launches jobs in the background (detached containers) and then follows logs. **Ctrl+C detaches from
-logs — it never kills your inference job.** Your model keeps serving.
+After restarting your shell, recipe names, cluster names, and subcommands all tab-complete.
 
 ### Save a cluster config
 
@@ -61,14 +58,25 @@ sparkrun cluster set-default mylab
 sparkrun run nemotron3-nano-30b-nvfp4-vllm
 ```
 
-### Tab completion
+### Run an inference job
 
 ```bash
-sparkrun setup completion          # auto-detects your shell
-sparkrun setup completion --shell zsh
+# Single node
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --solo
+
+# Multi-node (2-node tensor parallel) -- using your default cluster
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+
+# Override settings on the fly
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13 --port 9000 --gpu-mem 0.9
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+
+# GGUF quantized models via llama.cpp
+sparkrun run qwen3-1.7b-llama-cpp
 ```
 
-After restarting your shell, recipe names, cluster names, and subcommands all tab-complete.
+sparkrun always launches jobs in the background (detached containers) and then follows logs. **Ctrl+C detaches from
+logs — it never kills your inference job.** Your model keeps serving.
 
 ### Inspect a recipe
 

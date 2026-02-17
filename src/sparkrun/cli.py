@@ -767,14 +767,21 @@ def setup_update(ctx):
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
               help="Use a saved cluster by name")
+@click.option("--extra-hosts", default=None,
+              help="Additional comma-separated hosts to include (e.g. control machine)")
+@click.option("--include-self/--no-include-self", default=True, show_default=True,
+              help="Include this machine's hostname in the mesh")
 @click.option("--user", "-u", default=None, help="SSH username (default: current user)")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
 @click.pass_context
-def setup_ssh(ctx, hosts, hosts_file, cluster_name, user, dry_run):
+def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, dry_run):
     """Set up passwordless SSH mesh across cluster hosts.
 
     Ensures every host can SSH to every other host without password prompts.
     Creates ed25519 keys if missing and distributes public keys.
+
+    By default, the machine running sparkrun is included in the mesh
+    (--include-self). Use --no-include-self to exclude it.
 
     You will be prompted for passwords on first connection to each host.
 
@@ -783,6 +790,8 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, user, dry_run):
       sparkrun setup ssh --hosts 192.168.11.13,192.168.11.14
 
       sparkrun setup ssh --cluster mylab --user ubuntu
+
+      sparkrun setup ssh --cluster mylab --extra-hosts 10.0.0.1
     """
     import os
     import subprocess
@@ -815,6 +824,30 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         except Exception:
             pass
 
+    # Track original cluster hosts before extras/self are appended
+    cluster_hosts = list(host_list)
+    seen = set(host_list)
+    added: list[str] = []
+    if extra_hosts:
+        for h in extra_hosts.split(","):
+            h = h.strip()
+            if h and h not in seen:
+                host_list.append(h)
+                seen.add(h)
+                added.append(h)
+
+    # Include the control machine unless opted out.
+    # Use the local IP that can route to the first cluster host, since
+    # remote hosts may not be able to resolve this machine's hostname.
+    self_host: str | None = None
+    if include_self and host_list:
+        from sparkrun.orchestration.primitives import local_ip_for
+        self_host = local_ip_for(host_list[0])
+        if self_host and self_host not in seen:
+            host_list.append(self_host)
+            seen.add(self_host)
+            added.append("%s (this machine)" % self_host)
+
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts, --hosts-file, or --cluster.", err=True)
         sys.exit(1)
@@ -841,7 +874,9 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, user, dry_run):
             return
 
         click.echo("Setting up SSH mesh for user '%s' across %d hosts..." % (user, len(host_list)))
-        click.echo("Hosts: %s" % ", ".join(host_list))
+        click.echo("Cluster Hosts: %s" % ", ".join(sorted(cluster_hosts)))
+        if added:
+            click.echo("Added: %s" % ", ".join(added))
         click.echo()
 
         # Run interactively — the script prompts for passwords

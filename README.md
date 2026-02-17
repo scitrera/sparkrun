@@ -238,11 +238,11 @@ directly, so node-to-node SSH is not strictly required for the default workflow.
 That said, setting up a **full SSH mesh** (every host can reach every other host) is recommended — it enables
 alternative distribution strategies and is generally useful for cluster administration.
 
-The easiest way to set this up is `sparkrun setup ssh`, which creates a full mesh including your control
-machine:
+The easiest way to set this up is `sparkrun setup ssh`, which creates a full mesh across your cluster
+hosts **and** the control machine (included automatically via `--include-self`, on by default):
 
 ```bash
-# Set up passwordless SSH mesh across your cluster
+# Set up passwordless SSH mesh across your cluster + this machine
 sparkrun setup ssh --hosts 192.168.11.13,192.168.11.14 --user ubuntu
 
 # Or use a saved cluster
@@ -250,10 +250,16 @@ sparkrun setup ssh --cluster mylab
 
 # Or if you've set your default cluster -- it'll just use that
 sparkrun setup ssh
+
+# Add extra hosts beyond the cluster (e.g. a jump host)
+sparkrun setup ssh --cluster mylab --extra-hosts 10.0.0.99
+
+# Exclude the control machine from the mesh
+sparkrun setup ssh --cluster mylab --no-include-self
 ```
 
-You will be prompted for passwords on first connection to each host. After that, every host
-(including your control machine) can SSH to every other host without passwords.
+You will be prompted for passwords on first connection to each host. After that, every host in the
+mesh can SSH to every other host without passwords.
 
 <details>
 <summary>Manual SSH setup (without sparkrun setup ssh)</summary>

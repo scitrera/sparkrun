@@ -772,7 +772,7 @@ class TestSetupSshCommand:
         import sparkrun.config
         monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        result = runner.invoke(main, ["setup", "ssh"])
+        result = runner.invoke(main, ["setup", "ssh", "--no-include-self"])
         assert result.exit_code != 0
         assert "No hosts" in result.output
 
@@ -783,7 +783,9 @@ class TestSetupSshCommand:
         import sparkrun.config
         monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        result = runner.invoke(main, ["setup", "ssh", "--hosts", "10.0.0.1"])
+        result = runner.invoke(main, [
+            "setup", "ssh", "--hosts", "10.0.0.1", "--no-include-self",
+        ])
         assert result.exit_code != 0
         assert "at least 2 hosts" in result.output
 
@@ -798,6 +800,7 @@ class TestSetupSshCommand:
             "setup", "ssh",
             "--hosts", "10.0.0.1,10.0.0.2",
             "--user", "testuser",
+            "--no-include-self",
             "--dry-run",
         ])
         assert result.exit_code == 0
@@ -818,6 +821,7 @@ class TestSetupSshCommand:
         result = runner.invoke(main, [
             "setup", "ssh",
             "--hosts", "10.0.0.1,10.0.0.2",
+            "--no-include-self",
             "--dry-run",
         ])
         assert result.exit_code == 0
@@ -829,6 +833,7 @@ class TestSetupSshCommand:
             "setup", "ssh",
             "--cluster", "ssh-cluster",
             "--user", "ubuntu",
+            "--no-include-self",
             "--dry-run",
         ])
         assert result.exit_code == 0
@@ -850,6 +855,7 @@ class TestSetupSshCommand:
                 "setup", "ssh",
                 "--hosts", "10.0.0.1,10.0.0.2",
                 "--user", "testuser",
+                "--no-include-self",
             ])
 
             assert result.exit_code == 0
@@ -874,6 +880,7 @@ class TestSetupSshCommand:
         result = runner.invoke(main, [
             "setup", "ssh",
             "--cluster", "usercluster",
+            "--no-include-self",
             "--dry-run",
         ])
         assert result.exit_code == 0
@@ -894,12 +901,97 @@ class TestSetupSshCommand:
             "setup", "ssh",
             "--cluster", "usercluster2",
             "--user", "override_user",
+            "--no-include-self",
             "--dry-run",
         ])
         assert result.exit_code == 0
         assert "override_user" in result.output
         # The cluster user should NOT appear in the command
         assert "dgxuser" not in result.output
+
+    def test_setup_ssh_include_self(self, runner, tmp_path, monkeypatch):
+        """Test that --include-self adds the local IP to the mesh."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.primitives import local_ip_for
+        local_ip = local_ip_for("10.0.0.1")
+
+        result = runner.invoke(main, [
+            "setup", "ssh",
+            "--hosts", "10.0.0.1,10.0.0.2",
+            "--user", "testuser",
+            "--include-self",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert local_ip in result.output
+        assert "10.0.0.1" in result.output
+        assert "10.0.0.2" in result.output
+
+    def test_setup_ssh_include_self_no_duplicate(self, runner, tmp_path, monkeypatch):
+        """Test that --include-self doesn't duplicate if local IP already in hosts."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.primitives import local_ip_for
+        local_ip = local_ip_for("10.0.0.1")
+
+        result = runner.invoke(main, [
+            "setup", "ssh",
+            "--hosts", "10.0.0.1,%s" % local_ip,
+            "--user", "testuser",
+            "--include-self",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        # local IP should appear exactly once in the command line
+        cmd_line = result.output.split("Would run:\n")[-1].strip()
+        assert cmd_line.count(local_ip) == 1
+
+    def test_setup_ssh_extra_hosts(self, runner, tmp_path, monkeypatch):
+        """Test that --extra-hosts adds additional hosts to the mesh."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, [
+            "setup", "ssh",
+            "--hosts", "10.0.0.1",
+            "--extra-hosts", "10.0.0.99",
+            "--user", "testuser",
+            "--no-include-self",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert "10.0.0.1" in result.output
+        assert "10.0.0.99" in result.output
+
+    def test_setup_ssh_extra_hosts_dedup(self, runner, tmp_path, monkeypatch):
+        """Test that --extra-hosts deduplicates against --hosts."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, [
+            "setup", "ssh",
+            "--hosts", "10.0.0.1,10.0.0.2",
+            "--extra-hosts", "10.0.0.1,10.0.0.3",
+            "--user", "testuser",
+            "--no-include-self",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        cmd_line = result.output.split("Would run:\n")[-1].strip()
+        # 10.0.0.1 should appear only once
+        assert cmd_line.count("10.0.0.1") == 1
+        assert "10.0.0.3" in result.output
 
 
 class TestLogCommand:

@@ -208,7 +208,7 @@ parameters. sparkrun ships bundled recipes and supports custom registries (any g
 includes limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running
 to eugr's repo also...). The idea in the long-run is to merge recipes from multiple registries into a single unified
 catalog. And be able to run them even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing
-to worry about the underlying command differences.
+to worry about the underlying command differences. See the [RECIPES](./RECIPES.md) specification file for more details.
 
 **Runtimes** are plugins that know how to launch a specific inference engine. sparkrun discovers them via Python entry
 points, so custom runtimes can be added by installing a package.

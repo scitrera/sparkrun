@@ -401,31 +401,12 @@ def run(
 
 
 @main.command("list")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
+@click.option("--registry", default=None, help="Filter by registry name")
+@click.argument("query", required=False)
 @click.pass_context
-def list_cmd(ctx, config_path=None):
-    """List available recipes."""
-    from sparkrun.recipe import list_recipes
-    from sparkrun.config import SparkrunConfig
-
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    registry_mgr = config.get_registry_manager()
-    registry_mgr.ensure_initialized()
-    recipes = list_recipes(config.get_recipe_search_paths(), registry_mgr)
-
-    if not recipes:
-        click.echo("No recipes found.")
-        return
-
-    # Compute column widths from data
-    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
-    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
-    w_file = max(len("File"), *(len(r["file"]) for r in recipes))
-
-    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'File':<{w_file}}")
-    click.echo("-" * (w_name + w_rt + w_file + 2))
-    for r in recipes:
-        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {r['file']:<{w_file}}")
+def list_cmd(ctx, registry, query):
+    """List available recipes (alias for 'recipe list')."""
+    ctx.invoke(recipe_list, registry=registry, query=query)
 
 
 def _display_recipe_detail(recipe, show_vram=True, registry_name=None):
@@ -508,116 +489,166 @@ def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, config_path=None):
-    """Show detailed recipe information."""
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-    from sparkrun.config import SparkrunConfig
-
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    registry_mgr = config.get_registry_manager()
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-    reg_name = registry_mgr.registry_for_path(recipe_path) if registry_mgr else None
-    _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name)
+def show(ctx, recipe_name, no_vram):
+    """Show detailed recipe information (alias for 'recipe show')."""
+    ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram)
 
 
-@main.command()
-@click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
-              help="Override tensor parallelism")
-@click.option("--max-model-len", type=int, default=None, help="Override max sequence length")
-@click.option("--gpu-mem", type=float, default=None,
-              help="Override gpu_memory_utilization (0.0-1.0)")
-@click.option("--no-auto-detect", is_flag=True, help="Skip HuggingFace model auto-detection")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
+@main.command("search")
+@click.argument("query")
 @click.pass_context
-def vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, config_path=None):
-    """Estimate VRAM usage for a recipe on DGX Spark.
+def search_cmd(ctx, query):
+    """Search for recipes by name, model, or description (alias for 'recipe search')."""
+    ctx.invoke(recipe_search, query=query)
 
-    Shows model weight size, KV cache requirements, GPU memory budget,
-    and whether the configuration fits within DGX Spark memory.
+
+# ---------------------------------------------------------------------------
+# setup group
+# ---------------------------------------------------------------------------
+
+@main.group()
+@click.pass_context
+def setup(ctx):
+    """Setup and configuration commands."""
+    pass
+
+
+@setup.command("completion")
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None,
+              help="Shell type (auto-detected if not specified)")
+@click.pass_context
+def setup_completion(ctx, shell):
+    """Install shell tab-completion for sparkrun.
+
+    Detects your current shell and appends the completion setup to
+    your shell config file (~/.bashrc, ~/.zshrc, or ~/.config/fish/...).
 
     Examples:
 
-      sparkrun vram glm-4.7-flash-awq
+      sparkrun setup completion
 
-      sparkrun vram glm-4.7-flash-awq --tp 2
-
-      sparkrun vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
+      sparkrun setup completion --shell bash
     """
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+    from pathlib import Path
 
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-    click.echo(f"Recipe:  {recipe.name}")
-    click.echo(f"Model:   {recipe.model}")
-    click.echo(f"Runtime: {recipe.runtime}")
-
-    cli_overrides = {}
-    if tensor_parallel is not None:
-        cli_overrides["tensor_parallel"] = tensor_parallel
-    if max_model_len is not None:
-        cli_overrides["max_model_len"] = max_model_len
-    if gpu_mem is not None:
-        cli_overrides["gpu_memory_utilization"] = gpu_mem
-
-    _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
-
-
-@main.command()
-@click.argument("recipe_name", type=RECIPE_NAME)
-# @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.pass_context
-def validate(ctx, recipe_name, config_path=None):
-    """Validate a recipe file."""
-    from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-    from sparkrun.config import SparkrunConfig
-
-    v = init_sparkrun()
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    registry_mgr = config.get_registry_manager()
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-    issues = recipe.validate()
-
-    try:
-        runtime = get_runtime(recipe.runtime, v)
-        issues.extend(runtime.validate_recipe(recipe))
-    except ValueError:
-        issues.append(f"Unknown runtime: {recipe.runtime}")
-
-    if issues:
-        click.echo(f"Recipe '{recipe.name}' has {len(issues)} issue(s):")
-        for issue in issues:
-            click.echo(f"  - {issue}")
-        sys.exit(1)
+    if not shell:
+        shell, rc_file = _detect_shell()
     else:
-        click.echo(f"Recipe '{recipe.name}' is valid.")
+        home = Path.home()
+        if shell == "bash":
+            rc_file = home / ".bashrc"
+        elif shell == "zsh":
+            rc_file = home / ".zshrc"
+        elif shell == "fish":
+            rc_file = home / ".config" / "fish" / "config.fish"
+        else:
+            click.echo("Error: Unsupported shell: %s" % shell, err=True)
+            sys.exit(1)
+
+    completion_var = "_SPARKRUN_COMPLETE"
+
+    if shell == "bash":
+        snippet = 'eval "$(%s=bash_source sparkrun)"' % completion_var
+    elif shell == "zsh":
+        snippet = 'eval "$(%s=zsh_source sparkrun)"' % completion_var
+    elif shell == "fish":
+        snippet = "%s=fish_source sparkrun | source" % completion_var
+
+    # Check if already installed
+    if rc_file.exists():
+        contents = rc_file.read_text()
+        if completion_var in contents:
+            click.echo("Completion already configured in %s" % rc_file)
+            return
+
+    # Ensure parent directory exists (for fish)
+    rc_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(rc_file, "a") as f:
+        f.write("\n# sparkrun tab-completion\n")
+        f.write(snippet + "\n")
+
+    click.echo("Completion installed for %s in %s" % (shell, rc_file))
+    click.echo("Restart your shell or run: source %s" % rc_file)
+
+
+def _detect_shell():
+    """Detect the user's login shell, returning (name, rc_file)."""
+    import os
+    from pathlib import Path
+
+    login_shell = os.environ.get("SHELL", "")
+    home = Path.home()
+    if "zsh" in login_shell:
+        return "zsh", home / ".zshrc"
+    elif "fish" in login_shell:
+        return "fish", home / ".config" / "fish" / "config.fish"
+    else:
+        return "bash", home / ".bashrc"
+
+
+@setup.command("install")
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None,
+              help="Shell type (auto-detected if not specified)")
+@click.pass_context
+def setup_install(ctx, shell):
+    """Install sparkrun alias and tab-completion into your shell.
+
+    Intended for use with uvx:
+
+      uvx sparkrun setup install
+
+    This adds a shell alias so that 'sparkrun' invokes 'uvx sparkrun',
+    then configures tab-completion. After restarting your shell (or
+    sourcing the rc file), sparkrun is ready to use.
+
+    If sparkrun was installed via pip, the alias is harmless — the
+    direct command on PATH takes the same precedence.
+    """
+    from pathlib import Path
+
+    if not shell:
+        shell, rc_file = _detect_shell()
+    else:
+        home = Path.home()
+        if shell == "bash":
+            rc_file = home / ".bashrc"
+        elif shell == "zsh":
+            rc_file = home / ".zshrc"
+        elif shell == "fish":
+            rc_file = home / ".config" / "fish" / "config.fish"
+        else:
+            click.echo("Error: Unsupported shell: %s" % shell, err=True)
+            sys.exit(1)
+
+    # Step 1: Add sparkrun alias
+    alias_marker = "alias sparkrun="
+    if shell == "fish":
+        alias_line = "alias sparkrun 'uvx sparkrun'"
+        alias_marker = "alias sparkrun "
+    else:
+        alias_line = "alias sparkrun='uvx sparkrun'"
+
+    alias_installed = False
+    if rc_file.exists():
+        contents = rc_file.read_text()
+        if alias_marker in contents:
+            click.echo("Alias already configured in %s" % rc_file)
+            alias_installed = True
+
+    if not alias_installed:
+        rc_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(rc_file, "a") as f:
+            f.write("\n# sparkrun (via uvx)\n")
+            f.write(alias_line + "\n")
+        click.echo("Alias installed in %s" % rc_file)
+
+    # Step 2: Set up tab-completion
+    ctx.invoke(setup_completion, shell=shell)
+
+    click.echo()
+    click.echo("Restart your shell or run: source %s" % rc_file)
 
 
 @main.command()
@@ -1054,6 +1085,94 @@ def recipe_show(ctx, recipe_name, no_vram, config_path=None, ):
 
     reg_name = registry_mgr.registry_for_path(recipe_path) if registry_mgr else None
     _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name)
+
+
+@recipe.command("validate")
+@click.argument("recipe_name", type=RECIPE_NAME)
+# @click.option("--config", "config_path", default=None, help="Path to config file")
+@click.pass_context
+def recipe_validate(ctx, recipe_name, config_path=None):
+    """Validate a recipe file."""
+    from sparkrun.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+
+    v = init_sparkrun()
+    config, registry_mgr = _get_config_and_registry(config_path)
+    registry_mgr.ensure_initialized()
+
+    try:
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    issues = recipe.validate()
+
+    try:
+        runtime = get_runtime(recipe.runtime, v)
+        issues.extend(runtime.validate_recipe(recipe))
+    except ValueError:
+        issues.append(f"Unknown runtime: {recipe.runtime}")
+
+    if issues:
+        click.echo(f"Recipe '{recipe.name}' has {len(issues)} issue(s):")
+        for issue in issues:
+            click.echo(f"  - {issue}")
+        sys.exit(1)
+    else:
+        click.echo(f"Recipe '{recipe.name}' is valid.")
+
+
+@recipe.command("vram")
+@click.argument("recipe_name", type=RECIPE_NAME)
+@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
+              help="Override tensor parallelism")
+@click.option("--max-model-len", type=int, default=None, help="Override max sequence length")
+@click.option("--gpu-mem", type=float, default=None,
+              help="Override gpu_memory_utilization (0.0-1.0)")
+@click.option("--no-auto-detect", is_flag=True, help="Skip HuggingFace model auto-detection")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
+@click.pass_context
+def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, config_path=None):
+    """Estimate VRAM usage for a recipe on DGX Spark.
+
+    Shows model weight size, KV cache requirements, GPU memory budget,
+    and whether the configuration fits within DGX Spark memory.
+
+    Examples:
+
+      sparkrun recipe vram glm-4.7-flash-awq
+
+      sparkrun recipe vram glm-4.7-flash-awq --tp 2
+
+      sparkrun recipe vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
+    """
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+    registry_mgr.ensure_initialized()
+
+    try:
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Recipe:  {recipe.name}")
+    click.echo(f"Model:   {recipe.model}")
+    click.echo(f"Runtime: {recipe.runtime}")
+
+    cli_overrides = {}
+    if tensor_parallel is not None:
+        cli_overrides["tensor_parallel"] = tensor_parallel
+    if max_model_len is not None:
+        cli_overrides["max_model_len"] = max_model_len
+    if gpu_mem is not None:
+        cli_overrides["gpu_memory_utilization"] = gpu_mem
+
+    _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
 
 
 @recipe.command("update")

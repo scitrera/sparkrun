@@ -1,11 +1,13 @@
 model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
 runtime: vllm  # will handle additional logistics related to distributed inference
-min_nodes: 2
+min_nodes: 1
 container: scitrera/dgx-spark-vllm:0.16.0-t5
 
 metadata:
   description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4) -- cluster or solo
   maintainer: scitrera.ai <open-source-team@scitrera.com>
+  model_params: 30B
+  model_dtype: nvfp4
 
 defaults:
   port: 8000

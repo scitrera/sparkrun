@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
     "runtime", "runtime_version", "mode", "min_nodes", "max_nodes",
-    "container", "defaults", "env", "command", "runtime_settings", "extra",
+    "container", "defaults", "env", "command", "runtime_config",
     "cluster_only", "solo_only",
     "metadata",
 }
@@ -86,9 +86,6 @@ class Recipe:
         self.env: dict[str, str] = {str(k): str(v) for k, v in data.get("env", {}).items()}
         self.command: str | None = data.get("command")
 
-        # Runtime-specific settings (extra is deprecated name, runtime_settings is preferred)
-        self.runtime_settings: dict[str, Any] = dict(data.get("runtime_settings", data.get("extra", {})))
-
         # Metadata section (v2 extension for VRAM estimation, model info)
         raw_metadata = data.get("metadata", {})
         self.metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
@@ -106,10 +103,12 @@ class Recipe:
         # Maintainer (metadata-only field)
         self.maintainer: str = str(self.metadata.get("maintainer", ""))
 
-        # Auto-sweep unknown top-level keys into runtime_config
-        self.runtime_config: dict[str, Any] = {
-            k: v for k, v in data.items() if k not in _KNOWN_KEYS
-        }
+        # Runtime-specific config: explicit runtime_config key takes priority,
+        # then unknown top-level keys are auto-swept in.
+        self.runtime_config: dict[str, Any] = dict(data.get("runtime_config", {}))
+        for k, v in data.items():
+            if k not in _KNOWN_KEYS and k not in self.runtime_config:
+                self.runtime_config[k] = v
 
         # v1 compatibility migration
         if self.sparkrun_version == "1":

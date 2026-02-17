@@ -51,7 +51,7 @@ class TestVersionAndHelp:
         assert "run" in result.output
         assert "list" in result.output
         assert "show" in result.output
-        assert "validate" in result.output
+        assert "search" in result.output
         assert "stop" in result.output
         assert "log" in result.output
 
@@ -117,8 +117,8 @@ class TestVramCommand:
     """Test the vram command."""
 
     def test_vram_recipe(self, runner):
-        """Test sparkrun vram shows estimation."""
-        result = runner.invoke(main, ["vram", "qwen3-coder-next-fp8-sglang-cluster", "--no-auto-detect"])
+        """Test sparkrun recipe vram shows estimation."""
+        result = runner.invoke(main, ["recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster", "--no-auto-detect"])
         assert result.exit_code == 0
         assert "VRAM Estimation" in result.output
         assert "Model weights:" in result.output
@@ -126,9 +126,9 @@ class TestVramCommand:
         assert "DGX Spark fit:" in result.output
 
     def test_vram_with_gpu_mem(self, runner):
-        """Test sparkrun vram with --gpu-mem shows budget analysis."""
+        """Test sparkrun recipe vram with --gpu-mem shows budget analysis."""
         result = runner.invoke(main, [
-            "vram", "qwen3-coder-next-fp8-sglang-cluster",
+            "recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster",
             "--no-auto-detect",
             "--gpu-mem", "0.9",
         ])
@@ -138,9 +138,9 @@ class TestVramCommand:
         assert "Available for KV" in result.output
 
     def test_vram_with_tp(self, runner):
-        """Test sparkrun vram with --tp override."""
+        """Test sparkrun recipe vram with --tp override."""
         result = runner.invoke(main, [
-            "vram", "qwen3-coder-next-fp8-sglang-cluster",
+            "recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster",
             "--no-auto-detect",
             "--tp", "4",
         ])
@@ -148,8 +148,8 @@ class TestVramCommand:
         assert "Tensor parallel:  4" in result.output
 
     def test_vram_nonexistent_recipe(self, runner):
-        """Test sparkrun vram on nonexistent recipe exits with error."""
-        result = runner.invoke(main, ["vram", "nonexistent-recipe"])
+        """Test sparkrun recipe vram on nonexistent recipe exits with error."""
+        result = runner.invoke(main, ["recipe", "vram", "nonexistent-recipe"])
         assert result.exit_code != 0
         assert "Error" in result.output
 
@@ -164,14 +164,14 @@ class TestValidateCommand:
     """Test the validate command."""
 
     def test_validate_valid_recipe(self, runner, reset_bootstrap):
-        """Test that sparkrun validate exits 0 with 'is valid' message."""
-        result = runner.invoke(main, ["validate", "qwen3-coder-next-fp8-sglang-cluster"])
+        """Test that sparkrun recipe validate exits 0 with 'is valid' message."""
+        result = runner.invoke(main, ["recipe", "validate", "qwen3-coder-next-fp8-sglang-cluster"])
         assert result.exit_code == 0
         assert "is valid" in result.output
 
     def test_validate_nonexistent_recipe(self, runner, reset_bootstrap):
-        """Test that sparkrun validate nonexistent-recipe exits with error."""
-        result = runner.invoke(main, ["validate", "nonexistent-recipe"])
+        """Test that sparkrun recipe validate nonexistent-recipe exits with error."""
+        result = runner.invoke(main, ["recipe", "validate", "nonexistent-recipe"])
         assert result.exit_code != 0
         assert "Error" in result.output
 

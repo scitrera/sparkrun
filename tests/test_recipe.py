@@ -417,26 +417,26 @@ def test_recipe_runtime_config_catchall():
     assert "model" not in recipe.runtime_config
 
 
-def test_recipe_runtime_settings_from_extra():
-    """Test backward compatibility: 'extra' key maps to runtime_settings."""
+def test_recipe_runtime_config_explicit_key():
+    """Test that explicit runtime_config YAML key is loaded."""
     recipe = Recipe.from_dict({
         "name": "Test",
         "model": "test-model",
-        "extra": {"build_args": ["arg1"], "custom": "val"},
+        "runtime_config": {"build_args": ["arg1"], "custom": "val"},
     })
-    assert recipe.runtime_settings["build_args"] == ["arg1"]
-    assert recipe.runtime_settings["custom"] == "val"
+    assert recipe.runtime_config["build_args"] == ["arg1"]
+    assert recipe.runtime_config["custom"] == "val"
 
 
-def test_recipe_runtime_settings_preferred_over_extra():
-    """Test that runtime_settings takes precedence over extra."""
+def test_recipe_runtime_config_explicit_over_sweep():
+    """Test that explicit runtime_config takes precedence over auto-swept keys."""
     recipe = Recipe.from_dict({
         "name": "Test",
         "model": "test-model",
-        "runtime_settings": {"key": "from_settings"},
-        "extra": {"key": "from_extra"},
+        "runtime_config": {"custom_field": "from_config"},
+        "custom_field": "from_toplevel",
     })
-    assert recipe.runtime_settings["key"] == "from_settings"
+    assert recipe.runtime_config["custom_field"] == "from_config"
 
 
 def test_recipe_solo_only_v2():

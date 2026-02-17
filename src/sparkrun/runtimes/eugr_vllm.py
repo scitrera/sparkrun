@@ -129,8 +129,8 @@ class EugrVllmRuntime(RuntimePlugin):
             "container": recipe.container or "vllm-node-tf5",
             "cluster_only": recipe.min_nodes > 1,
             "solo_only": recipe.max_nodes == 1 if recipe.max_nodes else False,
-            "build_args": recipe.runtime_config.get("build_args", recipe.runtime_settings.get("build_args", [])),
-            "mods": recipe.runtime_config.get("mods", recipe.runtime_settings.get("mods", [])),
+            "build_args": recipe.runtime_config.get("build_args", []),
+            "mods": recipe.runtime_config.get("mods", []),
             "defaults": recipe.defaults,
             "env": recipe.env,
         }

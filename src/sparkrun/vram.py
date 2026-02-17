@@ -21,7 +21,7 @@ _DTYPE_BYTES: dict[str, float] = {
     "fp8_e5m2": 1.0,
     "fp8_e4m3": 1.0,
     "int4": 0.5,
-    "nvfp4": 0.5,
+    "nvfp4": 0.7,  # approximated value
     "awq4": 0.663,  # approximated value
     "awq8": 1.110,  # approximated value
     "gptq": 0.5,
@@ -125,6 +125,8 @@ def fetch_model_config(model_id: str) -> dict[str, Any] | None:
         logger.debug("Could not fetch HF config for %s: %s", model_id, e)
         return None
 
+
+# TODO: improve parameters calc with extract_model_info; better VRAM calc; better KV calc
 
 def extract_model_info(hf_config: dict[str, Any]) -> dict[str, Any]:
     """Extract model architecture info from a HuggingFace config.json.

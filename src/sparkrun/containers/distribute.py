@@ -1,0 +1,291 @@
+"""Container image distribution via local-to-remote transfer.
+
+Instead of having every host pull from the internet, these functions
+pull once (locally or on the head node) and then stream the image
+to targets via ``docker save | gzip | ssh … gunzip | docker load``.
+
+A hash check (comparing Docker image IDs) is performed before each
+transfer so hosts that already have the correct image are skipped.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from sparkrun.containers.registry import ensure_image, get_image_id
+from sparkrun.orchestration.ssh import (
+    RemoteResult,
+    build_ssh_opts_string,
+    run_pipeline_to_remote,
+    run_pipeline_to_remotes_parallel,
+    run_remote_command,
+    run_remote_script,
+)
+from sparkrun.scripts import read_script
+
+logger = logging.getLogger(__name__)
+
+# Command to get a Docker image ID on a remote host (empty output = not present)
+_REMOTE_IMAGE_ID_CMD = "docker image inspect --format '{{{{.Id}}}}' {image} 2>/dev/null || true"
+
+
+def _check_remote_image_ids(
+    image: str,
+    hosts: list[str],
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, str]:
+    """Check the Docker image ID on multiple remote hosts.
+
+    Args:
+        image: Image reference to check.
+        hosts: Target hostnames or IPs.
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        dry_run: If True, return empty dict (skip checks).
+
+    Returns:
+        Mapping of host → remote image ID.  Missing hosts or hosts
+        where the image is absent are omitted.
+    """
+    if dry_run or not hosts:
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    cmd = _REMOTE_IMAGE_ID_CMD.format(image=image)
+    result_map: dict[str, str] = {}
+
+    with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+        futures = {
+            executor.submit(
+                run_remote_command, host, cmd,
+                ssh_user=ssh_user, ssh_key=ssh_key,
+                ssh_options=ssh_options, timeout=15,
+            ): host
+            for host in hosts
+        }
+        for future in as_completed(futures):
+            result: RemoteResult = future.result()
+            remote_id = result.stdout.strip()
+            if result.success and remote_id:
+                result_map[result.host] = remote_id
+
+    return result_map
+
+
+def _filter_hosts_needing_image(
+    image: str,
+    hosts: list[str],
+    local_image_id: str | None,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    dry_run: bool = False,
+) -> list[str]:
+    """Return the subset of hosts that need the image transferred.
+
+    Compares the local image ID with each remote host's image ID.
+    Hosts where the IDs match are skipped.
+
+    Args:
+        image: Image reference.
+        hosts: Candidate target hosts.
+        local_image_id: Local Docker image ID (from :func:`get_image_id`).
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        dry_run: If True, return all hosts (no filtering).
+
+    Returns:
+        List of hosts that need the image (IDs differ or image absent).
+    """
+    if dry_run or not local_image_id or not hosts:
+        return list(hosts)
+
+    remote_ids = _check_remote_image_ids(
+        image, hosts,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+    )
+
+    needs_transfer = []
+    for host in hosts:
+        remote_id = remote_ids.get(host)
+        if remote_id == local_image_id:
+            logger.info("  %s: image up-to-date, skipping", host)
+        else:
+            if remote_id:
+                logger.info("  %s: image ID mismatch, will transfer", host)
+            else:
+                logger.info("  %s: image not present, will transfer", host)
+            needs_transfer.append(host)
+
+    if not needs_transfer:
+        logger.info("All %d host(s) already have the correct image", len(hosts))
+
+    return needs_transfer
+
+
+def distribute_image_from_local(
+    image: str,
+    hosts: list[str],
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    transfer_hosts: list[str] | None = None,
+) -> list[str]:
+    """Pull an image locally then stream it to all hosts via docker save/load.
+
+    1. Ensure the image exists on the local machine (pull if needed).
+    2. Hash check: compare local image ID with each remote host's and
+       skip hosts that already have the correct image.
+    3. For remaining hosts in parallel, run
+       ``docker save <image> | gzip | ssh host 'gunzip | docker load'``.
+
+    Args:
+        image: Container image reference.
+        hosts: Target hostnames or IPs (used for identification/reporting).
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        timeout: Per-host transfer timeout in seconds.
+        dry_run: If True, show what would be done without executing.
+        transfer_hosts: Optional IB/fast-network IPs to use for the actual
+            data transfer.  Must be same length as *hosts*.  When provided,
+            ``transfer_hosts[i]`` is used for SSH connections while
+            ``hosts[i]`` is used for identification and error reporting.
+            Falls back to *hosts* when ``None``.
+
+    Returns:
+        List of hostnames (from *hosts*) where distribution failed
+        (empty = full success).
+    """
+    logger.info("Distributing image '%s' from local to %d host(s)", image, len(hosts))
+
+    # Step 1: ensure image exists locally
+    rc = ensure_image(image, dry_run=dry_run)
+    if rc != 0:
+        logger.error("Failed to ensure local image '%s' — aborting distribution", image)
+        return list(hosts)
+
+    if not hosts:
+        return []
+
+    xfer = transfer_hosts or hosts
+
+    # Step 2: hash check — skip hosts that already have the correct image
+    local_id = get_image_id(image) if not dry_run else None
+
+    needs_transfer = _filter_hosts_needing_image(
+        image, xfer, local_id,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        dry_run=dry_run,
+    )
+
+    if not needs_transfer:
+        return []
+
+    # Step 3: stream to hosts that need it
+    local_cmd = f"docker save {image} | gzip"
+    remote_cmd = "gunzip | docker load"
+
+    results = run_pipeline_to_remotes_parallel(
+        needs_transfer, local_cmd, remote_cmd,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        timeout=timeout, dry_run=dry_run,
+    )
+
+    # Map transfer IPs back to management hosts for failure reporting
+    xfer_to_host = dict(zip(xfer, hosts))
+    failed = [xfer_to_host.get(r.host, r.host) for r in results if not r.success]
+    if failed:
+        logger.warning("Image distribution failed on hosts: %s", failed)
+    else:
+        logger.info("Image '%s' distributed to %d host(s)", image, len(needs_transfer))
+
+    return failed
+
+
+def distribute_image_from_head(
+    image: str,
+    hosts: list[str],
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    worker_transfer_hosts: list[str] | None = None,
+) -> list[str]:
+    """Pull an image on the head node then distribute to remaining hosts.
+
+    1. Pull the image on ``hosts[0]`` using the existing ``image_sync.sh``.
+    2. If there is only one host, done.
+    3. Run ``image_distribute.sh`` on ``hosts[0]`` to stream to ``hosts[1:]``.
+
+    Args:
+        image: Container image reference.
+        hosts: Cluster hostnames (``hosts[0]`` is the head).
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        timeout: Per-operation timeout in seconds.
+        dry_run: If True, show what would be done without executing.
+        worker_transfer_hosts: Optional IB/fast-network IPs for workers
+            (``hosts[1:]``).  Used as targets in the distribution script
+            running on the head.  Falls back to ``hosts[1:]`` when ``None``.
+
+    Returns:
+        List of hostnames where distribution failed (empty = full success).
+    """
+    if not hosts:
+        return []
+
+    head = hosts[0]
+    logger.info("Distributing image '%s' from head (%s) to %d host(s)",
+                image, head, len(hosts))
+
+    # Step 1: pull image on head
+    pull_script = read_script("image_sync.sh").format(image=image)
+    pull_result = run_remote_script(
+        head, pull_script,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        timeout=timeout, dry_run=dry_run,
+    )
+    if not pull_result.success:
+        logger.error("Failed to pull image on head %s", head)
+        return list(hosts)
+
+    # Step 2: if single host, we're done
+    if len(hosts) == 1:
+        logger.info("Single host — image pull complete")
+        return []
+
+    # Step 3: distribute from head to remaining hosts
+    targets = worker_transfer_hosts or hosts[1:]
+    ssh_opts = build_ssh_opts_string(
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+    )
+    dist_script = read_script("image_distribute.sh").format(
+        image=image,
+        targets=" ".join(targets),
+        ssh_opts=ssh_opts,
+        ssh_user=ssh_user or "",
+    )
+    dist_result = run_remote_script(
+        head, dist_script,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        timeout=timeout, dry_run=dry_run,
+    )
+
+    if dist_result.success:
+        logger.info("Image '%s' distributed from head to all targets", image)
+        return []
+
+    # Report using management hostnames
+    logger.warning("Image distribution from head failed (rc=%d)", dist_result.returncode)
+    return list(hosts[1:])

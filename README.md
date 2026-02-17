@@ -61,15 +61,15 @@ sparkrun run nemotron3-nano-30b-nvfp4-vllm
 ### Run an inference job
 
 ```bash
-# Single node
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --solo
+# Single node vLLM (Note that minimum nodes / parallelism is configured by the recipe)
+sparkrun run qwen3-1.7b-vllm
 
-# Multi-node (2-node tensor parallel) -- using your default cluster
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+# Multi-node (2-node tensor parallel) -- using your default two node cluster
+sparkrun run qwen3-1.7b-vllm --tp 2
 
 # Override settings on the fly
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13 --port 9000 --gpu-mem 0.9
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+sparkrun run qwen3-1.7b-vllm --hosts 192.168.11.14 --port 9000 --gpu-mem 0.8
+sparkrun run qwen3-1.7b-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
 
 # GGUF quantized models via llama.cpp
 sparkrun run qwen3-1.7b-llama-cpp

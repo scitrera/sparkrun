@@ -512,7 +512,7 @@ class SglangRuntime(RuntimePlugin):
         logger.info("Nodes: %d", len(hosts))
         logger.info("")
         logger.info("To view head logs:")
-        logger.info("  sparkrun log <recipe> --hosts %s", ",".join(hosts))
+        logger.info("  sparkrun logs <recipe> --hosts %s", ",".join(hosts))
         logger.info("")
         logger.info("To stop cluster:")
         logger.info("  sparkrun stop <recipe> --hosts %s", ",".join(hosts))

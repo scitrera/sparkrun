@@ -130,10 +130,17 @@ sparkrun search qwen3
 
 ```bash
 # Re-attach to logs (Ctrl+C is always safe) -- NOTE: finds cluster by combination of hosts, model, and runtime
-sparkrun log nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+sparkrun logs nemotron3-nano-30b-nvfp4-vllm --cluster mylab
 
 # Stop a workload -- NOTE: finds cluster by combination of hosts, model, and runtime
 sparkrun stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+
+# If you launched with --tp (modifying the recipe default), e.g.:
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+# then pass --tp so stop/logs resolve the same cluster ID as run:
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm --tp 2
+sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
+# TIP: you can just press up and modify "run" to "stop"
 ```
 
 ## Supported Runtimes
@@ -230,7 +237,7 @@ Any default can be overridden at launch time with `-o key=value` or dedicated fl
 |-----------------------------------|------------------------------------------|
 | `sparkrun run <recipe>`           | Launch an inference workload             |
 | `sparkrun stop <recipe>`          | Stop a running workload                  |
-| `sparkrun log <recipe>`           | Re-attach to workload logs               |
+| `sparkrun logs <recipe>`          | Re-attach to workload logs               |
 | `sparkrun list`                   | List available recipes                   |
 | `sparkrun show <recipe>`          | Show recipe details + VRAM estimate      |
 | `sparkrun search <query>`         | Search recipes by name/model/description |

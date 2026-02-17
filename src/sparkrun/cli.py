@@ -63,6 +63,49 @@ def _get_config_and_registry(config_path=None):
     return config, registry_mgr
 
 
+def _apply_tp_trimming(
+        host_list: list[str],
+        recipe,
+        overrides: dict | None = None,
+        tp_override: int | None = None,
+) -> list[str]:
+    """Trim host list to match tensor_parallel if TP < host count.
+
+    Used by run, stop, and log to ensure they all derive the same
+    effective host list (and therefore the same cluster_id).
+
+    Args:
+        host_list: Resolved hosts.
+        recipe: Loaded recipe (used for defaults).
+        overrides: Optional CLI overrides (from --option).
+        tp_override: Explicit --tp value (takes precedence).
+
+    Returns:
+        Possibly trimmed host list.
+    """
+    if len(host_list) <= 1:
+        return host_list
+
+    if tp_override is not None:
+        effective_tp = tp_override
+    else:
+        config_chain = recipe.build_config_chain(overrides or {})
+        tp_val = config_chain.get("tensor_parallel")
+        if tp_val is None:
+            return host_list
+        effective_tp = int(tp_val)
+
+    if effective_tp >= len(host_list):
+        return host_list
+
+    trimmed = host_list[:effective_tp]
+    logger.info(
+        "tensor_parallel=%d < %d hosts; using first %d: %s",
+        effective_tp, len(host_list), effective_tp, ", ".join(trimmed),
+    )
+    return trimmed
+
+
 class RecipeNameType(click.ParamType):
     """Click parameter type with shell completion for recipe names."""
 
@@ -291,16 +334,12 @@ def run(
                 )
                 sys.exit(1)
             elif effective_tp < len(host_list):
-                trimmed = host_list[:effective_tp]
-                logger.info(
-                    "tensor_parallel=%d < %d hosts; using first %d: %s",
-                    effective_tp, len(host_list), effective_tp, ", ".join(trimmed),
-                )
+                original_count = len(host_list)
+                host_list = _apply_tp_trimming(host_list, recipe, overrides)
                 click.echo(
                     "Note: tensor_parallel=%d, using %d of %d hosts"
-                    % (effective_tp, effective_tp, len(host_list))
+                    % (effective_tp, effective_tp, original_count)
                 )
-                host_list = trimmed
 
     # Derive deterministic cluster_id from recipe + hosts
     from sparkrun.orchestration.docker import generate_cluster_id
@@ -656,10 +695,11 @@ def setup_install(ctx, shell):
 @click.option("--hosts", "-H", default=None, help="Comma-separated host list")
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None, help="Tensor parallel (to match host trimming from run)")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path=None, ):
+def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run, config_path=None):
     """Stop a running workload.
 
     RECIPE_NAME identifies the recipe so the correct containers can be found.
@@ -701,6 +741,9 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
         sys.exit(1)
 
+    # Apply TP-based host trimming to match what 'run' used for cluster_id
+    host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
+
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
     from sparkrun.orchestration.docker import generate_container_name, generate_cluster_id
 
@@ -728,24 +771,25 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path
     sys.exit(0)
 
 
-@main.command()
+@main.command("logs")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--hosts", "-H", default=None, help="Comma-separated host list")
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None, help="Tensor parallel (to match host trimming from run)")
 @click.option("--tail", type=int, default=100, help="Number of log lines before following")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def log(ctx, recipe_name, hosts, hosts_file, cluster_name, tail, config_path=None):
+def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tail, config_path=None):
     """Re-attach to logs of a running workload.
 
     RECIPE_NAME identifies the recipe so the correct containers can be found.
 
     Examples:
 
-      sparkrun log glm-4.7-flash-awq --hosts 192.168.11.13
+      sparkrun logs glm-4.7-flash-awq --hosts 192.168.11.13
 
-      sparkrun log glm-4.7-flash-awq --cluster mylab --tail 200
+      sparkrun logs glm-4.7-flash-awq --cluster mylab --tail 200
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.config import SparkrunConfig
@@ -782,6 +826,9 @@ def log(ctx, recipe_name, hosts, hosts_file, cluster_name, tail, config_path=Non
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
         sys.exit(1)
+
+    # Apply TP-based host trimming to match what 'run' used for cluster_id
+    host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
 
     cluster_id = generate_cluster_id(recipe, host_list)
 

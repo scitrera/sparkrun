@@ -53,7 +53,7 @@ class TestVersionAndHelp:
         assert "show" in result.output
         assert "search" in result.output
         assert "stop" in result.output
-        assert "log" in result.output
+        assert "logs" in result.output
 
     def test_run_help(self, runner):
         """Test that sparkrun run --help shows run command help."""
@@ -694,21 +694,21 @@ class TestFollowLogs:
 
 
 class TestLogCommand:
-    """Test the log command."""
+    """Test the logs command."""
 
     def test_log_help(self, runner):
-        """Test that sparkrun log --help shows relevant options."""
-        result = runner.invoke(main, ["log", "--help"])
+        """Test that sparkrun logs --help shows relevant options."""
+        result = runner.invoke(main, ["logs", "--help"])
         assert result.exit_code == 0
         assert "--tail" in result.output
         assert "--hosts" in result.output
         assert "RECIPE_NAME" in result.output
 
     def test_log_calls_follow_logs(self, runner, reset_bootstrap):
-        """sparkrun log calls runtime.follow_logs with correct args."""
+        """sparkrun logs calls runtime.follow_logs with correct args."""
         with mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
-                "log",
+                "logs",
                 "qwen3-coder-next-fp8-sglang-cluster",
                 "--hosts", "localhost",
                 "--tail", "50",
@@ -721,14 +721,14 @@ class TestLogCommand:
             assert call_kwargs["tail"] == 50
 
     def test_log_no_hosts_error(self, runner, reset_bootstrap, tmp_path, monkeypatch):
-        """sparkrun log with no hosts exits with error."""
+        """sparkrun logs with no hosts exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
         import sparkrun.config
         monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
-            "log",
+            "logs",
             "qwen3-coder-next-fp8-sglang-cluster",
         ])
 
@@ -736,9 +736,9 @@ class TestLogCommand:
         assert "hosts" in result.output.lower() or "Error" in result.output
 
     def test_log_nonexistent_recipe(self, runner, reset_bootstrap):
-        """sparkrun log with bad recipe exits with error."""
+        """sparkrun logs with bad recipe exits with error."""
         result = runner.invoke(main, [
-            "log",
+            "logs",
             "nonexistent-recipe",
             "--hosts", "localhost",
         ])

@@ -1,0 +1,28 @@
+model: Qwen/Qwen3-1.7B
+runtime: vllm
+min_nodes: 1
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+
+metadata:
+  description: Qwen3 1.7B -- small test model, solo or cluster
+  maintainer: scitrera.ai <open-source-team@scitrera.com>
+  model_params: 1.7B
+  model_dtype: bf16
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.3
+  served_model_name: qwen3-1.7b
+
+command: |
+  vllm serve \
+      {model} \
+      --served-model-name {served_model_name} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      -tp {tensor_parallel} \
+      --host {host} \
+      --port {port} \
+      --reasoning-parser deepseek_r1 \
+      --trust-remote-code

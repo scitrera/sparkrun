@@ -105,6 +105,7 @@ class VllmRuntime(RuntimePlugin):
         """Return vLLM-specific cluster environment variables."""
         return {
             "RAY_memory_monitor_refresh_ms": "0",
+            "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
         }
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
@@ -426,7 +427,7 @@ class VllmRuntime(RuntimePlugin):
     ):
         host_list = ",".join([head_host] + worker_hosts)
         logger.info("=" * 60)
-        logger.info("To view logs:    sparkrun log <recipe> --hosts %s", host_list)
+        logger.info("To view logs:    sparkrun logs <recipe> --hosts %s", host_list)
         logger.info("To stop cluster: sparkrun stop <recipe> --hosts %s", host_list)
         logger.info("Dashboard:       http://%s:%d", head_ip, dashboard_port)
         logger.info("=" * 60)

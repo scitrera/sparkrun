@@ -61,6 +61,9 @@ class VllmRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            # Ensure --distributed-executor-backend ray is present for cluster mode
+            if is_cluster and "--distributed-executor-backend" not in rendered:
+                rendered = rendered.rstrip() + " --distributed-executor-backend ray"
             return rendered
 
         # Otherwise, build command from structured defaults
@@ -102,6 +105,7 @@ class VllmRuntime(RuntimePlugin):
         """Return vLLM-specific cluster environment variables."""
         return {
             "RAY_memory_monitor_refresh_ms": "0",
+            "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
         }
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
@@ -110,6 +114,39 @@ class VllmRuntime(RuntimePlugin):
         if not recipe.model:
             issues.append("[vllm] model is required")
         return issues
+
+    # --- Log following ---
+
+    def follow_logs(
+        self,
+        hosts: list[str],
+        cluster_id: str = "sparkrun0",
+        config=None,
+        dry_run: bool = False,
+        tail: int = 100,
+    ) -> None:
+        """Follow serve logs — solo or Ray cluster head.
+
+        vLLM containers run ``sleep infinity`` and the serve command is
+        exec'd inside with output to ``/tmp/sparkrun_serve.log``.
+        ``docker logs`` would only show the container entrypoint output,
+        so we tail the serve log file inside the container instead.
+        """
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+        from sparkrun.orchestration.docker import generate_container_name
+        from sparkrun.orchestration.ssh import stream_container_file_logs
+
+        if len(hosts) <= 1:
+            host = hosts[0] if hosts else "localhost"
+            container_name = generate_container_name(cluster_id, "solo")
+        else:
+            host = hosts[0]
+            container_name = generate_container_name(cluster_id, "head")
+
+        ssh_kwargs = build_ssh_kwargs(config)
+        stream_container_file_logs(
+            host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
+        )
 
     # --- Launch / Stop ---
 
@@ -128,6 +165,7 @@ class VllmRuntime(RuntimePlugin):
         dry_run: bool = False,
         detached: bool = True,
         skip_ib_detect: bool = False,
+        nccl_env: dict[str, str] | None = None,
         ray_port: int = 46379,
         dashboard_port: int = 8265,
         dashboard: bool = False,
@@ -145,14 +183,15 @@ class VllmRuntime(RuntimePlugin):
                 image=image, serve_command=serve_command,
                 cluster_id=cluster_id, env=env, cache_dir=cache_dir,
                 config=config, dry_run=dry_run, detached=detached,
-                skip_ib_detect=skip_ib_detect,
+                skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
             )
 
         return self._run_ray_cluster(
             hosts=hosts, image=image, serve_command=serve_command,
             cluster_id=cluster_id, env=env, cache_dir=cache_dir,
             config=config, dry_run=dry_run, detached=detached,
-            skip_ib_detect=skip_ib_detect, ray_port=ray_port,
+            skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
+            ray_port=ray_port,
             dashboard_port=dashboard_port, dashboard=dashboard,
         )
 
@@ -199,6 +238,7 @@ class VllmRuntime(RuntimePlugin):
         ray_port: int,
         dashboard_port: int,
         dashboard: bool,
+        nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
 
@@ -248,10 +288,12 @@ class VllmRuntime(RuntimePlugin):
         )
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)
 
-        # Step 2: InfiniBand detection
+        # Step 2: InfiniBand detection (skip if pre-detected nccl_env provided)
         t0 = time.monotonic()
-        nccl_env: dict[str, str] = {}
-        if not skip_ib_detect:
+        if nccl_env is not None:
+            logger.info("Step 2/5: Using pre-detected NCCL env (%d vars)", len(nccl_env))
+        elif not skip_ib_detect:
+            nccl_env = {}
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             nccl_env = detect_infiniband(
                 hosts, head_host=head_host,
@@ -259,6 +301,7 @@ class VllmRuntime(RuntimePlugin):
             )
             logger.info("Step 2/5: IB detection done (%.1fs)", time.monotonic() - t0)
         else:
+            nccl_env = {}
             logger.info("Step 2/5: Skipping InfiniBand detection")
 
         # Step 3: Launch Ray head
@@ -382,14 +425,9 @@ class VllmRuntime(RuntimePlugin):
         head_host, head_ip, head_container,
         worker_hosts, worker_container, dashboard_port,
     ):
+        host_list = ",".join([head_host] + worker_hosts)
         logger.info("=" * 60)
-        logger.info(
-            "To view logs:    ssh %s 'docker exec %s tail -f /tmp/sparkrun_serve.log'",
-            head_host, head_container,
-        )
-        logger.info(
-            "To stop cluster: sparkrun stop --hosts %s --cluster-id ...",
-            ",".join([head_host] + worker_hosts),
-        )
+        logger.info("To view logs:    sparkrun logs <recipe> --hosts %s", host_list)
+        logger.info("To stop cluster: sparkrun stop <recipe> --hosts %s", host_list)
         logger.info("Dashboard:       http://%s:%d", head_ip, dashboard_port)
         logger.info("=" * 60)

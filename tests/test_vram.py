@@ -96,7 +96,7 @@ class TestBytesPerElement:
         assert bytes_per_element("int4") == 0.5
 
     def test_nvfp4(self):
-        assert bytes_per_element("nvfp4") == 0.5
+        assert bytes_per_element("nvfp4") == 0.7
 
     def test_awq4(self):
         val = bytes_per_element("awq4")

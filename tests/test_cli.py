@@ -51,8 +51,9 @@ class TestVersionAndHelp:
         assert "run" in result.output
         assert "list" in result.output
         assert "show" in result.output
-        assert "validate" in result.output
+        assert "search" in result.output
         assert "stop" in result.output
+        assert "logs" in result.output
 
     def test_run_help(self, runner):
         """Test that sparkrun run --help shows run command help."""
@@ -62,6 +63,7 @@ class TestVersionAndHelp:
         assert "--solo" in result.output
         assert "--hosts" in result.output
         assert "--dry-run" in result.output
+        assert "--cluster-id" not in result.output
 
 
 class TestListCommand:
@@ -72,7 +74,7 @@ class TestListCommand:
         result = runner.invoke(main, ["list"])
         assert result.exit_code == 0
         output_lower = result.output.lower()
-        assert "qwen3-coder-sglang-tp2" in output_lower
+        assert "qwen3-coder-next-fp8-sglang-cluster" in output_lower
 
     def test_list_table_format(self, runner):
         """Test that list output has header with Name, Runtime, File columns."""
@@ -91,7 +93,7 @@ class TestShowCommand:
 
     def test_show_recipe(self, runner):
         """Test that sparkrun show displays recipe details with VRAM."""
-        result = runner.invoke(main, ["show", "qwen3-coder-sglang-tp2"])
+        result = runner.invoke(main, ["show", "qwen3-coder-next-fp8-sglang-cluster"])
         assert result.exit_code == 0
         # Check for recipe detail fields
         assert "Name:" in result.output
@@ -115,8 +117,8 @@ class TestVramCommand:
     """Test the vram command."""
 
     def test_vram_recipe(self, runner):
-        """Test sparkrun vram shows estimation."""
-        result = runner.invoke(main, ["vram", "qwen3-coder-sglang-tp2", "--no-auto-detect"])
+        """Test sparkrun recipe vram shows estimation."""
+        result = runner.invoke(main, ["recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster", "--no-auto-detect"])
         assert result.exit_code == 0
         assert "VRAM Estimation" in result.output
         assert "Model weights:" in result.output
@@ -124,9 +126,9 @@ class TestVramCommand:
         assert "DGX Spark fit:" in result.output
 
     def test_vram_with_gpu_mem(self, runner):
-        """Test sparkrun vram with --gpu-mem shows budget analysis."""
+        """Test sparkrun recipe vram with --gpu-mem shows budget analysis."""
         result = runner.invoke(main, [
-            "vram", "qwen3-coder-sglang-tp2",
+            "recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster",
             "--no-auto-detect",
             "--gpu-mem", "0.9",
         ])
@@ -136,9 +138,9 @@ class TestVramCommand:
         assert "Available for KV" in result.output
 
     def test_vram_with_tp(self, runner):
-        """Test sparkrun vram with --tp override."""
+        """Test sparkrun recipe vram with --tp override."""
         result = runner.invoke(main, [
-            "vram", "qwen3-coder-sglang-tp2",
+            "recipe", "vram", "qwen3-coder-next-fp8-sglang-cluster",
             "--no-auto-detect",
             "--tp", "4",
         ])
@@ -146,14 +148,14 @@ class TestVramCommand:
         assert "Tensor parallel:  4" in result.output
 
     def test_vram_nonexistent_recipe(self, runner):
-        """Test sparkrun vram on nonexistent recipe exits with error."""
-        result = runner.invoke(main, ["vram", "nonexistent-recipe"])
+        """Test sparkrun recipe vram on nonexistent recipe exits with error."""
+        result = runner.invoke(main, ["recipe", "vram", "nonexistent-recipe"])
         assert result.exit_code != 0
         assert "Error" in result.output
 
     def test_show_no_vram_flag(self, runner):
         """Test sparkrun show --no-vram suppresses VRAM estimation."""
-        result = runner.invoke(main, ["show", "qwen3-coder-sglang-tp2", "--no-vram"])
+        result = runner.invoke(main, ["show", "qwen3-coder-next-fp8-sglang-cluster", "--no-vram"])
         assert result.exit_code == 0
         assert "VRAM Estimation" not in result.output
 
@@ -162,14 +164,14 @@ class TestValidateCommand:
     """Test the validate command."""
 
     def test_validate_valid_recipe(self, runner, reset_bootstrap):
-        """Test that sparkrun validate exits 0 with 'is valid' message."""
-        result = runner.invoke(main, ["validate", "qwen3-coder-sglang-tp2"])
+        """Test that sparkrun recipe validate exits 0 with 'is valid' message."""
+        result = runner.invoke(main, ["recipe", "validate", "qwen3-coder-next-fp8-sglang-cluster"])
         assert result.exit_code == 0
         assert "is valid" in result.output
 
     def test_validate_nonexistent_recipe(self, runner, reset_bootstrap):
-        """Test that sparkrun validate nonexistent-recipe exits with error."""
-        result = runner.invoke(main, ["validate", "nonexistent-recipe"])
+        """Test that sparkrun recipe validate nonexistent-recipe exits with error."""
+        result = runner.invoke(main, ["recipe", "validate", "nonexistent-recipe"])
         assert result.exit_code != 0
         assert "Error" in result.output
 
@@ -186,7 +188,7 @@ class TestRunCommand:
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "qwen3-coder-sglang-tp2",
+                "qwen3-coder-next-fp8-sglang-cluster",
                 "--solo",
                 "--dry-run",
                 "--hosts",
@@ -205,6 +207,9 @@ class TestRunCommand:
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["dry_run"] is True
+            # Cluster ID should be deterministic, not the old default
+            assert call_kwargs["cluster_id"].startswith("sparkrun_")
+            assert call_kwargs["cluster_id"] != "sparkrun0"
 
     def test_run_nonexistent_recipe(self, runner, reset_bootstrap):
         """Test that sparkrun run nonexistent-recipe --solo --dry-run exits with error."""
@@ -229,7 +234,10 @@ class TestStopCommand:
         import sparkrun.config
         monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        result = runner.invoke(main, ["stop"])
+        result = runner.invoke(main, [
+            "stop",
+            "qwen3-coder-next-fp8-sglang-cluster",
+        ])
 
         assert result.exit_code != 0
         # Check error message mentions hosts
@@ -408,11 +416,11 @@ class TestTensorParallelValidation:
 
     def test_tp_exceeds_hosts_errors(self, runner, reset_bootstrap):
         """tensor_parallel > number of hosts should exit with error."""
-        # qwen3-coder-sglang-tp2 has defaults.tensor_parallel=2
+        # qwen3-coder-next-fp8-sglang-cluster has defaults.tensor_parallel=2
         # Provide only 1 host (not --solo) so we hit the validation
         result = runner.invoke(main, [
             "run",
-            "qwen3-coder-sglang-tp2",
+            "qwen3-coder-next-fp8-sglang-cluster",
             "--dry-run",
             "--tp", "4",
             "--hosts", "10.0.0.1,10.0.0.2,10.0.0.3",
@@ -427,7 +435,7 @@ class TestTensorParallelValidation:
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "qwen3-coder-sglang-tp2",
+                "qwen3-coder-next-fp8-sglang-cluster",
                 "--dry-run",
                 "--hosts", "10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4",
             ])
@@ -446,7 +454,7 @@ class TestTensorParallelValidation:
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "qwen3-coder-sglang-tp2",
+                "qwen3-coder-next-fp8-sglang-cluster",
                 "--dry-run",
                 "--hosts", "10.0.0.1,10.0.0.2",
             ])
@@ -463,7 +471,7 @@ class TestTensorParallelValidation:
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "qwen3-coder-sglang-tp2",
+                "qwen3-coder-next-fp8-sglang-cluster",
                 "--tp", "1",
                 "--dry-run",
                 "--hosts", "10.0.0.1,10.0.0.2",
@@ -480,7 +488,7 @@ class TestTensorParallelValidation:
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "qwen3-coder-sglang-tp2",
+                "qwen3-coder-next-fp8-sglang-cluster",
                 "--solo",
                 "--dry-run",
                 "--hosts", "10.0.0.1",
@@ -490,3 +498,250 @@ class TestTensorParallelValidation:
             # No trimming or error messages
             assert "tensor_parallel=" not in result.output
             mock_run.assert_called_once()
+
+
+class TestOptionOverrides:
+    """Test --option / -o arbitrary parameter overrides."""
+
+    def test_help_shows_option(self, runner):
+        """sparkrun run --help shows --option / -o."""
+        result = runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--option" in result.output
+        assert "-o" in result.output
+
+    def test_option_overrides_recipe_default(self, runner, reset_bootstrap):
+        """--option overrides a recipe default value."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "attention_backend=flashinfer",
+            ])
+
+            assert result.exit_code == 0
+            # The overrides should contain the option value
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["overrides"]["attention_backend"] == "flashinfer"
+
+    def test_option_multiple(self, runner, reset_bootstrap):
+        """Multiple -o flags accumulate."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "attention_backend=triton",
+                "-o", "max_model_len=4096",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["overrides"]["attention_backend"] == "triton"
+            assert call_kwargs["overrides"]["max_model_len"] == 4096  # auto-coerced to int
+
+    def test_dedicated_cli_param_overrides_option(self, runner, reset_bootstrap):
+        """--port takes priority over -o port=XXXX."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "port=9999",
+                "--port", "8080",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            # --port should win over -o port=
+            assert call_kwargs["overrides"]["port"] == 8080
+
+    def test_option_coerces_types(self, runner, reset_bootstrap):
+        """Values are auto-coerced: int, float, bool."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "port=8000",
+                "-o", "gpu_memory_utilization=0.85",
+                "-o", "enforce_eager=true",
+                "-o", "served_model_name=my-model",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            ovr = call_kwargs["overrides"]
+            assert ovr["port"] == 8000
+            assert isinstance(ovr["port"], int)
+            assert ovr["gpu_memory_utilization"] == 0.85
+            assert isinstance(ovr["gpu_memory_utilization"], float)
+            assert ovr["enforce_eager"] is True
+            assert ovr["served_model_name"] == "my-model"
+
+    def test_option_bad_format_errors(self, runner, reset_bootstrap):
+        """--option without = sign exits with error."""
+        result = runner.invoke(main, [
+            "run",
+            "qwen3-coder-next-fp8-sglang-cluster",
+            "--solo",
+            "--dry-run",
+            "--hosts", "localhost",
+            "-o", "bad_no_equals",
+        ])
+
+        assert result.exit_code != 0
+        assert "must be key=value" in result.output
+
+
+class TestFollowLogs:
+    """Test --no-follow flag and follow_logs integration."""
+
+    def test_run_help_shows_no_follow(self, runner):
+        """sparkrun run --help shows --no-follow option."""
+        result = runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--no-follow" in result.output
+
+    def test_follow_logs_called_after_successful_run(self, runner, reset_bootstrap):
+        """follow_logs is called after a successful detached run."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0), \
+             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--hosts", "localhost",
+            ])
+
+            assert result.exit_code == 0
+            mock_follow.assert_called_once()
+            call_kwargs = mock_follow.call_args.kwargs
+            assert call_kwargs["cluster_id"].startswith("sparkrun_")
+            assert call_kwargs["dry_run"] is False
+
+    def test_no_follow_flag_skips_follow_logs(self, runner, reset_bootstrap):
+        """--no-follow prevents follow_logs from being called."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0), \
+             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--no-follow",
+                "--hosts", "localhost",
+            ])
+
+            assert result.exit_code == 0
+            mock_follow.assert_not_called()
+
+    def test_dry_run_skips_follow_logs(self, runner, reset_bootstrap):
+        """--dry-run prevents follow_logs from being called."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0), \
+             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+            ])
+
+            assert result.exit_code == 0
+            mock_follow.assert_not_called()
+
+    def test_foreground_skips_follow_logs(self, runner, reset_bootstrap):
+        """--foreground prevents follow_logs from being called."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0), \
+             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--foreground",
+                "--hosts", "localhost",
+            ])
+
+            assert result.exit_code == 0
+            mock_follow.assert_not_called()
+
+    def test_nonzero_exit_skips_follow_logs(self, runner, reset_bootstrap):
+        """Non-zero exit code from runtime.run() prevents follow_logs."""
+        with mock.patch.object(SglangRuntime, "run", return_value=1), \
+             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--hosts", "localhost",
+            ])
+
+            assert result.exit_code == 1
+            mock_follow.assert_not_called()
+
+
+class TestLogCommand:
+    """Test the logs command."""
+
+    def test_log_help(self, runner):
+        """Test that sparkrun logs --help shows relevant options."""
+        result = runner.invoke(main, ["logs", "--help"])
+        assert result.exit_code == 0
+        assert "--tail" in result.output
+        assert "--hosts" in result.output
+        assert "RECIPE_NAME" in result.output
+
+    def test_log_calls_follow_logs(self, runner, reset_bootstrap):
+        """sparkrun logs calls runtime.follow_logs with correct args."""
+        with mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, [
+                "logs",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--hosts", "localhost",
+                "--tail", "50",
+            ])
+
+            assert result.exit_code == 0
+            mock_follow.assert_called_once()
+            call_kwargs = mock_follow.call_args.kwargs
+            assert call_kwargs["cluster_id"].startswith("sparkrun_")
+            assert call_kwargs["tail"] == 50
+
+    def test_log_no_hosts_error(self, runner, reset_bootstrap, tmp_path, monkeypatch):
+        """sparkrun logs with no hosts exits with error."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, [
+            "logs",
+            "qwen3-coder-next-fp8-sglang-cluster",
+        ])
+
+        assert result.exit_code != 0
+        assert "hosts" in result.output.lower() or "Error" in result.output
+
+    def test_log_nonexistent_recipe(self, runner, reset_bootstrap):
+        """sparkrun logs with bad recipe exits with error."""
+        result = runner.invoke(main, [
+            "logs",
+            "nonexistent-recipe",
+            "--hosts", "localhost",
+        ])
+
+        assert result.exit_code != 0
+        assert "Error" in result.output

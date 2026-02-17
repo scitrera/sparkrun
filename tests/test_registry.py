@@ -117,13 +117,25 @@ class TestDefaultRegistries:
         assert len(DEFAULT_REGISTRIES) >= 1
         official = DEFAULT_REGISTRIES[0]
         assert official.name == "sparkrun-official"
-        assert "github.com" in official.url
+        assert "github.com/scitrera/oss-spark-run" in official.url
         assert official.enabled is True
+
+    def test_has_eugr_vllm_registry(self):
+        """Test that DEFAULT_REGISTRIES includes the eugr-vllm registry."""
+        assert len(DEFAULT_REGISTRIES) >= 2
+        eugr = DEFAULT_REGISTRIES[1]
+        assert eugr.name == "eugr-vllm"
+        assert "github.com/eugr/spark-vllm-docker" in eugr.url
+        assert eugr.enabled is True
+
+    def test_only_two_default_registries(self):
+        """Test that there are exactly two default registries."""
+        assert len(DEFAULT_REGISTRIES) == 2
 
     def test_official_registry_subpath(self):
         """Test the sparkrun-official registry subpath."""
         official = DEFAULT_REGISTRIES[0]
-        assert "recipes" in official.subpath
+        assert official.subpath == "recipes"
 
 
 class TestRegistryManagerInit:

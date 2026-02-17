@@ -20,10 +20,29 @@ logger = logging.getLogger(__name__)
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
     "runtime", "runtime_version", "mode", "min_nodes", "max_nodes",
-    "container", "defaults", "env", "command", "runtime_settings", "extra",
+    "container", "defaults", "env", "command", "runtime_config",
     "cluster_only", "solo_only",
     "metadata",
 }
+
+
+def _effective_runtime(data: dict[str, Any]) -> str:
+    """Determine the effective runtime from raw recipe data.
+
+    Detects eugr-vllm recipes via two signals:
+    1. ``recipe_version: "1"`` — the eugr native format.
+    2. Presence of ``build_args`` or ``mods`` keys — eugr-specific fields
+       that are a dead giveaway even without an explicit version declaration.
+    """
+    runtime = data.get("runtime", "vllm")
+    if runtime != "vllm":
+        return runtime
+    version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
+    if version == "1":
+        return "eugr-vllm"
+    if data.get("build_args") or data.get("mods"):
+        return "eugr-vllm"
+    return runtime
 
 
 class RecipeError(Exception):
@@ -67,9 +86,6 @@ class Recipe:
         self.env: dict[str, str] = {str(k): str(v) for k, v in data.get("env", {}).items()}
         self.command: str | None = data.get("command")
 
-        # Runtime-specific settings (extra is deprecated name, runtime_settings is preferred)
-        self.runtime_settings: dict[str, Any] = dict(data.get("runtime_settings", data.get("extra", {})))
-
         # Metadata section (v2 extension for VRAM estimation, model info)
         raw_metadata = data.get("metadata", {})
         self.metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
@@ -87,14 +103,23 @@ class Recipe:
         # Maintainer (metadata-only field)
         self.maintainer: str = str(self.metadata.get("maintainer", ""))
 
-        # Auto-sweep unknown top-level keys into runtime_config
-        self.runtime_config: dict[str, Any] = {
-            k: v for k, v in data.items() if k not in _KNOWN_KEYS
-        }
+        # Runtime-specific config: explicit runtime_config key takes priority,
+        # then unknown top-level keys are auto-swept in.
+        self.runtime_config: dict[str, Any] = dict(data.get("runtime_config", {}))
+        for k, v in data.items():
+            if k not in _KNOWN_KEYS and k not in self.runtime_config:
+                self.runtime_config[k] = v
 
         # v1 compatibility migration
         if self.sparkrun_version == "1":
             self._migrate_v1(data)
+
+        # build_args / mods are eugr-specific fields — a dead giveaway
+        # even without an explicit v1 declaration
+        if self.runtime == "vllm" and (
+            self.runtime_config.get("build_args") or self.runtime_config.get("mods")
+        ):
+            self.runtime = "eugr-vllm"
 
         # Handle solo_only/cluster_only as first-class fields (works for both v1 and v2)
         if data.get("cluster_only"):
@@ -105,11 +130,15 @@ class Recipe:
             self.mode = "solo"
 
     def _migrate_v1(self, data: dict[str, Any]):
-        """Map eugr v1 recipe fields to v2 schema."""
+        """Map eugr v1 recipe fields to v2 schema.
+
+        The v1 format is the eugr/spark-vllm-docker native format.
+        Recipes declaring ``recipe_version: "1"`` with a vllm target
+        should use the ``eugr-vllm`` runtime which delegates to eugr's
+        own scripts and container builds.
+        """
         if not self.runtime or self.runtime == "vllm":
-            # Check runtime_config for eugr-specific fields (build_args, mods)
-            if self.runtime_config.get("build_args") or self.runtime_config.get("mods"):
-                self.runtime = "eugr-vllm"
+            self.runtime = "eugr-vllm"
 
     @property
     def slug(self) -> str:
@@ -385,7 +414,7 @@ def list_recipes(search_paths: list[Path] | None = None,
                         "name": data.get("name", stem) if isinstance(data, dict) else stem,
                         "file": stem,
                         "path": str(f),
-                        "runtime": data.get("runtime", "vllm") if isinstance(data, dict) else "unknown",
+                        "runtime": _effective_runtime(data) if isinstance(data, dict) else "unknown",
                     }
                     if registry_name:
                         entry["registry"] = registry_name

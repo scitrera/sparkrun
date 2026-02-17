@@ -62,11 +62,12 @@ def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
     assert recipe.runtime_config["mods"] == ["mod1.patch"]
 
 
-def test_load_v1_recipe_no_mods_stays_vllm(tmp_recipe_dir: Path):
-    """Load a v1 recipe without mods and verify runtime stays as vllm.
+def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
+    """Load a v1 recipe without mods and verify runtime is eugr-vllm.
 
-    Tests that v1 recipes without eugr-specific features (build_args, mods)
-    remain as the standard vllm runtime.
+    The v1 format is the eugr native format, so all v1 vllm recipes
+    should resolve to eugr-vllm regardless of whether build_args or
+    mods are present.
     """
     recipe_path = tmp_recipe_dir / "test-plain-v1.yaml"
     recipe = Recipe.load(recipe_path)
@@ -75,8 +76,8 @@ def test_load_v1_recipe_no_mods_stays_vllm(tmp_recipe_dir: Path):
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.sparkrun_version == "1"
 
-    # Should stay vllm (no build_args or mods)
-    assert recipe.runtime == "vllm"
+    # v1 format always maps to eugr-vllm
+    assert recipe.runtime == "eugr-vllm"
 
     # No runtime_config should be set for these keys
     assert recipe.runtime_config.get("build_args", []) == []
@@ -416,26 +417,26 @@ def test_recipe_runtime_config_catchall():
     assert "model" not in recipe.runtime_config
 
 
-def test_recipe_runtime_settings_from_extra():
-    """Test backward compatibility: 'extra' key maps to runtime_settings."""
+def test_recipe_runtime_config_explicit_key():
+    """Test that explicit runtime_config YAML key is loaded."""
     recipe = Recipe.from_dict({
         "name": "Test",
         "model": "test-model",
-        "extra": {"build_args": ["arg1"], "custom": "val"},
+        "runtime_config": {"build_args": ["arg1"], "custom": "val"},
     })
-    assert recipe.runtime_settings["build_args"] == ["arg1"]
-    assert recipe.runtime_settings["custom"] == "val"
+    assert recipe.runtime_config["build_args"] == ["arg1"]
+    assert recipe.runtime_config["custom"] == "val"
 
 
-def test_recipe_runtime_settings_preferred_over_extra():
-    """Test that runtime_settings takes precedence over extra."""
+def test_recipe_runtime_config_explicit_over_sweep():
+    """Test that explicit runtime_config takes precedence over auto-swept keys."""
     recipe = Recipe.from_dict({
         "name": "Test",
         "model": "test-model",
-        "runtime_settings": {"key": "from_settings"},
-        "extra": {"key": "from_extra"},
+        "runtime_config": {"custom_field": "from_config"},
+        "custom_field": "from_toplevel",
     })
-    assert recipe.runtime_settings["key"] == "from_settings"
+    assert recipe.runtime_config["custom_field"] == "from_config"
 
 
 def test_recipe_solo_only_v2():

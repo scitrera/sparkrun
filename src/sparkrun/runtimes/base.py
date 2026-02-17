@@ -155,6 +155,41 @@ class RuntimePlugin(Plugin):
         """
         return False
 
+    # --- Log following interface ---
+
+    def follow_logs(
+        self,
+        hosts: list[str],
+        cluster_id: str = "sparkrun0",
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        tail: int = 100,
+    ) -> None:
+        """Follow container logs after a successful launch.
+
+        The default implementation follows the solo container on the
+        first host.  Runtimes that use different container naming for
+        cluster mode should override this method.
+
+        Args:
+            hosts: List of hostnames/IPs (first = head).
+            cluster_id: Cluster identifier used when launching.
+            config: SparkrunConfig instance for SSH settings.
+            dry_run: Show what would be done without executing.
+            tail: Number of existing log lines to show before following.
+        """
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+        from sparkrun.orchestration.docker import generate_container_name
+        from sparkrun.orchestration.ssh import stream_remote_logs
+
+        host = hosts[0] if hosts else "localhost"
+        container_name = generate_container_name(cluster_id, "solo")
+        ssh_kwargs = build_ssh_kwargs(config)
+
+        stream_remote_logs(
+            host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
+        )
+
     # --- Launch / Stop interface ---
     #
     # Runtimes control their own orchestration by overriding run() and stop().
@@ -177,6 +212,7 @@ class RuntimePlugin(Plugin):
         dry_run: bool = False,
         detached: bool = True,
         skip_ib_detect: bool = False,
+        nccl_env: dict[str, str] | None = None,
         **kwargs,
     ) -> int:
         """Launch the workload — solo or cluster.
@@ -200,6 +236,9 @@ class RuntimePlugin(Plugin):
             dry_run: Show what would be done without executing.
             detached: Run serve command in background.
             skip_ib_detect: Skip InfiniBand detection.
+            nccl_env: Pre-detected NCCL environment variables.  When
+                provided (not ``None``), skips runtime IB detection and
+                uses this env directly.
             **kwargs: Runtime-specific keyword arguments.
 
         Returns:
@@ -216,6 +255,7 @@ class RuntimePlugin(Plugin):
             dry_run=dry_run,
             detached=detached,
             skip_ib_detect=skip_ib_detect,
+            nccl_env=nccl_env,
         )
 
     def stop(
@@ -260,6 +300,7 @@ class RuntimePlugin(Plugin):
         dry_run: bool = False,
         detached: bool = True,
         skip_ib_detect: bool = False,
+        nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -289,10 +330,12 @@ class RuntimePlugin(Plugin):
         volumes = build_volumes(cache_dir)
         all_env = merge_env(env)
 
-        # Step 1: InfiniBand detection
+        # Step 1: InfiniBand detection (skip if pre-detected nccl_env provided)
         t0 = time.monotonic()
-        nccl_env: dict[str, str] = {}
-        if not skip_ib_detect:
+        if nccl_env is not None:
+            logger.info("Step 1/3: Using pre-detected NCCL env (%d vars)", len(nccl_env))
+        elif not skip_ib_detect:
+            nccl_env = {}
             logger.info("Step 1/3: Detecting InfiniBand on %s...", host)
             if is_local:
                 nccl_env = detect_infiniband_local(dry_run=dry_run)
@@ -302,6 +345,7 @@ class RuntimePlugin(Plugin):
                 )
             logger.info("Step 1/3: IB detection done (%.1fs)", time.monotonic() - t0)
         else:
+            nccl_env = {}
             logger.info("Step 1/3: Skipping InfiniBand detection")
 
         # Step 2: Launch container

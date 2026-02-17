@@ -47,11 +47,18 @@ class RegistryEntry:
 DEFAULT_REGISTRIES = [
     RegistryEntry(
         name="sparkrun-official",
-        url="https://github.com/scitrera/dgx-spark-commander",
-        subpath="oss-sparkrun/recipes",
+        url="https://github.com/scitrera/oss-spark-run",
+        subpath="recipes",
         description="Official sparkrun recipes",
         enabled=True,
-    )
+    ),
+    RegistryEntry(
+        name="eugr-vllm",
+        url="https://github.com/eugr/spark-vllm-docker",
+        subpath="recipes",
+        description="EUGR vLLM recipes for DGX Spark",
+        enabled=True,
+    ),
 ]
 
 
@@ -388,6 +395,8 @@ class RegistryManager:
         if not recipe_dir.is_dir():
             return recipes
 
+        from sparkrun.recipe import _effective_runtime
+
         for f in sorted(recipe_dir.glob("*.yaml")):
             stem = f.stem
             try:
@@ -400,7 +409,7 @@ class RegistryManager:
                     "path": str(f),
                     "model": data.get("model", ""),
                     "description": data.get("description", ""),
-                    "runtime": data.get("runtime", "vllm"),
+                    "runtime": _effective_runtime(data),
                     "registry": registry_name,
                 })
             except Exception:

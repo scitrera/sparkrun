@@ -737,11 +737,15 @@ def setup_update(ctx):
     """Update sparkrun to the latest version.
 
     Runs ``uv tool upgrade sparkrun`` to fetch the latest release.
+    Shows whether an update was available or the current version is
+    already the latest.
     """
     import subprocess
 
+    from sparkrun import __version__ as old_version
+
     uv = _require_uv()
-    click.echo("Updating sparkrun...")
+    click.echo("Checking for updates (current: %s)..." % old_version)
     result = subprocess.run(
         [uv, "tool", "upgrade", "sparkrun"],
         capture_output=True, text=True,
@@ -750,15 +754,19 @@ def setup_update(ctx):
         click.echo("Error updating sparkrun: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
 
-    # Show new version — the running process still has the old module
-    # cached, and reload won't help because uv tool installs into a
-    # separate virtualenv.  Ask the newly installed binary instead.
+    # The running process still has the old module cached, and reload
+    # won't help because uv tool installs into a separate virtualenv.
+    # Ask the newly installed binary instead.
     ver_result = subprocess.run(
         ["sparkrun", "--version"],
         capture_output=True, text=True,
     )
     if ver_result.returncode == 0:
-        click.echo(ver_result.stdout.strip())
+        new_version = ver_result.stdout.strip().rsplit(None, 1)[-1]
+        if new_version == old_version:
+            click.echo("sparkrun %s is already the latest version." % old_version)
+        else:
+            click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
     else:
         click.echo("sparkrun updated (could not determine new version)")
 

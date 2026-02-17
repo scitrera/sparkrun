@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI after build"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: read
@@ -15,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: [ "3.12", "3.13" ]
 
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +40,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      - name: Show installed packages
+        run: pip list
+
       - name: Run tests
-        run: pytest --tb=short -q
+        run: pytest -v --tb=long -x
 
   build:
     name: Build package
@@ -61,6 +74,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

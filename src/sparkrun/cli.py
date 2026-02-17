@@ -578,6 +578,18 @@ def search_cmd(ctx, query):
     ctx.invoke(recipe_search, query=query)
 
 
+@main.command("status")
+@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
+@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
+@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@click.pass_context
+def status(ctx, hosts, hosts_file, cluster_name, dry_run):
+    """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
+    ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file,
+               cluster_name=cluster_name, dry_run=dry_run)
+
+
 # ---------------------------------------------------------------------------
 # setup group
 # ---------------------------------------------------------------------------
@@ -1385,33 +1397,54 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
     # Load cached job metadata for enriched display
     from sparkrun.orchestration.docker import load_job_metadata
 
-    def _job_label(cid):
-        meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))
-        if meta:
-            label = meta.get("recipe", cid)
-            tp = meta.get("tensor_parallel")
-            if tp:
-                label += f"  (tp={tp})"
-            return label
-        return cid
+    def _job_meta(cid):
+        return load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
+
+    def _job_label(meta, cid):
+        label = meta.get("recipe", cid)
+        tp = meta.get("tensor_parallel")
+        if tp:
+            label += f"  (tp={tp})"
+        return label
+
+    def _job_commands(meta):
+        """Return (logs_cmd, stop_cmd) strings from cached metadata, or None."""
+        recipe_name = meta.get("recipe")
+        if not recipe_name:
+            return None, None
+        job_hosts = meta.get("hosts", [])
+        tp = meta.get("tensor_parallel")
+        host_flag = f" --hosts {','.join(job_hosts)}" if job_hosts else ""
+        tp_flag = f" --tp {tp}" if tp else ""
+        logs_cmd = f"sparkrun logs {recipe_name}{host_flag}{tp_flag}"
+        stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}"
+        return logs_cmd, stop_cmd
 
     # Display grouped clusters
     total_containers = 0
     if groups:
         for cid, members in sorted(groups.items()):
-            click.echo(f"Job: {_job_label(cid)}  ({len(members)} container(s))")
+            meta = _job_meta(cid)
+            click.echo(f"Job: {_job_label(meta, cid)}  ({len(members)} container(s))")
             for host, role, status, image in members:
                 click.echo(f"  {role:<10s} {host:<25s} {status:<25s} {image}")
                 total_containers += 1
+            logs_cmd, stop_cmd = _job_commands(meta)
+            if logs_cmd:
+                click.echo(f"  logs: {logs_cmd}")
+                click.echo(f"  stop: {stop_cmd}")
             click.echo()
 
     # Display solo / ungrouped containers
     if solo_entries:
         for host, name, status, image in solo_entries:
-            # Solo container name is the cluster_id + _solo
             cid = name.removesuffix("_solo")
-            label = _job_label(cid)
-            click.echo(f"  {label:<40s} {host:<25s} {status:<25s} {image}")
+            meta = _job_meta(cid)
+            click.echo(f"  {_job_label(meta, cid):<40s} {host:<25s} {status:<25s} {image}")
+            logs_cmd, stop_cmd = _job_commands(meta)
+            if logs_cmd:
+                click.echo(f"    logs: {logs_cmd}")
+                click.echo(f"    stop: {stop_cmd}")
             total_containers += 1
         click.echo()
 

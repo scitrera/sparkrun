@@ -323,6 +323,10 @@ command: |
 
 Any default can be overridden at launch time with `-o key=value` or dedicated flags like `--port`, `--tp`, `--gpu-mem`.
 
+Recipes can also include an `env` block for environment variables injected into the container. Shell variable
+references like `${HF_TOKEN}` are expanded from the control machine's environment, so you can forward secrets
+without hardcoding them. See [RECIPES.md](./RECIPES.md) for the full recipe format specification.
+
 ### GGUF recipes (llama.cpp)
 
 GGUF recipes use the `llama-cpp` runtime and specify a quantization variant with colon syntax:

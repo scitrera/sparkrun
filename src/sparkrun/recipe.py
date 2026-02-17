@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from os import path as osp
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -83,7 +84,9 @@ class Recipe:
 
         # Configuration
         self.defaults: dict[str, Any] = dict(data.get("defaults", {}))
-        self.env: dict[str, str] = {str(k): str(v) for k, v in data.get("env", {}).items()}
+        self.env: dict[str, str] = {
+            str(k): osp.expandvars(str(v)) for k, v in data.get("env", {}).items()
+        }
         self.command: str | None = data.get("command")
 
         # Metadata section (v2 extension for VRAM estimation, model info)

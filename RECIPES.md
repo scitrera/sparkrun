@@ -245,6 +245,10 @@ env:
 Values must be strings. These are passed to `docker run` via `-e` flags and are also set inside `docker exec` when
 the serve command runs.
 
+Shell-style variable references (`${VAR}` or `$VAR`) are expanded from the **control machine's** environment
+when the recipe is loaded. If a variable is not set, the reference is left as-is. This lets you forward
+secrets like `HF_TOKEN` without hardcoding them in the recipe file.
+
 Use `env` for runtime knobs that are controlled via environment variables rather than CLI flags (e.g.
 `VLLM_ALLOW_LONG_MAX_MODEL_LEN`, NCCL tuning variables).
 

@@ -73,13 +73,13 @@ class SglangRuntime(RuntimePlugin):
         return self._build_command(recipe, config, is_cluster, num_nodes, head_ip)
 
     def generate_node_command(
-        self,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        head_ip: str,
-        num_nodes: int,
-        node_rank: int,
-        init_port: int = 25000,
+            self,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            head_ip: str,
+            num_nodes: int,
+            node_rank: int,
+            init_port: int = 25000,
     ) -> str:
         """Generate the sglang command for a specific node.
 
@@ -158,12 +158,12 @@ class SglangRuntime(RuntimePlugin):
     # --- Log following ---
 
     def follow_logs(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config=None,
-        dry_run: bool = False,
-        tail: int = 100,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config=None,
+            dry_run: bool = False,
+            tail: int = 100,
     ) -> None:
         """Follow serve logs — solo or native cluster head (node_0).
 
@@ -202,23 +202,23 @@ class SglangRuntime(RuntimePlugin):
     # --- Launch / Stop ---
 
     def run(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config=None,
-        dry_run: bool = False,
-        detached: bool = True,
-        skip_ib_detect: bool = False,
-        nccl_env: dict[str, str] | None = None,
-        init_port: int = 25000,
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
+            nccl_env: dict[str, str] | None = None,
+            init_port: int = 25000,
+            **kwargs,
     ) -> int:
         """Launch an SGLang workload — solo or native cluster.
 
@@ -243,11 +243,11 @@ class SglangRuntime(RuntimePlugin):
         )
 
     def stop(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config=None,
-        dry_run: bool = False,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config=None,
+            dry_run: bool = False,
     ) -> int:
         """Stop an SGLang workload — solo or native cluster."""
         if len(hosts) <= 1:
@@ -277,19 +277,19 @@ class SglangRuntime(RuntimePlugin):
         return "%s_node_%d" % (cluster_id, rank)
 
     def _run_native_cluster(
-        self,
-        hosts: list[str],
-        image: str,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        cluster_id: str,
-        init_port: int,
-        env: dict[str, str] | None,
-        cache_dir: str | None,
-        config,
-        dry_run: bool,
-        skip_ib_detect: bool,
-        nccl_env: dict[str, str] | None = None,
+            self,
+            hosts: list[str],
+            image: str,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            cluster_id: str,
+            init_port: int,
+            env: dict[str, str] | None,
+            cache_dir: str | None,
+            config,
+            dry_run: bool,
+            skip_ib_detect: bool,
+            nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Orchestrate a multi-node SGLang cluster using native distribution.
 
@@ -457,12 +457,12 @@ class SglangRuntime(RuntimePlugin):
 
     @staticmethod
     def _generate_node_script(
-        image: str,
-        container_name: str,
-        serve_command: str,
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        nccl_env: dict[str, str] | None = None,
+            image: str,
+            container_name: str,
+            serve_command: str,
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            nccl_env: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that launches an sglang node directly.
 

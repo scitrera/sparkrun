@@ -661,26 +661,30 @@ def setup_install(ctx, shell):
             click.echo("Error: Unsupported shell: %s" % shell, err=True)
             sys.exit(1)
 
-    # Step 1: Add sparkrun alias
-    alias_marker = "alias sparkrun="
+    # Step 1: Add sparkrun function
+    # We use a shell function (not an alias) because aliases are not
+    # expanded in $() subshells or by completion handlers.  A function
+    # is available everywhere the completion machinery needs it.
     if shell == "fish":
-        alias_line = "alias sparkrun 'uvx sparkrun'"
-        alias_marker = "alias sparkrun "
+        func_marker = "function sparkrun"
+        func_block = "function sparkrun\n    uvx sparkrun $argv\nend"
     else:
-        alias_line = "alias sparkrun='uvx sparkrun'"
+        func_marker = "sparkrun()"
+        func_block = 'sparkrun() { uvx sparkrun "$@"; }'
 
-    alias_installed = False
+    func_installed = False
     if rc_file.exists():
         contents = rc_file.read_text()
-        if alias_marker in contents:
-            click.echo("Alias already configured in %s" % rc_file)
-            alias_installed = True
+        # Also detect old-style aliases to avoid duplicate entries
+        if func_marker in contents or "alias sparkrun=" in contents or "alias sparkrun " in contents:
+            click.echo("sparkrun already configured in %s" % rc_file)
+            func_installed = True
 
-    if not alias_installed:
+    if not func_installed:
         rc_file.parent.mkdir(parents=True, exist_ok=True)
         with open(rc_file, "a") as f:
             f.write("\n# sparkrun (via uvx)\n")
-            f.write(alias_line + "\n")
+            f.write(func_block + "\n")
         click.echo("Alias installed in %s" % rc_file)
 
     # Step 2: Set up tab-completion

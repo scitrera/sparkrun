@@ -372,7 +372,7 @@ def test_eugr_validate_recipe():
 
 def test_base_runtime_is_enabled_false():
     """RuntimePlugin.is_enabled() returns False (critical for multi-extension)."""
-    from scitrera_app_framework.api.variables import Variables
+    from scitrera_app_framework import Variables
 
     runtime = RuntimePlugin()
     v = Variables()
@@ -383,7 +383,7 @@ def test_base_runtime_is_enabled_false():
 
 def test_base_runtime_is_multi_extension_true():
     """RuntimePlugin.is_multi_extension() returns True."""
-    from scitrera_app_framework.api.variables import Variables
+    from scitrera_app_framework import Variables
 
     runtime = RuntimePlugin()
     v = Variables()

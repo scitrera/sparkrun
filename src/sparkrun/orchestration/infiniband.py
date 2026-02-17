@@ -100,7 +100,7 @@ def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
         env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
     if ib_info.get("DETECTED_NET_LIST"):
         net_list = ib_info["DETECTED_NET_LIST"]
-        # NCCL_SOCKET_IFNAME uses '=' prefix per interface to pin exact devices
+        # NCCL_SOCKET_IFNAME uses '=' prefix per interface to pin exact devices (refer to NCCL docs for details)
         nccl_socket = ",".join("=" + if_ for if_ in net_list.split(","))
         env["NCCL_SOCKET_IFNAME"] = nccl_socket
         env["MN_IF_NAME"] = net_list

@@ -5,9 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from scitrera_app_framework.api.variables import Variables
-from scitrera_app_framework.core.plugins import register_plugin, get_extensions
-from scitrera_app_framework.util.imports import find_types_in_modules
+from scitrera_app_framework import Variables, register_plugin, get_extensions
+from scitrera_app_framework.util import find_types_in_modules
 
 if TYPE_CHECKING:
     from sparkrun.runtimes.base import RuntimePlugin

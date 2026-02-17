@@ -7,8 +7,7 @@ from abc import abstractmethod
 from logging import Logger
 from typing import Any, TYPE_CHECKING
 
-from scitrera_app_framework.api.plugins import Plugin
-from scitrera_app_framework.api.variables import Variables
+from scitrera_app_framework.api import Plugin, Variables
 
 if TYPE_CHECKING:
     from sparkrun.config import SparkrunConfig

@@ -10,7 +10,7 @@ from typing import Any, TYPE_CHECKING
 from vpd.next.util import read_yaml
 
 if TYPE_CHECKING:
-    from scitrera_app_framework.api.variables import Variables
+    from scitrera_app_framework import Variables
 
 logger = logging.getLogger(__name__)
 

@@ -118,12 +118,12 @@ class VllmRuntime(RuntimePlugin):
     # --- Log following ---
 
     def follow_logs(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config=None,
-        dry_run: bool = False,
-        tail: int = 100,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config=None,
+            dry_run: bool = False,
+            tail: int = 100,
     ) -> None:
         """Follow serve logs — solo or Ray cluster head.
 
@@ -151,25 +151,25 @@ class VllmRuntime(RuntimePlugin):
     # --- Launch / Stop ---
 
     def run(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config=None,
-        dry_run: bool = False,
-        detached: bool = True,
-        skip_ib_detect: bool = False,
-        nccl_env: dict[str, str] | None = None,
-        ray_port: int = 46379,
-        dashboard_port: int = 8265,
-        dashboard: bool = False,
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
+            nccl_env: dict[str, str] | None = None,
+            ray_port: int = 46379,
+            dashboard_port: int = 8265,
+            dashboard: bool = False,
+            **kwargs,
     ) -> int:
         """Launch a vLLM workload — solo or Ray cluster.
 
@@ -196,11 +196,11 @@ class VllmRuntime(RuntimePlugin):
         )
 
     def stop(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config=None,
-        dry_run: bool = False,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config=None,
+            dry_run: bool = False,
     ) -> int:
         """Stop a vLLM workload — solo or Ray cluster."""
         if len(hosts) <= 1:
@@ -224,21 +224,21 @@ class VllmRuntime(RuntimePlugin):
         return 0
 
     def _run_ray_cluster(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str,
-        cluster_id: str,
-        env: dict[str, str] | None,
-        cache_dir: str | None,
-        config,
-        dry_run: bool,
-        detached: bool,
-        skip_ib_detect: bool,
-        ray_port: int,
-        dashboard_port: int,
-        dashboard: bool,
-        nccl_env: dict[str, str] | None = None,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str,
+            cluster_id: str,
+            env: dict[str, str] | None,
+            cache_dir: str | None,
+            config,
+            dry_run: bool,
+            detached: bool,
+            skip_ib_detect: bool,
+            ray_port: int,
+            dashboard_port: int,
+            dashboard: bool,
+            nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
 
@@ -293,7 +293,6 @@ class VllmRuntime(RuntimePlugin):
         if nccl_env is not None:
             logger.info("Step 2/5: Using pre-detected NCCL env (%d vars)", len(nccl_env))
         elif not skip_ib_detect:
-            nccl_env = {}
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             nccl_env = detect_infiniband(
                 hosts, head_host=head_host,
@@ -401,7 +400,7 @@ class VllmRuntime(RuntimePlugin):
 
     @staticmethod
     def _print_ray_banner(
-        hosts, image, cluster_id, ray_port, dashboard_port, command, dry_run,
+            hosts, image, cluster_id, ray_port, dashboard_port, command, dry_run,
     ):
         mode = "DRY-RUN" if dry_run else "LIVE"
         logger.info("=" * 60)
@@ -422,8 +421,8 @@ class VllmRuntime(RuntimePlugin):
 
     @staticmethod
     def _print_ray_connection_info(
-        head_host, head_ip, head_container,
-        worker_hosts, worker_container, dashboard_port,
+            head_host, head_ip, head_container,
+            worker_hosts, worker_container, dashboard_port,
     ):
         host_list = ",".join([head_host] + worker_hosts)
         logger.info("=" * 60)

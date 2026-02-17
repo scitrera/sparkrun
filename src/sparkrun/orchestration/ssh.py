@@ -416,7 +416,7 @@ def run_pipeline_to_remote(
 
     Executes ``{local_cmd} | ssh {host} '{remote_cmd}'`` as a single shell
     pipeline via :func:`subprocess.run`.  Useful for streaming transfers like
-    ``docker save img | gzip | ssh host 'gunzip | docker load'``.
+    ``docker save img | ssh host 'docker load'``.
 
     Args:
         host: Remote hostname or IP.

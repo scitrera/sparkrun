@@ -2,7 +2,7 @@
 
 Instead of having every host pull from the internet, these functions
 pull once (locally or on the head node) and then stream the image
-to targets via ``docker save | gzip | ssh … gunzip | docker load``.
+to targets via ``docker save | ssh … docker load``.
 
 A hash check (comparing Docker image IDs) is performed before each
 transfer so hosts that already have the correct image are skipped.
@@ -145,7 +145,7 @@ def distribute_image_from_local(
     2. Hash check: compare local image ID with each remote host's and
        skip hosts that already have the correct image.
     3. For remaining hosts in parallel, run
-       ``docker save <image> | gzip | ssh host 'gunzip | docker load'``.
+       ``docker save <image> | ssh host 'docker load'``.
 
     Args:
         image: Container image reference.
@@ -191,8 +191,8 @@ def distribute_image_from_local(
         return []
 
     # Step 3: stream to hosts that need it
-    local_cmd = f"docker save {image} | gzip"
-    remote_cmd = "gunzip | docker load"
+    local_cmd = f"docker save {image}"
+    remote_cmd = "docker load"
 
     results = run_pipeline_to_remotes_parallel(
         needs_transfer, local_cmd, remote_cmd,

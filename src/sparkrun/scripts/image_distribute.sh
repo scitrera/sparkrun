@@ -19,7 +19,7 @@ for TARGET in $TARGETS; do
         DEST="$TARGET"
     fi
     echo "  Sending $IMAGE -> $TARGET ..."
-    if docker save "$IMAGE" | gzip | ssh $SSH_OPTS "$DEST" 'gunzip | docker load'; then
+    if docker save "$IMAGE" | ssh $SSH_OPTS "$DEST" 'docker load'; then
         echo "  OK: $TARGET"
     else
         echo "  FAILED: $TARGET" >&2

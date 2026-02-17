@@ -129,9 +129,9 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
 
 
 def detect_ib_for_hosts(
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 

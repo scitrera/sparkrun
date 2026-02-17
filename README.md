@@ -182,7 +182,7 @@ GGUF models use colon syntax to select a quantization variant: `model: Qwen/Qwen
 pre-downloads only the matching quant files and resolves the local cache path so the container doesn't need to
 re-download at serve time.
 
-**Experimental**: Multi-node tensor-parallel inference via llama.cpp's RPC backend. Worker nodes run `rpc-server` and
+**Experimental**: Multi-node inference via llama.cpp's RPC backend. Worker nodes run `rpc-server` and
 the head node connects via `--rpc`. This is still evolving both upstream and in sparkrun and should be considered 
 experimental. Note that the fastest DGX Spark interconnect communication will be via NCCL and RoCE -- and the 
 llama.cpp RPC mechanism involves a lot more overhead. 

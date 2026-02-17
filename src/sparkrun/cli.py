@@ -737,6 +737,7 @@ def setup_update(ctx):
     """Update sparkrun to the latest version.
 
     Runs ``uv tool upgrade sparkrun`` to fetch the latest release.
+    Only works when sparkrun was installed via ``uv tool install``.
     Shows whether an update was available or the current version is
     already the latest.
     """
@@ -745,6 +746,20 @@ def setup_update(ctx):
     from sparkrun import __version__ as old_version
 
     uv = _require_uv()
+
+    # Guard: only upgrade if sparkrun was installed via uv tool
+    check = subprocess.run(
+        [uv, "tool", "list"],
+        capture_output=True, text=True,
+    )
+    if check.returncode != 0 or "sparkrun" not in check.stdout:
+        click.echo(
+            "Error: sparkrun was not installed via 'uv tool install'.\n"
+            "Cannot safely upgrade — manage updates through your package manager instead.",
+            err=True,
+        )
+        sys.exit(1)
+
     click.echo("Checking for updates (current: %s)..." % old_version)
     result = subprocess.run(
         [uv, "tool", "upgrade", "sparkrun"],
@@ -1584,7 +1599,7 @@ def _distribute_resources(
 
     # Step 1: Detect InfiniBand for NCCL env + transfer routing
     if not skip_ib:
-        click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
+        # click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
         ib_result = detect_ib_for_hosts(
             host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
@@ -1599,7 +1614,7 @@ def _distribute_resources(
             )
 
     # Step 2: Distribute container image
-    click.echo(f"Distributing image to {len(host_list)} host(s)...")
+    # click.echo(f"Distributing image to {len(host_list)} host(s)...")
     img_failed = distribute_image_from_local(
         image, host_list,
         transfer_hosts=transfer_hosts,

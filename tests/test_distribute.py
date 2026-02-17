@@ -382,8 +382,8 @@ class TestDistributeImageFromLocal:
         # Verify pipeline commands
         mock_parallel.assert_called_once()
         call_kwargs = mock_parallel.call_args
-        assert "docker save img:latest | gzip" in call_kwargs[0][1]
-        assert "gunzip | docker load" in call_kwargs[0][2]
+        assert "docker save img:latest" in call_kwargs[0][1]
+        assert "docker load" in call_kwargs[0][2]
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
     @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)

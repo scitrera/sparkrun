@@ -351,26 +351,26 @@ the local copy without re-downloading.
 
 **`sparkrun run` options:**
 
-| Option                        | Description                                            |
-|-------------------------------|--------------------------------------------------------|
-| `--hosts` / `-H`             | Comma-separated host list (first = head)               |
-| `--hosts-file`               | File with hosts (one per line, `#` comments)           |
-| `--cluster`                  | Use a saved cluster by name                            |
-| `--solo`                     | Force single-node mode                                 |
-| `--port`                     | Override serve port                                    |
-| `--tp` / `--tensor-parallel` | Override tensor parallelism                            |
-| `--gpu-mem`                  | Override GPU memory utilization (0.0-1.0)              |
-| `--image`                    | Override container image                               |
-| `--cache-dir`                | HuggingFace cache directory                            |
+| Option                        | Description                                              |
+|-------------------------------|----------------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list (first = head)                 |
+| `--hosts-file`               | File with hosts (one per line, `#` comments)             |
+| `--cluster`                  | Use a saved cluster by name                              |
+| `--solo`                     | Force single-node mode                                   |
+| `--port`                     | Override serve port                                      |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism                              |
+| `--gpu-mem`                  | Override GPU memory utilization (0.0-1.0)                |
+| `--image`                    | Override container image  (not recommended)              |
+| `--cache-dir`                | HuggingFace cache directory                              |
 | `--option` / `-o`            | Override any recipe default: `-o key=value` (repeatable) |
-| `--dry-run` / `-n`           | Show what would be done without executing              |
-| `--foreground`               | Run in foreground (don't detach)                       |
-| `--no-follow`                | Don't follow container logs after launch               |
-| `--skip-ib`                  | Skip InfiniBand detection                              |
-| `--ray-port`                 | Ray GCS port (default: 46379)                          |
-| `--init-port`                | SGLang distributed init port (default: 25000)          |
-| `--dashboard`                | Enable Ray dashboard on head node                      |
-| `--dashboard-port`           | Ray dashboard port (default: 8265)                     |
+| `--dry-run` / `-n`           | Show what would be done without executing                |
+| `--foreground`               | Run in foreground (don't detach)                         |
+| `--no-follow`                | Don't follow container logs after launch                 |
+| `--skip-ib`                  | Skip InfiniBand detection     (not recommended)          |
+| `--ray-port`                 | Ray GCS port (default: 46379)  (vllm)                    |
+| `--init-port`                | SGLang distributed init port (default: 25000)            |
+| `--dashboard`                | Enable Ray dashboard on head node (vllm)                 |
+| `--dashboard-port`           | Ray dashboard port (default: 8265)                       |
 
 **`sparkrun stop` options:**
 

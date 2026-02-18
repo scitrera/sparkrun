@@ -15,7 +15,7 @@
         "name": "scitrera.ai",
         "email": "open-source-team@scitrera.com"
       },
-      "source": "/sparkrun-cc-plugin",
+      "source": "sparkrun-cc-plugin",
       "category": "development",
       "homepage": "https://github.com/scitrera/sparkrun",
       "tags": [

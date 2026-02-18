@@ -4,10 +4,14 @@ description: Check the status of running inference workloads.
 ---
 
 ```bash
-sparkrun cluster status [options]
+sparkrun status [options]
 ```
 
 Show sparkrun containers running on cluster hosts. Displays containers grouped by job with their role, host, status, image, and ready-to-use `logs` and `stop` commands.
+
+:::note
+`sparkrun status` is an alias for the underlying `sparkrun cluster status` command.
+:::
 
 ## Options
 
@@ -22,11 +26,11 @@ If no options are given, uses the default cluster.
 
 ```bash
 # Check default cluster
-sparkrun cluster status
+sparkrun status
 
 # Check a specific cluster
-sparkrun cluster status --cluster mylab
+sparkrun status --cluster mylab
 
 # Check specific hosts
-sparkrun cluster status --hosts 192.168.11.13,192.168.11.14
+sparkrun status --hosts 192.168.11.13,192.168.11.14
 ```

@@ -12,6 +12,18 @@ sparkrun list [query]          # alias
 
 List available recipes from all configured registries. Optionally filter by a search query.
 
+The output table includes:
+
+| Column | Description |
+|---|---|
+| Name | Recipe display name |
+| Runtime | Inference runtime (vllm, sglang, llama-cpp, eugr-vllm) |
+| TP | Default tensor parallelism setting (`-` if not set) |
+| Nodes | Minimum node count (`min_nodes`) |
+| GPU Mem | Default `gpu_memory_utilization` setting (`-` if not set) |
+| Registry | Source registry name or `local` |
+| File | Recipe filename stem |
+
 ## Show recipe details
 
 ```bash
@@ -29,6 +41,18 @@ sparkrun search <query>        # alias
 ```
 
 Search for recipes by name, model, or description across all registries.
+
+The output table includes:
+
+| Column | Description |
+|---|---|
+| Name | Recipe display name |
+| Runtime | Inference runtime |
+| TP | Default tensor parallelism setting (`-` if not set) |
+| Nodes | Minimum node count |
+| GPU Mem | Default `gpu_memory_utilization` setting (`-` if not set) |
+| Model | HuggingFace model identifier |
+| Registry | Source registry name |
 
 ## Validate a recipe
 

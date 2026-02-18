@@ -477,7 +477,8 @@ the local copy without re-downloading.
 | `sparkrun cluster set-default <name>` | Set the default cluster                             |
 | `sparkrun cluster unset-default`      | Remove the default cluster setting                  |
 | `sparkrun cluster default`            | Show the current default cluster                    |
-| `sparkrun cluster status`             | Show sparkrun containers running on cluster hosts   |
+| `sparkrun cluster status`             | Show running containers, pending operations, and IP mappings |
+| `sparkrun status`                     | Alias for `sparkrun cluster status`                          |
 
 The first host in a cluster definition is used as the **head node** for multi-node jobs. Order the remaining
 hosts however you like — they become workers.

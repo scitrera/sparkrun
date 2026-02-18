@@ -7,6 +7,7 @@ description: Check what inference workloads are running on your cluster.
 
 ```bash
 sparkrun cluster status
+sparkrun status              # alias
 ```
 
 This shows all sparkrun containers running on your cluster hosts, grouped by job.
@@ -14,9 +15,20 @@ This shows all sparkrun containers running on your cluster hosts, grouped by job
 ## Output
 
 The status command displays:
-- Containers grouped by job (with recipe name if cached)
-- Container role (head/worker), host, status, and image
-- Ready-to-use `sparkrun logs` and `sparkrun stop` commands for each job
+
+- **Running jobs** — containers grouped by cluster ID with role (head/worker/solo), host, status, and container image
+- **IP mapping** — when InfiniBand was detected during launch, shows the complementary IP alongside each host (e.g. management IP if you defined the cluster by IB IPs, or vice versa)
+- **Idle hosts** — hosts that have no sparkrun containers running
+- **Pending operations** — downloads or image distributions currently in progress that haven't launched containers yet, with elapsed time and a note that they will consume VRAM once launched
+- **Copy-paste commands** — ready-to-use `sparkrun logs` and `sparkrun stop` commands for each running job
+
+:::tip
+The status output includes copy-paste-ready `logs` and `stop` commands for each running job.
+:::
+
+:::note
+Pending operations are tracked via lightweight lock files. If a `sparkrun run` process is downloading a model or distributing a container image, it will appear in the pending operations section even though no container is running yet. This helps you account for upcoming VRAM usage when planning additional workloads.
+:::
 
 ## Options
 
@@ -29,7 +41,3 @@ sparkrun cluster status --hosts 192.168.11.13,192.168.11.14
 ```
 
 If no options are given, uses the default cluster.
-
-:::tip
-The status output includes copy-paste-ready `logs` and `stop` commands for each running job.
-:::

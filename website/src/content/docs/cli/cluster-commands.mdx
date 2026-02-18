@@ -46,3 +46,12 @@ sparkrun cluster default        # show current default
 ```
 
 When a default cluster is set, commands like `sparkrun run` and `sparkrun stop` use it automatically without needing `--cluster` or `--hosts`.
+
+## Check cluster status
+
+```bash
+sparkrun cluster status
+sparkrun status              # alias
+```
+
+Show running sparkrun containers, pending operations, and IP mappings across cluster hosts. See [Cluster Status](/clusters/status) for full details.

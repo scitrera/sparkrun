@@ -22,6 +22,14 @@ Show sparkrun containers running on cluster hosts. Displays containers grouped b
 
 If no options are given, uses the default cluster.
 
+## What it shows
+
+- **Running jobs** — containers grouped by cluster ID, with role (head/worker/solo), host, status, and image
+- **IP mapping** — when InfiniBand was detected, shows the complementary IP (management or IB) alongside each host so you can identify both addresses
+- **Idle hosts** — hosts with no sparkrun containers
+- **Pending operations** — active downloads or image distributions that haven't launched containers yet, with elapsed time. These will consume VRAM once launched
+- **Copy-paste commands** — ready-to-use `sparkrun logs` and `sparkrun stop` commands for each job
+
 ## Examples
 
 ```bash

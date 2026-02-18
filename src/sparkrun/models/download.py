@@ -81,15 +81,21 @@ def resolve_gguf_path(
 ) -> str | None:
     """Resolve the local cache path to a GGUF file.
 
-    Searches the HuggingFace cache structure for a ``.gguf`` file
-    matching the model specification.
+    Searches the HuggingFace cache structure for ``.gguf`` files
+    matching the model specification.  Searches recursively so it
+    handles both flat layouts (files in the snapshot root) and
+    subdirectory layouts (files inside quant-named folders like
+    ``Q6_K/``).
+
+    For sharded models (multiple matching ``.gguf`` files), returns
+    the first shard (sorted lexicographically).
 
     Args:
         model_id: GGUF model spec (e.g. ``"Qwen/Qwen3-1.7B-GGUF:Q4_K_M"``).
         cache_dir: Override for the HuggingFace cache directory.
 
     Returns:
-        Absolute path to the ``.gguf`` file, or ``None`` if not found.
+        Path to the ``.gguf`` file, or ``None`` if not found.
     """
     repo_id, quant = parse_gguf_model_spec(model_id)
     cache = Path(cache_dir or str(DEFAULT_HF_CACHE_DIR))
@@ -99,21 +105,26 @@ def resolve_gguf_path(
     if not model_cache.exists():
         return None
 
-    snapshots = model_cache / "snapshots"
-    if not snapshots.exists():
+    # Search recursively for .gguf files matching the quant variant
+    if quant:
+        pattern = "**/*%s*.gguf" % quant
+    else:
+        pattern = "**/*.gguf"
+
+    matched = sorted(model_cache.glob(pattern))
+    if not matched:
+        # Retry case-insensitive: glob is case-sensitive on Linux,
+        # so fall back to a manual filter when the quant case differs.
+        if quant:
+            all_gguf = sorted(model_cache.glob("**/*.gguf"))
+            q_lower = quant.lower()
+            matched = [f for f in all_gguf if q_lower in f.name.lower()]
+
+    if not matched:
         return None
 
-    # Search snapshot directories (newest first) for matching .gguf files
-    for snapshot_dir in sorted(snapshots.iterdir(), reverse=True):
-        if not snapshot_dir.is_dir():
-            continue
-        for gguf_file in snapshot_dir.glob("*.gguf"):
-            if quant is None:
-                return str(gguf_file)
-            if quant.lower() in gguf_file.name.lower():
-                return str(gguf_file)
-
-    return None
+    # Return the first match (for sharded models this is the first shard).
+    return str(matched[0])
 
 
 def resolve_gguf_container_path(

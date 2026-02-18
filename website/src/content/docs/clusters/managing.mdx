@@ -1,0 +1,50 @@
+---
+title: Managing Clusters
+description: List, inspect, and delete cluster configurations.
+---
+
+## List all clusters
+
+```bash
+sparkrun cluster list
+```
+
+Shows all saved clusters with their hosts and whether they are the default.
+
+## Show cluster details
+
+```bash
+sparkrun cluster show mylab
+```
+
+Displays the cluster's hosts, description, SSH user, and default status.
+
+## Delete a cluster
+
+```bash
+sparkrun cluster delete mylab
+```
+
+Removes the cluster configuration. This does not affect running workloads.
+
+## Default cluster
+
+### Set a default
+
+```bash
+sparkrun cluster set-default mylab
+```
+
+### Show the current default
+
+```bash
+sparkrun cluster default
+```
+
+### Remove the default
+
+```bash
+sparkrun cluster unset-default
+```
+
+When a default cluster is set, workload commands (`run`, `stop`, `logs`, `status`) use it automatically unless `--hosts` or `--cluster` is specified.

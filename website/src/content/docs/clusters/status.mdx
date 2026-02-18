@@ -1,0 +1,35 @@
+---
+title: Cluster Status
+description: Check what inference workloads are running on your cluster.
+---
+
+## Check running workloads
+
+```bash
+sparkrun cluster status
+```
+
+This shows all sparkrun containers running on your cluster hosts, grouped by job.
+
+## Output
+
+The status command displays:
+- Containers grouped by job (with recipe name if cached)
+- Container role (head/worker), host, status, and image
+- Ready-to-use `sparkrun logs` and `sparkrun stop` commands for each job
+
+## Options
+
+```bash
+# Check a specific cluster
+sparkrun cluster status --cluster mylab
+
+# Check specific hosts
+sparkrun cluster status --hosts 192.168.11.13,192.168.11.14
+```
+
+If no options are given, uses the default cluster.
+
+:::tip
+The status output includes copy-paste-ready `logs` and `stop` commands for each running job.
+:::

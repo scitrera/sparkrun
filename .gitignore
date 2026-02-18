@@ -10,3 +10,7 @@ uv.lock
 reference_materials/
 .coverage
 /src/sparkrun.egg-info/
+/website/node_modules/
+/website/.astro/
+/website/dist/
+/website/package-lock.json

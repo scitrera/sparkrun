@@ -1,0 +1,77 @@
+---
+title: Claude Code Plugin
+description: AI-assisted inference management with Claude Code.
+---
+
+The sparkrun plugin for [Claude Code](https://claude.ai/code) teaches Claude how to manage LLM inference workloads on your DGX Spark systems.
+
+## What it does
+
+- **Slash commands** — Quick actions for running, stopping, and managing inference jobs
+- **Skills** — Detailed reference that Claude uses automatically when working with sparkrun
+
+## Installation
+
+### From the marketplace
+
+```bash
+# Add the marketplace (one-time setup)
+claude plugin marketplace add scitrera/sparkrun
+
+# Install the plugin
+claude plugin install sparkrun@sparkrun
+```
+
+### Manual installation
+
+```bash
+# Global (available in all projects)
+cp -r sparkrun-cc-plugin ~/.claude/plugins/sparkrun
+
+# Or project-local
+cp -r sparkrun-cc-plugin .claude/plugins/sparkrun
+```
+
+### Local development
+
+```bash
+claude --plugin-dir ./sparkrun-cc-plugin
+```
+
+## Prerequisites
+
+### sparkrun CLI
+
+```bash
+# Install via uvx (recommended)
+uvx sparkrun setup install
+```
+
+### DGX Spark cluster
+
+You need SSH access to one or more DGX Spark systems:
+
+```bash
+sparkrun cluster create mylab --hosts 192.168.11.13,192.168.11.14 -d "My DGX Spark lab"
+sparkrun cluster set-default mylab
+sparkrun setup ssh --cluster mylab
+```
+
+## Natural language usage
+
+Just describe what you want — Claude uses the skills automatically:
+
+- "Run the Qwen3 1.7B model on my cluster"
+- "What inference jobs are running?"
+- "Stop the nemotron model"
+- "Show me available recipes for llama models"
+- "Set up sparkrun on my DGX Spark cluster"
+- "Create a recipe for Mistral 7B on vLLM"
+
+## Key concepts
+
+- **Recipes** are YAML files describing an inference workload (model, runtime, container, defaults)
+- **Runtimes** are inference engines: vLLM, SGLang, llama.cpp
+- **Clusters** are named groups of DGX Spark hosts
+- Each DGX Spark has 1 GPU, so `--tp N` (tensor parallelism) = N hosts
+- sparkrun launches detached containers — Ctrl+C detaches from logs, never kills the job

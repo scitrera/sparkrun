@@ -1,0 +1,77 @@
+---
+title: vLLM
+description: Using vLLM for inference on DGX Spark.
+---
+
+[vLLM](https://github.com/vllm-project/vllm) is the default runtime in sparkrun. It provides first-class support for solo and multi-node inference via Ray.
+
+## Features
+
+- Solo and multi-node clustering via Ray
+- Broad model support (most HuggingFace models)
+- Tensor parallelism across DGX Spark nodes
+- PagedAttention for efficient KV cache management
+- Tool calling support
+
+## Container images
+
+sparkrun works with ready-built images:
+
+```yaml
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+```
+
+Also works with other vLLM images including those from NVIDIA.
+
+## Example recipe
+
+```yaml
+model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+runtime: vllm
+min_nodes: 1
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+
+metadata:
+  description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4)
+  maintainer: scitrera.ai <open-source-team@scitrera.com>
+  model_params: 30B
+  model_dtype: nvfp4
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.8
+  max_model_len: 200000
+  served_model_name: nemotron3-30b-a3b
+
+command: |
+  vllm serve \
+      {model} \
+      --served-model-name {served_model_name} \
+      --max-model-len {max_model_len} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      -tp {tensor_parallel} \
+      --host {host} \
+      --port {port}
+```
+
+## Multi-node with Ray
+
+For multi-node tensor parallel, sparkrun:
+1. Detects InfiniBand/RDMA interfaces on all hosts
+2. Starts a Ray head node on the first host
+3. Joins worker nodes to the Ray cluster
+4. Launches vLLM with the configured tensor parallelism
+
+```bash
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+```
+
+### Ray-specific options
+
+| Option | Default | Description |
+|---|---|---|
+| `--ray-port` | 46379 | Ray GCS port |
+| `--dashboard` | off | Enable Ray dashboard |
+| `--dashboard-port` | 8265 | Ray dashboard port |

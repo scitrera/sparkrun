@@ -1837,7 +1837,7 @@ def _distribute_resources(
 
     # Step 3: Distribute model
     if model:
-        click.echo(f"Distributing model {model} to {len(host_list)} host(s)...")
+        # click.echo(f"Distributing model {model} to {len(host_list)} host(s)...")
         mdl_failed = distribute_model_from_local(
             model, host_list,
             cache_dir=cache_dir,

@@ -1,0 +1,63 @@
+---
+title: eugr-vllm
+description: The gold standard for community-driven use of vLLM on DGX Spark.
+---
+
+The `eugr-vllm` runtime is built to provide compatibility with [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker). Eugr's
+repo is the gold standard for community-driven use of vLLM on the NVIDIA DGX Spark -- frequently updated with patches and details to support the latest models.
+It provides a container build system to facilitate building the latest from the main branch of vLLM and system of maintained mods to resolve issues related to running models on the Spark.
+
+Eugr's repo also contains recipe system. Sparkrun delegates calls for eugr recipes directly to eugr's scripts to ensure that functionality matches original intent (especially relevant since eugr recipes often may involve building new bleeding-edge images whereas sparkrun's primary intent is to only use prebuilt images).
+
+## When to use
+
+Use `eugr-vllm` when you want:
+- The community's most mature vLLM container pipeline
+- Nightly (or sometimes 3x a day!) vLLM builds with the latest features
+- Custom modifications (mods) to patch as needed for the latest models
+- Local container builds with full control
+
+## Example recipe
+
+```yaml
+model: my-org/custom-model
+runtime: eugr-vllm
+container: vllm-node-tf5
+
+runtime_config:
+  mods: [my-custom-mod]
+  build_args: [--some-flag]
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.8
+
+command: |
+  vllm serve {model} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      -tp {tensor_parallel} \
+      --host {host} --port {port}
+```
+
+## runtime_config
+
+The `runtime_config` field passes eugr-specific configuration:
+
+```yaml
+runtime_config:
+  mods: [my-custom-mod]
+  build_args: [--some-flag]
+```
+
+Unknown top-level recipe keys are automatically swept into `runtime_config`, so you can also write:
+
+```yaml
+mods: [my-custom-mod]
+build_args: [--some-flag]
+```
+
+## Recipe compatibility
+
+The sparkrun recipe format is designed to be mostly compatible with eugr's format. sparkrun translates any variations automatically. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`, `mods`) are auto-detected as `eugr-vllm`.

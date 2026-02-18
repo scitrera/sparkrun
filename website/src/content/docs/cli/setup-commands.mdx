@@ -1,0 +1,49 @@
+---
+title: Setup Commands
+description: Install sparkrun, configure completion, and set up SSH.
+---
+
+## Install sparkrun
+
+```bash
+sparkrun setup install
+```
+
+Installs sparkrun as a managed uv tool with a shell alias and tab completion. This is the recommended installation method.
+
+## Shell tab-completion
+
+```bash
+sparkrun setup completion              # auto-detects your shell
+sparkrun setup completion --shell zsh  # specify shell explicitly
+```
+
+After restarting your shell, recipe names, cluster names, and subcommands all tab-complete.
+
+:::note
+If you installed via `sparkrun setup install`, tab completion is already configured.
+:::
+
+## Update sparkrun
+
+```bash
+sparkrun setup update
+```
+
+Updates sparkrun to the latest version in your managed environment.
+
+## SSH mesh setup
+
+```bash
+sparkrun setup ssh [options]
+```
+
+Set up passwordless SSH across your cluster hosts. See the [SSH Setup](/getting-started/ssh-setup/) guide for full details.
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list |
+| `--cluster` | Use a saved cluster |
+| `--user` | SSH user (default: current OS user) |
+| `--extra-hosts` | Additional hosts beyond the cluster |
+| `--no-include-self` | Exclude the control machine from the mesh |

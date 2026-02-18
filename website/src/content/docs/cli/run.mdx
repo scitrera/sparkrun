@@ -1,0 +1,55 @@
+---
+title: sparkrun run
+description: Launch an inference workload using a sparkrun recipe.
+---
+
+```bash
+sparkrun run <recipe> [options]
+```
+
+Launch an inference workload on one or more DGX Spark systems. sparkrun resolves the recipe, distributes container images and models, configures networking, and starts containers on all target hosts.
+
+Jobs launch in the background (detached containers) and sparkrun follows logs automatically. **Ctrl+C detaches from logs — it never kills the inference job.**
+
+## Options
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list (first = head) |
+| `--hosts-file` | File with hosts (one per line, `#` comments) |
+| `--cluster` | Use a saved cluster by name |
+| `--solo` | Force single-node mode |
+| `--port` | Override serve port |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism |
+| `--gpu-mem` | Override GPU memory utilization (0.0-1.0) |
+| `--image` | Override container image (not recommended) |
+| `--cache-dir` | HuggingFace cache directory |
+| `--option` / `-o` | Override any recipe default: `-o key=value` (repeatable) |
+| `--dry-run` / `-n` | Show what would be done without executing |
+| `--foreground` | Run in foreground (don't detach) |
+| `--no-follow` | Don't follow container logs after launch |
+| `--skip-ib` | Skip InfiniBand detection (not recommended) |
+| `--ray-port` | Ray GCS port — default: 46379 (vLLM) |
+| `--init-port` | SGLang distributed init port — default: 25000 |
+| `--dashboard` | Enable Ray dashboard on head node (vLLM) |
+| `--dashboard-port` | Ray dashboard port — default: 8265 |
+
+## Examples
+
+```bash
+# Single node
+sparkrun run qwen3-1.7b-vllm
+
+# Two-node tensor parallel
+sparkrun run qwen3-1.7b-vllm --tp 2
+
+# Specific hosts with overrides
+sparkrun run qwen3-1.7b-vllm -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+
+# Dry run to preview commands
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2 --dry-run
+```
+
+:::note
+Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `--tp 2` means 2 hosts.
+:::

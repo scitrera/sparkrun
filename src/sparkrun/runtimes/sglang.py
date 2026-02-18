@@ -26,6 +26,7 @@ _SGLANG_FLAG_MAP = {
     "trust_remote_code": "--trust-remote-code",
     "chunked_prefill": "--chunked-prefill-size",
     "kv_cache_dtype": "--kv-cache-dtype",
+    "tokenizer_path": "--tokenizer-path",
 }
 
 _SGLANG_BOOL_FLAGS = {
@@ -64,6 +65,7 @@ class SglangRuntime(RuntimePlugin):
         per-node variant.
         """
         config = recipe.build_config_chain(overrides)
+        self._inject_gguf_model(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -88,6 +90,7 @@ class SglangRuntime(RuntimePlugin):
         ``--node-rank`` flags appended.
         """
         config = recipe.build_config_chain(overrides)
+        self._inject_gguf_model(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -105,9 +108,26 @@ class SglangRuntime(RuntimePlugin):
         ]
         return " ".join(parts)
 
+    @staticmethod
+    def _inject_gguf_model(config) -> None:
+        """Ensure ``{model}`` in command templates resolves to the GGUF file path.
+
+        When a GGUF model has been pre-synced, the CLI stores the
+        container-internal path as ``_gguf_model_path`` in overrides.
+        This helper copies that value into the ``model`` key so that
+        ``{model}`` in recipe command templates renders the local file
+        path instead of the raw HF repo spec (which includes the
+        sparkrun-specific ``:quant`` suffix that runtimes cannot parse).
+        """
+        gguf_path = config.get("_gguf_model_path")
+        if gguf_path:
+            config.put("model", str(gguf_path))
+
     def _build_base_command(self, recipe: Recipe, config) -> str:
         """Build the sglang command without cluster-specific arguments."""
-        parts = ["python3", "-m", "sglang.launch_server", "--model-path", recipe.model]
+        # For GGUF models, use the resolved file path instead of the HF repo name
+        model_path = config.get("_gguf_model_path") or recipe.model
+        parts = ["python3", "-m", "sglang.launch_server", "--model-path", str(model_path)]
 
         tp = config.get("tensor_parallel")
         if tp:
@@ -150,9 +170,31 @@ class SglangRuntime(RuntimePlugin):
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate SGLang-specific recipe fields."""
+        from sparkrun.models.download import is_gguf_model
+
         issues = []
         if not recipe.model:
             issues.append("[sglang] model is required")
+
+        if recipe.model and is_gguf_model(recipe.model):
+            tokenizer = (recipe.defaults or {}).get("tokenizer_path")
+            cmd = recipe.command or ""
+            cmd_has_tokenizer = "--tokenizer-path" in cmd or "{tokenizer_path}" in cmd
+
+            if not tokenizer and not cmd_has_tokenizer:
+                issues.append(
+                    "[sglang] GGUF model detected but no tokenizer path configured. "
+                    "SGLang requires --tokenizer-path pointing to the base (non-GGUF) HF model. "
+                    "Set 'tokenizer_path' in defaults (e.g. tokenizer_path: Qwen/Qwen3-1.7B) "
+                    "or add --tokenizer-path to the command template."
+                )
+            if tokenizer and cmd and not cmd_has_tokenizer:
+                issues.append(
+                    "[sglang] GGUF recipe has 'tokenizer_path' in defaults but the command "
+                    "template does not reference {tokenizer_path} or --tokenizer-path. "
+                    "Add '--tokenizer-path {tokenizer_path}' to the command template."
+                )
+
         return issues
 
     # --- Log following ---

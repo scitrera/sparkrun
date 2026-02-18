@@ -1,0 +1,73 @@
+---
+title: Writing Recipes
+description: How to create your own sparkrun recipes.
+---
+
+## Start from an existing recipe
+
+The easiest way to create a new recipe is to copy one that uses the same runtime and modify it.
+
+```bash
+# See what's available
+sparkrun list
+
+# Show a recipe's full configuration
+sparkrun show qwen3-1.7b-vllm
+```
+
+## Step by step
+
+1. **Set `model`** to the HuggingFace model ID you want to serve
+2. **Set `container`** to a known-good image for your runtime
+3. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and a low `max_model_len`, then increase after confirming the model loads
+4. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works
+5. **Validate**: `sparkrun recipe validate your-recipe.yaml`
+6. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run`
+
+## Example: vLLM recipe
+
+```yaml
+model: my-org/my-model
+runtime: vllm
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+
+metadata:
+  description: My custom model
+  maintainer: me@example.com
+  model_params: 7B
+  model_dtype: bf16
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.8
+  max_model_len: 32768
+
+command: |
+  vllm serve {model} \
+      --max-model-len {max_model_len} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      -tp {tensor_parallel} \
+      --host {host} --port {port}
+```
+
+## Tips
+
+- Use `--dry-run` liberally. It shows the exact Docker commands without executing anything.
+- `sparkrun show <recipe>` displays rendered defaults plus VRAM estimation — use it to sanity-check before launching.
+- For models that barely fit in VRAM, lower `max_model_len` first. KV cache scales with sequence length.
+- `tensor_parallel` on DGX Spark maps 1:1 to node count. `--tp 2` means 2 hosts, each contributing 1 GPU.
+- GGUF recipes should set `max_nodes: 1` unless using the experimental RPC multi-node backend.
+
+## Sharing recipes
+
+Create a git repository with your YAML files and register it:
+
+```bash
+sparkrun recipe add-registry myteam \
+  --url https://github.com/myorg/spark-recipes.git \
+  --subpath recipes
+```
+
+Anyone who adds your registry can use your recipes by name.

@@ -1,0 +1,69 @@
+---
+title: CLI Overview
+description: sparkrun command-line interface reference.
+---
+
+sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spark systems.
+
+## Global options
+
+| Option | Description |
+|---|---|
+| `-v` / `--verbose` | Enable verbose/debug output |
+| `--version` | Show version and exit |
+| `--help` | Show help for any command |
+
+## Command groups
+
+### Workload commands
+
+| Command | Description |
+|---|---|
+| `sparkrun run <recipe>` | Launch an inference workload |
+| `sparkrun stop <recipe>` | Stop a running workload |
+| `sparkrun logs <recipe>` | Re-attach to workload logs |
+
+### Recipe commands
+
+| Command | Description |
+|---|---|
+| `sparkrun list [query]` | List available recipes (alias) |
+| `sparkrun show <recipe>` | Show recipe details + VRAM estimate (alias) |
+| `sparkrun search <query>` | Search recipes (alias) |
+| `sparkrun recipe list [query]` | List available recipes from all registries |
+| `sparkrun recipe show <recipe>` | Show detailed recipe information |
+| `sparkrun recipe search <query>` | Search for recipes by name, model, or description |
+| `sparkrun recipe validate <recipe>` | Validate a recipe file |
+| `sparkrun recipe vram <recipe>` | Estimate VRAM usage for a recipe |
+
+### Registry commands
+
+| Command | Description |
+|---|---|
+| `sparkrun recipe registries` | List configured recipe registries |
+| `sparkrun recipe add-registry <name>` | Add a custom recipe registry |
+| `sparkrun recipe remove-registry <name>` | Remove a recipe registry |
+| `sparkrun recipe update` | Update registries from git |
+
+### Cluster commands
+
+| Command | Description |
+|---|---|
+| `sparkrun cluster create <name>` | Create a new named cluster |
+| `sparkrun cluster update <name>` | Update hosts, description, or user |
+| `sparkrun cluster list` | List all saved clusters |
+| `sparkrun cluster show <name>` | Show details of a saved cluster |
+| `sparkrun cluster delete <name>` | Delete a saved cluster |
+| `sparkrun cluster set-default <name>` | Set the default cluster |
+| `sparkrun cluster unset-default` | Remove the default cluster setting |
+| `sparkrun cluster default` | Show the current default cluster |
+| `sparkrun cluster status` | Show sparkrun containers running on cluster hosts |
+
+### Setup commands
+
+| Command | Description |
+|---|---|
+| `sparkrun setup install` | Install sparkrun as a uv tool + tab-completion |
+| `sparkrun setup completion` | Install shell tab-completion (bash/zsh/fish) |
+| `sparkrun setup update` | Update sparkrun to the latest version |
+| `sparkrun setup ssh` | Set up passwordless SSH mesh across hosts |

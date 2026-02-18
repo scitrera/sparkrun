@@ -1,0 +1,32 @@
+---
+title: Runtimes Overview
+description: Supported inference runtimes in sparkrun.
+---
+
+sparkrun supports multiple inference runtimes through a plugin system. Each runtime knows how to launch a specific inference engine, configure networking, and manage containers.
+
+## Runtime comparison
+
+| Runtime | Engine | Multi-Node | Use Case |
+|---|---|---|---|
+| `vllm` | vLLM | Yes (Ray) | Production inference, broad model support |
+| `sglang` | SGLang | Yes (native) | High-throughput inference, structured generation, experimental GGUF |
+| `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
+| `eugr-vllm` | vLLM (eugr) | Yes (delegated) | Gold standard community vLLM — nightly builds, mods, battle-tested |
+
+## How runtimes work
+
+**Recipes** declare which runtime to use via the `runtime` field. The runtime handles:
+
+- Container launch configuration (volumes, networking, GPU access)
+- InfiniBand/RDMA detection and NCCL environment variables
+- Multi-node clustering (Ray for vLLM, native for SGLang)
+- Model pre-sync and cache path resolution
+- Command generation when no explicit `command` template is provided
+
+## Choosing a runtime
+
+- **vLLM** is the default and most widely supported. Use it unless you have a specific reason to choose another.
+- **SGLang** offers competitive performance, good structured generation support, and experimental GGUF quantized model serving.
+- **llama.cpp** is ideal for GGUF quantized models or when you want a lightweight alternative.
+- **eugr-vllm** is the gold standard for community-driven vLLM — nightly builds, mods, and a battle-tested container pipeline.

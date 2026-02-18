@@ -1,0 +1,57 @@
+---
+title: Recipe Commands
+description: List, search, inspect, and validate recipes.
+---
+
+## List recipes
+
+```bash
+sparkrun recipe list [query]
+sparkrun list [query]          # alias
+```
+
+List available recipes from all configured registries. Optionally filter by a search query.
+
+## Show recipe details
+
+```bash
+sparkrun recipe show <recipe>
+sparkrun show <recipe>         # alias
+```
+
+Display detailed recipe information including defaults, metadata, and VRAM estimation. The VRAM estimator auto-detects model architecture from HuggingFace.
+
+## Search recipes
+
+```bash
+sparkrun recipe search <query>
+sparkrun search <query>        # alias
+```
+
+Search for recipes by name, model, or description across all registries.
+
+## Validate a recipe
+
+```bash
+sparkrun recipe validate <recipe>
+```
+
+Check a recipe file for issues:
+- Missing required fields (`model`, `runtime`)
+- Invalid `mode` values
+- `min_nodes` / `max_nodes` consistency
+- Valid `metadata.model_params` and `metadata.model_dtype`
+- Runtime-specific validation
+
+## Estimate VRAM usage
+
+```bash
+sparkrun recipe vram <recipe> [options]
+```
+
+| Option | Description |
+|---|---|
+| `--tp` / `--tensor-parallel` | Override tensor parallelism |
+| `--max-model-len` | Override max sequence length |
+| `--gpu-mem` | Override gpu_memory_utilization (0.0-1.0) |
+| `--no-auto-detect` | Skip HuggingFace model auto-detection |

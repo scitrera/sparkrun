@@ -1,0 +1,32 @@
+---
+title: sparkrun stop
+description: Stop a running inference workload.
+---
+
+```bash
+sparkrun stop <recipe> [options]
+```
+
+Stop containers for a running inference workload across all hosts.
+
+## Options
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list |
+| `--hosts-file` | File with hosts |
+| `--cluster` | Use a saved cluster by name |
+| `--tp` / `--tensor-parallel` | Match host trimming from run |
+| `--dry-run` / `-n` | Show what would be done |
+
+## Examples
+
+```bash
+sparkrun stop qwen3-1.7b-vllm
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm --tp 2
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+```
+
+:::caution
+The `--hosts`/`--cluster`/`--tp` flags must match the original `run` command so sparkrun can find the right containers. If you launched with `--tp 2`, pass `--tp 2` to stop as well.
+:::

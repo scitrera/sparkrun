@@ -1,0 +1,83 @@
+---
+title: Quick Start
+description: Get up and running with sparkrun in minutes.
+---
+
+## Save a cluster config
+
+Save your DGX Spark hosts once so you don't have to specify them every time:
+
+```bash
+sparkrun cluster create mylab \
+  --hosts 192.168.11.13,192.168.11.14 \
+  -d "My DGX Spark lab"
+
+sparkrun cluster set-default mylab
+```
+
+The first host becomes the **head node** for multi-node jobs. Order remaining hosts however you like — they become workers.
+
+## Run an inference job
+
+```bash
+# Single node — minimum nodes/parallelism is set by the recipe
+sparkrun run qwen3-1.7b-vllm
+
+# Multi-node tensor parallel using your default cluster
+sparkrun run qwen3-1.7b-vllm --tp 2
+
+# Override settings on the fly
+sparkrun run qwen3-1.7b-vllm --hosts 192.168.11.14 --port 9000 --gpu-mem 0.8
+sparkrun run qwen3-1.7b-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+
+# GGUF quantized models via llama.cpp
+sparkrun run qwen3-1.7b-llama-cpp
+```
+
+sparkrun launches jobs in the background (detached containers) and follows logs. **Ctrl+C detaches from logs — it never kills your inference job.** Your model keeps serving.
+
+## Inspect a recipe
+
+```bash
+sparkrun show nemotron3-nano-30b-nvfp4-vllm
+```
+
+This displays recipe details including a VRAM estimation that tells you whether the configuration fits DGX Spark's 128 GB unified memory before you launch.
+
+## Manage running workloads
+
+```bash
+# Re-attach to logs (Ctrl+C is always safe)
+sparkrun logs nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+
+# Stop a workload
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+```
+
+:::note
+If you launched with `--tp` (modifying the recipe default), pass the same `--tp` flag to `stop` and `logs` so they resolve the same cluster ID:
+
+```bash
+sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm --tp 2
+sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
+```
+:::
+
+## Custom recipe registries
+
+```bash
+# See configured registries
+sparkrun recipe registries
+
+# Add a community or private registry
+sparkrun recipe add-registry myteam \
+  --url https://github.com/myorg/spark-recipes.git \
+  --subpath recipes
+
+# Update all registries
+sparkrun recipe update
+
+# Search across all registries
+sparkrun search qwen3
+```

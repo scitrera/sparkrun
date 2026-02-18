@@ -1,0 +1,69 @@
+---
+title: Registries
+description: Configure custom recipe registries for sharing and discovering recipes.
+---
+
+sparkrun searches bundled recipes first, then any custom registries you've configured. Registries are git repositories containing YAML recipe files.
+
+## View configured registries
+
+```bash
+sparkrun recipe registries
+```
+
+## Add a registry
+
+```bash
+sparkrun recipe add-registry myteam \
+  --url https://github.com/myorg/spark-recipes.git \
+  --subpath recipes
+```
+
+The `--subpath` option specifies where recipe files live within the repository.
+
+## Remove a registry
+
+```bash
+sparkrun recipe remove-registry myteam
+```
+
+## Update registries
+
+```bash
+sparkrun recipe update
+```
+
+Fetches the latest recipes from all remote registries.
+
+## Search across registries
+
+```bash
+sparkrun search qwen3
+sparkrun recipe search llama
+```
+
+Searches by name, model, and description across all registries.
+
+## Creating a registry
+
+A recipe registry is any git repository containing YAML files:
+
+```
+my-recipes/
+├── recipes/
+│   ├── my-model-vllm.yaml
+│   ├── my-model-sglang.yaml
+│   └── experimental-model.yaml
+└── README.md
+```
+
+Each YAML file should follow the [recipe format](/recipes/format/). Anyone who adds your registry can use your recipes by name.
+
+## Recipe discovery order
+
+1. **Exact/relative file path** — if the argument is an existing file
+2. **Bundled recipes** — shipped with sparkrun
+3. **Registry paths** — from configured registries
+4. **Registry stem matching** — searches by filename stem
+
+Filenames are matched with or without `.yaml`/`.yml` extensions.

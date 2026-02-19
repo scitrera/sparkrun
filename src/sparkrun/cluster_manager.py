@@ -36,6 +36,28 @@ class ClusterDefinition:
     user: str | None = None
 
 
+@dataclass
+class ClusterGroup:
+    """A group of containers forming a sparkrun cluster."""
+
+    cluster_id: str
+    members: list[tuple[str, str, str, str]]  # (host, role, status, image)
+    meta: dict[str, Any]  # job metadata from cache
+
+
+@dataclass
+class ClusterStatusResult:
+    """Result of querying sparkrun container status across hosts."""
+
+    groups: dict[str, ClusterGroup]  # cluster_id -> group
+    solo_entries: list[tuple[str, str, str, str]]  # (host, name, status, image)
+    errors: dict[str, str]  # host -> error message
+    idle_hosts: list[str]  # hosts with no containers and no errors
+    pending_ops: list[dict[str, Any]]  # relevant pending operations
+    total_containers: int
+    host_count: int
+
+
 class ClusterManager:
     """Manages named cluster definitions stored as YAML files."""
 
@@ -268,3 +290,163 @@ class ClusterManager:
             description=data.get("description", ""),
             user=data.get("user"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Cluster status query — business logic extracted from CLI
+# ---------------------------------------------------------------------------
+
+def query_cluster_status(
+    host_list: list[str],
+    ssh_kwargs: dict[str, Any],
+    cache_dir: str,
+) -> ClusterStatusResult:
+    """Query sparkrun containers on hosts and classify them.
+
+    Runs ``docker ps`` on each host in parallel, parses the output,
+    groups containers into clusters vs solo entries, enriches with
+    cached job metadata, and identifies idle hosts and pending ops.
+
+    Args:
+        host_list: Target hostnames/IPs to query.
+        ssh_kwargs: SSH connection keyword arguments.
+        cache_dir: Cache directory for job metadata and pending ops.
+
+    Returns:
+        A :class:`ClusterStatusResult` with all collected data.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from sparkrun.orchestration.ssh import run_remote_command
+    from sparkrun.orchestration.docker import load_job_metadata
+    from sparkrun.pending_ops import list_pending_ops
+
+    docker_cmd = (
+        "docker ps --filter 'name=sparkrun_' "
+        "--format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
+    )
+
+    # Query all hosts in parallel
+    with ThreadPoolExecutor(max_workers=len(host_list)) as executor:
+        futures = {
+            executor.submit(
+                run_remote_command, host, docker_cmd, timeout=15, **ssh_kwargs,
+            ): host
+            for host in host_list
+        }
+        results = {}
+        for future in as_completed(futures):
+            host = futures[future]
+            results[host] = future.result()
+
+    # Collect per-host container info: list of (name, status, image)
+    host_containers: dict[str, list[tuple[str, str, str]]] = {}
+    errors: dict[str, str] = {}
+    for host in host_list:
+        result = results[host]
+        if not result.success:
+            errors[host] = result.stderr.strip()
+            continue
+        entries = []
+        for line in result.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) == 3:
+                entries.append((parts[0], parts[1], parts[2]))
+            else:
+                entries.append((line.strip(), "", ""))
+        host_containers[host] = entries
+
+    # Build cluster groups: cluster_id -> [(host, role, status, image), ...]
+    # Anything ending in _solo is standalone; everything else is grouped
+    # by cluster_id (name up to last underscore-delimited role suffix).
+    groups: dict[str, list[tuple[str, str, str, str]]] = {}
+    solo_entries: list[tuple[str, str, str, str]] = []
+    total_containers = 0
+
+    for host in host_list:
+        for name, status, image in host_containers.get(host, []):
+            total_containers += 1
+            if name.endswith("_solo"):
+                solo_entries.append((host, name, status, image))
+            else:
+                # Extract cluster_id by stripping the role suffix.
+                # Patterns: sparkrun_hash_head, sparkrun_hash_worker,
+                #           sparkrun_hash_node_0 (SGLang)
+                # Strategy: find the cluster_id prefix (sparkrun_{12-char hash})
+                # and treat the rest as the role.
+                prefix_end = name.find("_", len("sparkrun_"))
+                if 0 < prefix_end < len(name) - 1:
+                    cluster_id = name[:prefix_end]
+                    role = name[prefix_end + 1:]
+                else:
+                    cluster_id = name
+                    role = "?"
+                groups.setdefault(cluster_id, []).append((host, role, status, image))
+
+    # Enrich groups with job metadata
+    cluster_groups: dict[str, ClusterGroup] = {}
+    for cid, members in groups.items():
+        meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
+        cluster_groups[cid] = ClusterGroup(cluster_id=cid, members=members, meta=meta)
+
+    # Idle hosts: no containers and no errors
+    idle_hosts = [h for h in host_list if h not in errors and not host_containers.get(h)]
+
+    # Pending operations filtered to relevant hosts
+    pending = list_pending_ops(cache_dir=cache_dir)
+    host_set = set(host_list)
+    relevant_ops = [
+        op for op in pending
+        if not op.get("hosts") or host_set & set(op["hosts"])
+    ]
+
+    return ClusterStatusResult(
+        groups=cluster_groups,
+        solo_entries=solo_entries,
+        errors=errors,
+        idle_hosts=idle_hosts,
+        pending_ops=relevant_ops,
+        total_containers=total_containers,
+        host_count=len(host_list),
+    )
+
+
+def format_job_label(meta: dict[str, Any], cluster_id: str) -> str:
+    """Format a display label from job metadata."""
+    label = meta.get("recipe", cluster_id)
+    tp = meta.get("tensor_parallel")
+    if tp:
+        label += f"  (tp={tp})"
+    return label
+
+
+def format_job_commands(meta: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (logs_cmd, stop_cmd) strings from cached metadata."""
+    recipe_name = meta.get("recipe")
+    if not recipe_name:
+        return None, None
+    job_hosts = meta.get("hosts", [])
+    tp = meta.get("tensor_parallel")
+    host_flag = f" --hosts {','.join(job_hosts)}" if job_hosts else ""
+    tp_flag = f" --tp {tp}" if tp else ""
+    logs_cmd = f"sparkrun logs {recipe_name}{host_flag}{tp_flag}"
+    stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}"
+    return logs_cmd, stop_cmd
+
+
+def format_host_display(host: str, meta: dict[str, Any] | None) -> str:
+    """Format host with complementary IP from job metadata if available.
+
+    If the queried host matches a mgmt or IB IP in the metadata,
+    show the other IP in parentheses so both are visible.
+    """
+    mgmt_map = meta.get("mgmt_ip_map", {}) if meta else {}
+    ib_map = meta.get("ib_ip_map", {}) if meta else {}
+    mgmt = mgmt_map.get(host)
+    if mgmt and mgmt != host:
+        return f"{host} (mgmt: {mgmt})"
+    ib = ib_map.get(host)
+    if ib and ib != host:
+        return f"{host} (ib: {ib})"
+    return host

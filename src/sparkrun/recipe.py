@@ -441,3 +441,95 @@ def list_recipes(search_paths: list[Path] | None = None,
                 except Exception:
                     logger.debug("Skipping invalid recipe file: %s", f)
     return recipes
+
+
+def filter_recipes(
+        recipes: list[dict[str, Any]],
+        *,
+        runtime: str | None = None,
+        registry: str | None = None,
+) -> list[dict[str, Any]]:
+    """Filter a recipe list by runtime and/or registry.
+
+    Args:
+        recipes: Recipe metadata dicts (from :func:`list_recipes` or
+            ``RegistryManager.search_recipes``).
+        runtime: Keep only recipes with this runtime (case-insensitive).
+        registry: Keep only recipes from this registry name.
+
+    Returns:
+        Filtered list (may be empty).
+    """
+    result = recipes
+    if registry:
+        result = [r for r in result if r.get("registry") == registry]
+    if runtime:
+        rt_lower = runtime.lower()
+        result = [r for r in result if r.get("runtime", "").lower() == rt_lower]
+    return result
+
+
+def format_recipe_table(
+        recipes: list[dict[str, Any]],
+        *,
+        show_model: bool = False,
+        show_file: bool = True,
+) -> str:
+    """Format recipe metadata as a text table.
+
+    Args:
+        recipes: Recipe metadata dicts.
+        show_model: Include a Model column (used by search results).
+        show_file: Include a File column (used by list output).
+
+    Returns:
+        Formatted multi-line string (no trailing newline).
+    """
+    if not recipes:
+        return "No recipes found."
+
+    # Pre-compute display values
+    reg_names = [r.get("registry", "local") for r in recipes]
+    tp_vals = [str(r["tp"]) if r.get("tp", "") != "" else "-" for r in recipes]
+    mn_vals = [str(r.get("min_nodes", 1)) for r in recipes]
+    gm_vals = [str(r["gpu_mem"]) if r.get("gpu_mem", "") != "" else "-" for r in recipes]
+
+    # Column widths
+    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
+    w_rt = max(len("Runtime"), *(len(r.get("runtime", "")) for r in recipes)) + 2
+    w_tp = max(len("TP"), *(len(v) for v in tp_vals)) + 2
+    w_mn = max(len("Nodes"), *(len(v) for v in mn_vals)) + 2
+    w_gm = max(len("GPU Mem"), *(len(v) for v in gm_vals)) + 2
+    w_reg = max(len("Registry"), *(len(n) for n in reg_names)) + 2
+
+    # Build column definitions: (header, width, values)
+    columns: list[tuple[str, int, list[str]]] = [
+        ("Name", w_name, [r["name"] for r in recipes]),
+        ("Runtime", w_rt, [r.get("runtime", "") for r in recipes]),
+        ("TP", w_tp, tp_vals),
+        ("Nodes", w_mn, mn_vals),
+        ("GPU Mem", w_gm, gm_vals),
+    ]
+
+    if show_model:
+        models = [r.get("model", "") for r in recipes]
+        w_model = max(len("Model"), *(len(m) for m in models)) + 2
+        columns.append(("Model", w_model, models))
+
+    columns.append(("Registry", w_reg, reg_names))
+
+    if show_file:
+        w_file = max(len("File"), *(len(r["file"]) for r in recipes))
+        columns.append(("File", w_file, [r["file"] for r in recipes]))
+
+    # Render
+    header = " ".join(f"{col[0]:<{col[1]}}" for col in columns)
+    total_width = sum(col[1] for col in columns) + len(columns) - 1
+    separator = "-" * total_width
+
+    lines = [header, separator]
+    for i in range(len(recipes)):
+        row = " ".join(f"{col[2][i]:<{col[1]}}" for col in columns)
+        lines.append(row)
+
+    return "\n".join(lines)

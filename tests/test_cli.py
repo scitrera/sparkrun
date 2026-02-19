@@ -665,7 +665,7 @@ class TestFollowLogs:
 
     def test_follow_logs_called_after_successful_run(self, runner, reset_bootstrap):
         """follow_logs is called after a successful detached run."""
-        with mock.patch("sparkrun.cli._distribute_resources", return_value=(None, {}, {})), \
+        with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
              mock.patch.object(SglangRuntime, "run", return_value=0), \
              mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
@@ -683,7 +683,7 @@ class TestFollowLogs:
 
     def test_no_follow_flag_skips_follow_logs(self, runner, reset_bootstrap):
         """--no-follow prevents follow_logs from being called."""
-        with mock.patch("sparkrun.cli._distribute_resources", return_value=(None, {}, {})), \
+        with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
              mock.patch.object(SglangRuntime, "run", return_value=0), \
              mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
@@ -714,7 +714,7 @@ class TestFollowLogs:
 
     def test_foreground_skips_follow_logs(self, runner, reset_bootstrap):
         """--foreground prevents follow_logs from being called."""
-        with mock.patch("sparkrun.cli._distribute_resources", return_value=(None, {}, {})), \
+        with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
              mock.patch.object(SglangRuntime, "run", return_value=0), \
              mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
@@ -730,7 +730,7 @@ class TestFollowLogs:
 
     def test_nonzero_exit_skips_follow_logs(self, runner, reset_bootstrap):
         """Non-zero exit code from runtime.run() prevents follow_logs."""
-        with mock.patch("sparkrun.cli._distribute_resources", return_value=(None, {}, {})), \
+        with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
              mock.patch.object(SglangRuntime, "run", return_value=1), \
              mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [

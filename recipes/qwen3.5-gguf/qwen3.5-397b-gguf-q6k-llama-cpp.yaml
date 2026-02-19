@@ -14,7 +14,7 @@ defaults:  # TODO: --threads,
   host: 0.0.0.0
   n_gpu_layers: 99
   ctx_size: 262144
-  split_mode: layer
+  split_mode: layer  # TODO: test performance of row
 
 command: |
   llama-server \

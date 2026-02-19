@@ -1,7 +1,7 @@
 model: Qwen/Qwen3-1.7B-GGUF:Q8_0
 runtime: llama-cpp
 max_nodes: 1
-container: scitrera/dgx-spark-llama-cpp:b8076-cu131
+container: scitrera/dgx-spark-llama-cpp:b8094-cu131
 
 metadata:
   description: Qwen3 1.7B (Q8_0 GGUF) -- small test model via llama.cpp

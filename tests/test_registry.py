@@ -461,3 +461,41 @@ class TestRecipeDiscovery:
         assert len(matches) == 2
         registry_names = {m[0] for m in matches}
         assert registry_names == {"reg1", "reg2"}
+
+    def test_find_recipe_in_subdirectory_fallback(self, reg_dirs):
+        """Test finding a recipe in a nested subdirectory when no flat match exists."""
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+
+        entry = RegistryEntry(
+            name="nested-registry",
+            url="https://example.com/nested",
+            subpath="recipes",
+        )
+        mgr._save_registries([entry])
+
+        # Create registry with recipes ONLY in a subdirectory (no flat recipes)
+        recipe_dir = cache / entry.name / entry.subpath
+        nested_dir = recipe_dir / "qwen3"
+        nested_dir.mkdir(parents=True)
+        (cache / entry.name / ".git").mkdir(exist_ok=True)
+
+        # Create recipe in subdirectory
+        nested_recipe = {
+            "sparkrun_version": "2",
+            "name": "Qwen3 vLLM Recipe",
+            "description": "A nested test recipe",
+            "model": "Qwen/Qwen3-1.7b",
+            "runtime": "vllm",
+            "container": "scitrera/dgx-spark-vllm:latest",
+        }
+        with open(nested_dir / "qwen3-1.7b-vllm.yaml", "w") as f:
+            yaml.dump(nested_recipe, f)
+
+        # Should find the recipe by stem even though it's in a subdirectory
+        matches = mgr.find_recipe_in_registries("qwen3-1.7b-vllm")
+        assert len(matches) == 1
+        registry_name, path = matches[0]
+        assert registry_name == "nested-registry"
+        assert path.name == "qwen3-1.7b-vllm.yaml"
+        assert "qwen3" in str(path)  # Verify it's in the subdirectory

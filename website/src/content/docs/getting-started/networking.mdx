@@ -1,0 +1,295 @@
+---
+title: Networking Best Practices
+description: Best practices for configuring DGX Spark networking for multi-node inference clusters.
+---
+
+This guide covers how to configure the high-speed ConnectX-7 network on DGX Spark systems for multi-node clustering. Proper network setup is a prerequisite for performant multi-node inference with NCCL.
+
+## DGX Spark networking overview
+
+Each DGX Spark has two wired network connection types:
+
+| Interface | Speed | Purpose |
+|---|---|---|
+| Built-in Ethernet (management) | 10 Gbps | SSH, general traffic, management |
+| ConnectX-7 (QSFP56 ports) | Up to 200 Gbps | NCCL/RDMA, model sync, container distribution |
+
+The ConnectX-7 NIC has **two QSFP56 ports** and supports up to **200 Gbps** aggregate bandwidth. This can be achieved with a single 200 Gbps cable or two 100 Gbps cables.
+
+### The PCIe split
+
+DGX Spark has a unique hardware constraint: the SoC provides a maximum of **PCIe 5.0 x4 lanes per device**. A single x4 link delivers approximately 100 Gbps of bandwidth — half the NIC's 200 Gbps capacity.
+
+To work around this, each physical QSFP56 port is split into **two PCIe x4 partitions**. Each partition appears as a separate network device pair in Linux — one Ethernet interface and one RoCEv2 interface:
+
+```
+# Example output of ibdev2netdev with one cable in the outer port
+rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)
+rocep1s0f1 port 1 ==> enp1s0f1np1 (Down)
+roceP2p1s0f0 port 1 ==> enP2p1s0f0np0 (Up)
+roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Down)
+```
+
+With a single cable plugged into one port, you get **two active Ethernet interfaces** (e.g., `enp1s0f1np1` and `enP2p1s0f1np1`) and **two active RoCEv2 interfaces** (e.g., `rocep1s0f1` and `roceP2p1s0f1`). Each pair represents one PCIe x4 partition capable of ~100 Gbps.
+
+Using two cables (one per physical port) also results in two devices per port — four total — but does not meaningfully increase point-to-point bandwidth between two Sparks. **A single cable is sufficient for full 200 Gbps between two nodes.**
+
+:::note
+For clusters of **three or more nodes**, you need a switch (e.g., [MikroTik CRS812-DDQ](https://mikrotik.com/product/crs812_ddq) or [MikroTik CRS804-DDQ](https://mikrotik.com/product/crs804_ddq).
+:::
+
+## Network design principles
+
+### Separate management and cluster traffic
+
+The single most important networking decision: **keep cluster (NCCL/RDMA) traffic off the management network, and keep management traffic off the CX-7 interfaces.**
+
+- **Management network (10 Gbps built-in Ethernet):** SSH, system administration, general internet access, package updates.
+- **Cluster network (CX-7, up to 200 Gbps):** NCCL communication, model file sync (rsync), container image distribution. Nothing else.
+
+Minimize non-cluster activity on the CX-7 subnets. Stray traffic competes with NCCL and degrades inference performance.
+
+sparkrun follows this principle by default — SSH orchestration and control-plane communication go over the management interface, while model sync, container distribution, and NCCL all use the high-speed CX-7 interfaces. In fact, it would be ideal to NOT do container and model synchronization over CX-7 interfaces; however, it's realistically the most *practical* choice to do so.
+
+### Always use static IPs
+
+Use static IP addresses on every CX-7 interface. Do not use DHCP or auto-assigned addresses.
+
+### Choosing your subnets
+
+You need **two private subnets** for the CX-7 cluster interfaces — one per PCIe partition. These are isolated point-to-point or switched links with no internet routing, so you must use addresses from the RFC 1918 private ranges:
+
+| Range | CIDR | Addresses | Common name |
+|---|---|---|---|
+| `10.0.0.0` – `10.255.255.255` | `10.0.0.0/8` | ~16.7 million | Class A private |
+| `172.16.0.0` – `172.31.255.255` | `172.16.0.0/12` | ~1 million | Class B private |
+| `192.168.0.0` – `192.168.255.255` | `192.168.0.0/16` | ~65,000 | Class C private |
+
+Any of these ranges work. Use a **/24 subnet mask** (254 usable addresses) — it is the simplest to reason about and more than enough for any Spark cluster. Even an 8-node cluster only needs 8 addresses per subnet.
+
+**The key rule: your cluster subnets must not overlap with any network your Sparks are already connected to.** Check for conflicts with:
+
+- Your management network / LAN (e.g., if your Sparks get management IPs via DHCP on `192.168.1.0/24`, don't use that range)
+- VPN address ranges
+- Docker's default bridge networks (`172.17.0.0/16` and similar)
+- Any other subnets routed on the machine
+
+A simple approach: pick two adjacent `/24` subnets from a range you know is unused. Throughout this guide we use `192.168.11.0/24` and `192.168.12.0/24` as examples — replace these with whatever is free in your environment.
+
+### Assign IPs to both partitions — on different subnets
+
+Each physical port exposes two Ethernet interfaces (the "twin" pair from the PCIe split). Assign an IP address to **both** interfaces, but they **must be on different subnets**:
+
+| Interface | Subnet | Example IP |
+|---|---|---|
+| `enp1s0f1np0` (partition 1) | `192.168.11.0/24` | `192.168.11.13` |
+| `enP2p1s0f1np0` (partition 2) | `192.168.12.0/24` | `192.168.12.13` |
+
+:::caution
+**Never put both partitions on the same subnet.** Same-subnet twin interfaces confuse interface auto-discovery and break routing. This is a common misconfiguration that causes subtle, hard-to-debug failures.
+:::
+
+Assigning IPs to both partitions allows tools like sparkrun to use both paths for data transfers (model sync, container distribution), maximizing the available 200 Gbps. NCCL uses RoCEv2 directly and will utilize both RoCE interfaces regardless, but having IPs on both enables higher throughput for non-RDMA bulk transfers too.
+
+### Jumbo frames (MTU 9000)
+
+Set MTU to **9000** on all CX-7 interfaces, including interfaces without an IP address. Jumbo frames reduce per-packet overhead and measurably improve throughput for large NCCL transfers.
+
+```yaml
+# /etc/netplan/40-cx7.yaml — set MTU on both twin interfaces
+network:
+  version: 2
+  ethernets:
+    enp1s0f1np0:
+      dhcp4: no
+      mtu: 9000
+      addresses: [192.168.11.13/24]
+    enP2p1s0f1np0:
+      dhcp4: no
+      mtu: 9000
+      addresses: [192.168.12.13/24]
+```
+
+If your cluster uses a switch, the switch ports should be configured for MTU 9216 to leave room for overhead. An MTU mismatch anywhere in the path silently drops jumbo frames.
+
+## Step-by-step configuration
+
+### 1. Identify your interfaces
+
+Plug in your QSFP56 cable and check which interfaces come up:
+
+```bash
+ibdev2netdev
+```
+
+The "Up" interfaces correspond to your connected port. Note the twin pair names — you will need both.
+
+### 2. Create a netplan configuration
+
+Create `/etc/netplan/40-cx7.yaml` on **each node** with the appropriate IPs. Use a consistent addressing scheme across all nodes.
+
+**Example for a 2-node cluster:**
+
+Node 1 (`spark1`):
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f1np1:
+      dhcp4: no
+      dhcp6: no
+      link-local: [ ipv4 ]
+      mtu: 9000
+      addresses: [192.168.11.13/24]
+    enP2p1s0f1np1:
+      dhcp4: no
+      dhcp6: no
+      link-local: [ ipv4 ]
+      mtu: 9000
+      addresses: [192.168.12.13/24]
+```
+
+Node 2 (`spark2`):
+```yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f1np1:
+      dhcp4: no
+      dhcp6: no
+      link-local: [ ipv4 ]
+      mtu: 9000
+      addresses: [192.168.11.14/24]
+    enP2p1s0f1np1:
+      dhcp4: no
+      dhcp6: no
+      link-local: [ ipv4 ]
+      mtu: 9000
+      addresses: [192.168.12.14/24]
+```
+
+### 3. Apply the configuration
+
+On each node:
+
+```bash
+sudo chmod 600 /etc/netplan/40-cx7.yaml
+sudo netplan apply
+```
+
+### 4. Verify connectivity
+
+Ping across both subnets from each node:
+
+```bash
+# From spark1 — test both subnets
+ping -c 3 192.168.11.14
+ping -c 3 192.168.12.14
+```
+
+Verify MTU is effective end-to-end:
+
+```bash
+ping -M do -s 8972 -c 3 192.168.11.14
+```
+
+A successful large-packet ping confirms jumbo frames are working. If it fails, check MTU on both endpoints and any switch in between.
+
+## Host preparation checklist
+
+Beyond networking, each DGX Spark in the cluster needs some basic setup.
+
+### Stay on DGX OS
+
+We recommend sticking with the **DGX OS** that ships with the Spark rather than switching to another Linux distribution. DGX OS includes NVIDIA drivers, CUDA, container runtime, and firmware that are tested together. Switching distributions risks driver/firmware compatibility issues.
+
+### Same username across all nodes
+
+Use the **same username** on every Spark in the cluster. sparkrun connects via SSH and expects a consistent user across hosts.
+
+Ideally, the cluster user would be a dedicated service account rather than your personal login. In practice, most Spark deployments have a single user, and that works fine.
+
+### Required packages
+
+These should already be installed on DGX OS, but verify:
+
+```bash
+# Confirm these are available
+which rsync git docker
+```
+
+If anything is missing:
+
+```bash
+sudo apt-get update && sudo apt-get install -y rsync git
+```
+
+## Verifying RDMA performance
+
+Once networking is configured, use the `perftest` package to verify RDMA bandwidth and latency.
+
+### Bandwidth test
+
+On the receiver node:
+
+```bash
+ib_write_bw -d rocep1s0f1 --report_gbits -q 4 -R --force-link IB
+```
+
+On the sender node:
+
+```bash
+ib_write_bw 192.168.11.14 -d rocep1s0f1 --report_gbits -q 4 -R --force-link IB
+```
+
+You should see approximately **110 Gbps** per RoCE interface. With both twins active via NCCL, aggregate bandwidth approaches 200 Gbps.
+
+### Latency test
+
+On the receiver node:
+
+```bash
+ib_write_lat -d rocep1s0f1 --report_gbits -R --force-link IB
+```
+
+On the sender node:
+
+```bash
+ib_write_lat 192.168.11.14 -d rocep1s0f1 --report_gbits -R --force-link IB
+```
+
+Typical latency between two directly connected Sparks is approximately **1.5 microseconds**.
+
+## Configuring sparkrun for your cluster
+
+Once networking is in place, register your cluster with sparkrun using the **first CX-7 subnet** IPs (sparkrun auto-discovers the second subnet for InfiniBand transfers):
+
+```bash
+sparkrun cluster create mylab \
+  --hosts 192.168.11.13,192.168.11.14 \
+  -d "2-node DGX Spark cluster"
+
+sparkrun cluster set-default mylab
+```
+
+Then set up SSH (over the management network) and you are ready to run multi-node inference:
+
+```bash
+sparkrun setup ssh --cluster mylab
+```
+
+See [SSH Setup](/getting-started/ssh-setup/) for details.
+
+## Quick reference
+
+| Item | Recommendation |
+|---|---|
+| Cable type | QSFP56, 200 Gbps (single cable per node pair is sufficient) |
+| IP addressing | Static IPs on both CX-7 partitions, different subnets |
+| MTU | 9000 on all CX-7 interfaces (and switch ports) |
+| Management traffic | Route over 10 Gbps built-in Ethernet, not CX-7 |
+| Cluster traffic | NCCL, model sync, container distribution over CX-7 only |
+| OS | DGX OS (do not switch distributions) |
+| User account | Same username on every node, member of `docker` group |
+| Required tools | `rsync`, `git`, `docker` (pre-installed on DGX OS) |
+| Switch (3+ nodes) | Required — daisy-chaining limits to ~100 Gbps per link |

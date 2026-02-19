@@ -35,6 +35,7 @@ export default defineConfig({
                         {label: 'Installation', slug: 'getting-started/installation'},
                         {label: 'Quick Start', slug: 'getting-started/quick-start'},
                         {label: 'SSH Setup', slug: 'getting-started/ssh-setup'},
+                        {label: 'Tips & Troubleshooting', slug: 'getting-started/troubleshooting'},
                     ],
                 },
                 {

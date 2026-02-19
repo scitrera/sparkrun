@@ -1,0 +1,30 @@
+---
+title: Tips & Troubleshooting
+description: Common issues and practical tips for running sparkrun on DGX Spark systems.
+---
+
+## HuggingFace cache owned by root
+
+DGX Spark inference containers typically run as **root** inside rootful Docker. If a container downloads a model from HuggingFace — either intentionally or because a file wasn't pre-cached (e.g., a tokenizer config) — the downloaded files in `~/.cache/huggingface` end up **owned by root**. This causes permission errors on subsequent runs when your non-root user can't read or update the cache.
+
+sparkrun avoids this by downloading models **as your user** on the host and syncing them to cluster nodes before launching containers. But if models were previously downloaded inside a container (or you ran a container manually that pulled a model), you may already have root-owned files.
+
+**Symptoms:**
+
+- `Permission denied` or `OSError: [Errno 13]` errors referencing paths under `~/.cache/huggingface`
+- A model that worked before suddenly fails on launch
+- sparkrun's model sync step fails with permission errors
+
+**Fix:**
+
+```bash
+sudo chown -R $USER:$USER ~/.cache/huggingface
+```
+
+Run this on every node where containers may have downloaded model files.
+
+**Prevention:**
+
+- Let sparkrun handle model downloading and distribution — it downloads as your user and rsyncs to target nodes.
+- Avoid running `huggingface-cli download` or model download scripts inside inference containers. Download on the host instead.
+- If a container does end up downloading files, re-run the `chown` command above to fix ownership before the next launch.

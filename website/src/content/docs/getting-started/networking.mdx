@@ -112,74 +112,60 @@ network:
 
 If your cluster uses a switch, the switch ports should be configured for MTU 9216 to leave room for overhead. An MTU mismatch anywhere in the path silently drops jumbo frames.
 
-## Step-by-step configuration
+## Configuring CX-7 interfaces with sparkrun
 
-### 1. Identify your interfaces
+`sparkrun setup cx7` automates the entire CX-7 configuration process — it SSHs into each host, detects ConnectX-7 interfaces, selects two conflict-free subnets, assigns static IPs with jumbo frames, and applies the netplan configuration. This is the recommended approach.
 
-Plug in your QSFP56 cable and check which interfaces come up:
-
-```bash
-ibdev2netdev
-```
-
-The "Up" interfaces correspond to your connected port. Note the twin pair names — you will need both.
-
-### 2. Create a netplan configuration
-
-Create `/etc/netplan/40-cx7.yaml` on **each node** with the appropriate IPs. Use a consistent addressing scheme across all nodes.
-
-**Example for a 2-node cluster:**
-
-Node 1 (`spark1`):
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: [ ipv4 ]
-      mtu: 9000
-      addresses: [192.168.11.13/24]
-    enP2p1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: [ ipv4 ]
-      mtu: 9000
-      addresses: [192.168.12.13/24]
-```
-
-Node 2 (`spark2`):
-```yaml
-network:
-  version: 2
-  ethernets:
-    enp1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: [ ipv4 ]
-      mtu: 9000
-      addresses: [192.168.11.14/24]
-    enP2p1s0f1np1:
-      dhcp4: no
-      dhcp6: no
-      link-local: [ ipv4 ]
-      mtu: 9000
-      addresses: [192.168.12.14/24]
-```
-
-### 3. Apply the configuration
-
-On each node:
+### Basic usage
 
 ```bash
-sudo chmod 600 /etc/netplan/40-cx7.yaml
-sudo netplan apply
+# Configure CX-7 on all hosts in a saved cluster
+sparkrun setup cx7 --cluster mylab
+
+# Or specify hosts directly
+sparkrun setup cx7 --hosts 10.24.11.13,10.24.11.14
+
+# Preview what would be done without making changes
+sparkrun setup cx7 --cluster mylab --dry-run
 ```
 
-### 4. Verify connectivity
+### What it does
 
-Ping across both subnets from each node:
+1. **Detects** CX-7 interfaces on each host via SSH (runs `ibdev2netdev`, identifies twin pairs)
+2. **Selects subnets** — automatically picks two `/24` subnets from RFC 1918 space that don't conflict with any existing networks on the hosts. If hosts already have a valid CX-7 configuration, it preserves those subnets.
+3. **Assigns IPs** — derives the last octet of each CX-7 IP from the host's management IP (e.g., management IP `10.24.11.13` → CX-7 IPs `192.168.11.13` and `192.168.12.13`), making the addressing scheme easy to remember.
+4. **Applies netplan** — generates and writes `/etc/netplan/40-cx7.yaml` on each host with static IPs, MTU 9000, and runs `netplan apply`. Requires sudo on the target hosts.
+
+Existing valid configurations are preserved — if a host already has correct CX-7 netplan config with the right subnets and MTU, it is skipped. Use `--force` to reconfigure all hosts regardless.
+
+### Specifying subnets
+
+If you prefer specific subnets rather than automatic selection:
+
+```bash
+sparkrun setup cx7 --cluster mylab \
+  --subnet1 192.168.11.0/24 \
+  --subnet2 192.168.12.0/24
+```
+
+Both `--subnet1` and `--subnet2` must be provided together. See [Choosing your subnets](#choosing-your-subnets) above for guidance on picking ranges that won't conflict.
+
+### Options reference
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list (management IPs or hostnames) |
+| `--cluster` | Use a saved cluster definition |
+| `--user` / `-u` | SSH username (default: from cluster config or current user) |
+| `--subnet1` | Override subnet for CX-7 partition 1 (e.g., `192.168.11.0/24`) |
+| `--subnet2` | Override subnet for CX-7 partition 2 (e.g., `192.168.12.0/24`) |
+| `--mtu` | MTU for CX-7 interfaces (default: `9000`) |
+| `--dry-run` / `-n` | Show the plan without making changes |
+| `--force` | Reconfigure even if existing config is valid |
+
+### Verify connectivity
+
+After `sparkrun setup cx7` completes, verify the links are working:
 
 ```bash
 # From spark1 — test both subnets
@@ -187,13 +173,42 @@ ping -c 3 192.168.11.14
 ping -c 3 192.168.12.14
 ```
 
-Verify MTU is effective end-to-end:
+Verify jumbo frames are effective end-to-end:
 
 ```bash
 ping -M do -s 8972 -c 3 192.168.11.14
 ```
 
-A successful large-packet ping confirms jumbo frames are working. If it fails, check MTU on both endpoints and any switch in between.
+A successful large-packet ping confirms MTU 9000 is working. If it fails, check MTU on both endpoints and any switch in between.
+
+### Manual configuration
+
+If you prefer to configure netplan by hand (or need to troubleshoot), the process is:
+
+1. Identify your interfaces with `ibdev2netdev` — the "Up" interfaces correspond to your connected port
+2. Create `/etc/netplan/40-cx7.yaml` on each node with static IPs on both twin interfaces, different subnets, and MTU 9000:
+
+```yaml
+# /etc/netplan/40-cx7.yaml
+network:
+  version: 2
+  ethernets:
+    enp1s0f0np0:
+      dhcp4: no
+      mtu: 9000
+      addresses: [192.168.11.13/24]
+    enP2p1s0f0np0:
+      dhcp4: no
+      mtu: 9000
+      addresses: [192.168.12.13/24]
+```
+
+3. Apply on each node:
+
+```bash
+sudo chmod 600 /etc/netplan/40-cx7.yaml
+sudo netplan apply
+```
 
 ## Host preparation checklist
 

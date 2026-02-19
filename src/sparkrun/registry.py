@@ -397,7 +397,7 @@ class RegistryManager:
 
         from sparkrun.recipe import _effective_runtime
 
-        for f in sorted(recipe_dir.glob("*.yaml")):
+        for f in sorted(recipe_dir.rglob("*.yaml")):
             stem = f.stem
             try:
                 data = read_yaml(str(f))
@@ -485,9 +485,23 @@ class RegistryManager:
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is None:
                 continue
+            # Flat lookup first (existing behavior)
             for ext in (".yaml", ".yml"):
                 candidate = recipe_dir / (name + ext)
                 if candidate.exists():
                     matches.append((entry.name, candidate))
+
+        # If flat lookup found nothing, search subdirectories by stem
+        if not matches:
+            for entry in registries:
+                if not entry.enabled:
+                    continue
+                recipe_dir = self._recipe_dir(entry)
+                if recipe_dir is None:
+                    continue
+                for ext in (".yaml", ".yml"):
+                    for candidate in sorted(recipe_dir.rglob("*" + ext)):
+                        if candidate.stem == name:
+                            matches.append((entry.name, candidate))
 
         return matches

@@ -351,20 +351,32 @@ def find_recipe(name: str, search_paths: list[Path] | None = None,
             if candidate.exists():
                 return candidate
 
-    # 2. Search user-provided paths
+    # 2. Search user-provided paths (flat first, then recursive by stem)
     for search_dir in (search_paths or []):
         for ext in ("", ".yaml", ".yml"):
             candidate = search_dir / (name + ext)
             if candidate.exists():
                 return candidate
+    for search_dir in (search_paths or []):
+        for ext in (".yaml", ".yml"):
+            matches = sorted(search_dir.rglob("*" + ext))
+            for m in matches:
+                if m.stem == name:
+                    return m
 
-    # 3. Search registry paths
+    # 3. Search registry paths (flat first, then recursive by stem)
     if registry_manager:
         for search_dir in registry_manager.get_recipe_paths():
             for ext in ("", ".yaml", ".yml"):
                 candidate = search_dir / (name + ext)
                 if candidate.exists():
                     return candidate
+        for search_dir in registry_manager.get_recipe_paths():
+            for ext in (".yaml", ".yml"):
+                matches = sorted(search_dir.rglob("*" + ext))
+                for m in matches:
+                    if m.stem == name:
+                        return m
 
     # 4. Try registry file-stem matching
     if registry_manager:
@@ -409,7 +421,7 @@ def list_recipes(search_paths: list[Path] | None = None,
                         registry_name = reg.name
                         break
 
-        for f in sorted(search_dir.glob("*.yaml")):
+        for f in sorted(search_dir.rglob("*.yaml")):
             stem = f.stem
             if stem not in seen_names:
                 seen_names.add(stem)

@@ -212,6 +212,7 @@ class RuntimePlugin(Plugin):
         detached: bool = True,
         skip_ib_detect: bool = False,
         nccl_env: dict[str, str] | None = None,
+        ib_ip_map: dict[str, str] | None = None,
         **kwargs,
     ) -> int:
         """Launch the workload — solo or cluster.
@@ -238,6 +239,11 @@ class RuntimePlugin(Plugin):
             nccl_env: Pre-detected NCCL environment variables.  When
                 provided (not ``None``), skips runtime IB detection and
                 uses this env directly.
+            ib_ip_map: Pre-detected InfiniBand IP mapping
+                (management host → IB IP).  Used by runtimes that need
+                IB addresses for inter-node communication (e.g. llama.cpp
+                RPC).  When ``None``, the runtime may detect IB IPs
+                itself if ``skip_ib_detect`` is ``False``.
             **kwargs: Runtime-specific keyword arguments.
 
         Returns:

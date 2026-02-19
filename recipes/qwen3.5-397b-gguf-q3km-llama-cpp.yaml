@@ -14,6 +14,7 @@ defaults:
   host: 0.0.0.0
   n_gpu_layers: 99
   ctx_size: 262144
+  split_mode: layer
 
 command: |
   llama-server \
@@ -24,5 +25,6 @@ command: |
       --ctx-size {ctx_size} \
       --flash-attn on \
       --jinja \
+      --split-mode {split_mode} \
       --no-webui \
       --no-mmap

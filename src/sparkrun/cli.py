@@ -378,6 +378,7 @@ def run(
     # Always runs for non-delegating runtimes (hash checks make it cheap
     # when resources are already present on all hosts).
     nccl_env = None
+    ib_ip_map: dict[str, str] = {}
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     if not runtime.is_delegating_runtime():
         nccl_env, ib_ip_map, mgmt_ip_map = _distribute_resources(
@@ -464,6 +465,7 @@ def run(
         detached=not foreground,
         skip_ib_detect=nccl_env is not None or skip_ib,
         nccl_env=nccl_env,
+        ib_ip_map=ib_ip_map,
         ray_port=ray_port,
         dashboard_port=dashboard_port,
         dashboard=dashboard,

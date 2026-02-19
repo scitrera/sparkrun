@@ -22,6 +22,12 @@ _LLAMA_CPP_FLAG_MAP = {
     "threads": "--threads",
     "chat_template": "--chat-template",
     "reasoning_format": "--reasoning-format",
+    "split_mode": "--split-mode",
+}
+
+# Defaults injected when not set in recipe config
+_LLAMA_CPP_DEFAULTS = {
+    "split_mode": "layer",
 }
 
 # Boolean flags (present when truthy, absent when falsy)
@@ -94,6 +100,11 @@ class LlamaCppRuntime(RuntimePlugin):
 
     def _build_command(self, recipe: Recipe, config) -> str:
         """Build the llama-server command from structured config."""
+        from vpd.legacy.yaml_dict import vpd_chain
+
+        # Layer runtime defaults at lowest priority so recipe/CLI can override
+        config = vpd_chain(config, _LLAMA_CPP_DEFAULTS)
+
         model = recipe.model
 
         # Check for pre-resolved GGUF path from distribution pre-sync
@@ -209,6 +220,7 @@ class LlamaCppRuntime(RuntimePlugin):
             detached: bool = True,
             skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
+            ib_ip_map: dict[str, str] | None = None,
             rpc_port: int = _DEFAULT_RPC_PORT,
             **kwargs,
     ) -> int:
@@ -234,6 +246,7 @@ class LlamaCppRuntime(RuntimePlugin):
             cluster_id=cluster_id, rpc_port=rpc_port, env=env,
             cache_dir=cache_dir, config=config, dry_run=dry_run,
             skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
+            ib_ip_map=ib_ip_map,
         )
 
     def stop(
@@ -293,6 +306,7 @@ class LlamaCppRuntime(RuntimePlugin):
             dry_run: bool,
             skip_ib_detect: bool,
             nccl_env: dict[str, str] | None = None,
+            ib_ip_map: dict[str, str] | None = None,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
 
@@ -348,9 +362,12 @@ class LlamaCppRuntime(RuntimePlugin):
 
         # Step 2: InfiniBand detection (also resolves IB IPs for RPC routing)
         t0 = time.monotonic()
-        ib_ip_map: dict[str, str] = {}
+        if ib_ip_map is None:
+            ib_ip_map = {}
         if nccl_env is not None:
             logger.info("Step 2/5: Using pre-detected NCCL env (%d vars)", len(nccl_env))
+            if ib_ip_map:
+                logger.info("  Pre-detected IB IPs for %d host(s)", len(ib_ip_map))
         elif not skip_ib_detect:
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             ib_result = detect_ib_for_hosts(

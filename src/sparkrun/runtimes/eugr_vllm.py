@@ -183,9 +183,7 @@ class EugrVllmRuntime(RuntimePlugin):
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate eugr-vllm-specific recipe fields."""
-        issues = []
-        if not recipe.model:
-            issues.append("[eugr-vllm] model is required")
+        issues = super().validate_recipe(recipe)
         if not recipe.command:
             issues.append("[eugr-vllm] command template is recommended for eugr recipes")
         return issues

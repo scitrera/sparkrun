@@ -106,6 +106,73 @@ def _apply_tp_trimming(
     return trimmed
 
 
+def _get_cluster_manager(v=None):
+    """Create a ClusterManager using the SAF config root."""
+    from sparkrun.cluster_manager import ClusterManager
+    from sparkrun.config import get_config_root
+    # TODO: switch to leveraging scitrera-app-framework plugin for ClusterManager singleton?
+    return ClusterManager(get_config_root(v))
+
+
+def _load_recipe(config, recipe_name):
+    """Find, load, and return a recipe.
+
+    Exits with an error message on failure.
+
+    Returns:
+        Tuple of (recipe, recipe_path, registry_mgr).
+    """
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+    try:
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+    return recipe, recipe_path, registry_mgr
+
+
+def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
+    """Resolve hosts from CLI args; exit if none are found.
+
+    Returns:
+        Tuple of (host_list, cluster_mgr).
+    """
+    from sparkrun.hosts import resolve_hosts
+    cluster_mgr = _get_cluster_manager(v)
+    host_list = resolve_hosts(
+        hosts=hosts,
+        hosts_file=hosts_file,
+        cluster_name=cluster_name,
+        cluster_manager=cluster_mgr,
+        config_default_hosts=config.default_hosts,
+    )
+    if not host_list:
+        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
+        sys.exit(1)
+    return host_list, cluster_mgr
+
+
+def _shell_rc_file(shell):
+    """Return the RC file path for a given shell name.
+
+    Exits with an error for unsupported shells.
+    """
+    from pathlib import Path
+    home = Path.home()
+    rc_files = {
+        "bash": home / ".bashrc",
+        "zsh": home / ".zshrc",
+        "fish": home / ".config" / "fish" / "config.fish",
+    }
+    if shell not in rc_files:
+        click.echo("Error: Unsupported shell: %s" % shell, err=True)
+        sys.exit(1)
+    return rc_files[shell]
+
+
 class RecipeNameType(click.ParamType):
     """Click parameter type with shell completion for recipe names."""
 
@@ -138,9 +205,7 @@ class ClusterNameType(click.ParamType):
     def shell_complete(self, ctx, param, incomplete):
         """Return completion items for cluster names."""
         try:
-            from sparkrun.cluster_manager import ClusterManager
-            from sparkrun.config import get_config_root
-            mgr = ClusterManager(get_config_root())
+            mgr = _get_cluster_manager()
             clusters = mgr.list_clusters()
             return [
                 click.shell_completion.CompletionItem(c.name)
@@ -286,7 +351,6 @@ def run(
       sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
     from sparkrun.config import SparkrunConfig
 
     v = init_sparkrun()
@@ -295,14 +359,7 @@ def run(
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Find and load recipe
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     # Validate recipe
     issues = recipe.validate()
@@ -336,10 +393,8 @@ def run(
 
     # Determine hosts
     from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
 
-    cluster_mgr = ClusterManager(get_config_root(v))
+    cluster_mgr = _get_cluster_manager(v)
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,
@@ -677,21 +732,10 @@ def setup_completion(ctx, shell):
 
       sparkrun setup completion --shell bash
     """
-    from pathlib import Path
-
     if not shell:
         shell, rc_file = _detect_shell()
     else:
-        home = Path.home()
-        if shell == "bash":
-            rc_file = home / ".bashrc"
-        elif shell == "zsh":
-            rc_file = home / ".zshrc"
-        elif shell == "fish":
-            rc_file = home / ".config" / "fish" / "config.fish"
-        else:
-            click.echo("Error: Unsupported shell: %s" % shell, err=True)
-            sys.exit(1)
+        rc_file = _shell_rc_file(shell)
 
     completion_var = "_SPARKRUN_COMPLETE"
 
@@ -757,16 +801,7 @@ def setup_install(ctx, shell):
     if not shell:
         shell, rc_file = _detect_shell()
     else:
-        home = Path.home()
-        if shell == "bash":
-            rc_file = home / ".bashrc"
-        elif shell == "zsh":
-            rc_file = home / ".zshrc"
-        elif shell == "fish":
-            rc_file = home / ".config" / "fish" / "config.fish"
-        else:
-            click.echo("Error: Unsupported shell: %s" % shell, err=True)
-            sys.exit(1)
+        rc_file = _shell_rc_file(shell)
 
     # Step 1: Install sparkrun via uv tool
     uv = _require_uv()
@@ -903,13 +938,12 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     import subprocess
 
     from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import SparkrunConfig, get_config_root
+    from sparkrun.config import SparkrunConfig
 
     config = SparkrunConfig()
 
     # Resolve hosts and look up cluster user if applicable
-    cluster_mgr = ClusterManager(get_config_root())
+    cluster_mgr = _get_cluster_manager()
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,
@@ -1011,31 +1045,12 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
       sparkrun stop glm-4.7-flash-awq --cluster mylab
     """
     from sparkrun.config import SparkrunConfig
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Load recipe for cluster_id derivation
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
-    cluster_mgr = ClusterManager(get_config_root())
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
@@ -1061,7 +1076,8 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
     for rank in range(len(host_list)):
         container_names.append("%s_node_%d" % (cluster_id, rank))
 
-    is_local = len(host_list) == 1 and host_list[0] in ("localhost", "127.0.0.1", "")
+    from sparkrun.hosts import is_local_host
+    is_local = len(host_list) == 1 and is_local_host(host_list[0])
     if is_local:
         cleanup_containers_local(container_names, dry_run=dry_run)
     else:
@@ -1093,10 +1109,6 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.config import SparkrunConfig
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
     from sparkrun.orchestration.docker import generate_cluster_id
 
     v = init_sparkrun()
@@ -1104,28 +1116,10 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Load recipe
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     # Resolve hosts
-    cluster_mgr = ClusterManager(get_config_root(v))
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
-
-    if not host_list:
-        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
-        sys.exit(1)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
@@ -1163,8 +1157,7 @@ def cluster(ctx):
 @click.pass_context
 def cluster_create(ctx, name, hosts, hosts_file, description, user):
     """Create a new named cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
     from sparkrun.hosts import parse_hosts_file
 
     host_list = [h.strip() for h in hosts.split(",") if h.strip()] if hosts else []
@@ -1175,7 +1168,7 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
         click.echo("Error: No hosts provided.", err=True)
         sys.exit(1)
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.create(name, host_list, description, user=user)
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
@@ -1193,8 +1186,7 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
 @click.pass_context
 def cluster_update(ctx, name, hosts, hosts_file, description, user):
     """Update an existing cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
     from sparkrun.hosts import parse_hosts_file
 
     host_list = None
@@ -1207,7 +1199,7 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user):
         click.echo("Error: Nothing to update. Provide --hosts, --hosts-file, -d, or --user.", err=True)
         sys.exit(1)
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.update(name, hosts=host_list, description=description, user=user)
         click.echo(f"Cluster '{name}' updated.")
@@ -1220,10 +1212,7 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user):
 @click.pass_context
 def cluster_list(ctx):
     """List all saved clusters."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     clusters = mgr.list_clusters()
     default_name = mgr.get_default()
 
@@ -1254,10 +1243,9 @@ def cluster_list(ctx):
 @click.pass_context
 def cluster_show(ctx, name):
     """Show details of a saved cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         c = mgr.get(name)
     except ClusterError as e:
@@ -1281,10 +1269,9 @@ def cluster_show(ctx, name):
 @click.pass_context
 def cluster_delete(ctx, name, force):
     """Delete a saved cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
 
     if not force:
         click.confirm(f"Delete cluster '{name}'?", abort=True)
@@ -1302,10 +1289,9 @@ def cluster_delete(ctx, name, force):
 @click.pass_context
 def cluster_set_default(ctx, name):
     """Set the default cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.set_default(name)
         click.echo(f"Default cluster set to '{name}'.")
@@ -1318,10 +1304,7 @@ def cluster_set_default(ctx, name):
 @click.pass_context
 def cluster_unset_default(ctx):
     """Remove the default cluster setting."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     mgr.unset_default()
     click.echo("Default cluster unset.")
 
@@ -1330,10 +1313,7 @@ def cluster_unset_default(ctx):
 @click.pass_context
 def cluster_default(ctx):
     """Show the current default cluster."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     default_name = mgr.get_default()
     if not default_name:
         click.echo("No default cluster set.")
@@ -1366,27 +1346,15 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 
       sparkrun cluster status --cluster mylab
     """
-    from sparkrun.config import SparkrunConfig, get_config_root
-    from sparkrun.hosts import resolve_hosts
+    from sparkrun.config import SparkrunConfig
     from sparkrun.cluster_manager import (
-        ClusterManager, query_cluster_status,
+        query_cluster_status,
         format_job_label, format_job_commands, format_host_display,
     )
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    cluster_mgr = ClusterManager(get_config_root())
-
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
-    if not host_list:
-        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
-        sys.exit(1)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -1536,17 +1504,8 @@ def recipe_search(ctx, registry, runtime, query, config_path=None):
 @click.pass_context
 def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
     """Show detailed recipe information."""
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
     cli_overrides = {}
     if tensor_parallel is not None:
@@ -1564,18 +1523,10 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
 def recipe_validate(ctx, recipe_name, config_path=None):
     """Validate a recipe file."""
     from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
 
     v = init_sparkrun()
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     issues = recipe.validate()
 
@@ -1618,17 +1569,8 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 
       sparkrun recipe vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
     """
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     click.echo(f"Recipe:  {recipe.name}")
     click.echo(f"Model:   {recipe.model}")

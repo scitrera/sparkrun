@@ -13,6 +13,11 @@ from sparkrun.cluster_manager import ClusterError, ClusterManager
 logger = logging.getLogger(__name__)
 
 
+def is_local_host(host: str) -> bool:
+    """Check if a host string refers to the local machine."""
+    return host in ("localhost", "127.0.0.1", "")
+
+
 class HostResolutionError(Exception):
     """Error during host resolution."""
 

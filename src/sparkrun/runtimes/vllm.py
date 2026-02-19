@@ -85,19 +85,12 @@ class VllmRuntime(RuntimePlugin):
                 parts.extend(["-tp", str(tp)])
 
         # Add flags from defaults (skip tp since handled above)
-        for key, flag in _VLLM_FLAG_MAP.items():
-            if key in ("tensor_parallel", "distributed_executor_backend") and is_cluster:
-                continue  # already handled
-            if key == "tensor_parallel" and not is_cluster:
-                continue  # already handled
-            value = config.get(key)
-            if value is None:
-                continue
-            if key in _VLLM_BOOL_FLAGS:
-                if value and str(value).lower() not in ("false", "0", "no"):
-                    parts.append(flag)
-            else:
-                parts.extend([flag, str(value)])
+        skip = {"tensor_parallel"}
+        if is_cluster:
+            skip.add("distributed_executor_backend")
+        parts.extend(self.build_flags_from_map(
+            config, _VLLM_FLAG_MAP, bool_keys=_VLLM_BOOL_FLAGS, skip_keys=skip,
+        ))
 
         return " ".join(parts)
 
@@ -110,10 +103,7 @@ class VllmRuntime(RuntimePlugin):
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate vLLM-specific recipe fields."""
-        issues = []
-        if not recipe.model:
-            issues.append("[vllm] model is required")
-        return issues
+        return super().validate_recipe(recipe)
 
     # --- Log following ---
 

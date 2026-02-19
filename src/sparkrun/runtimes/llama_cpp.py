@@ -123,17 +123,11 @@ class LlamaCppRuntime(RuntimePlugin):
         else:
             parts = ["llama-server", "-m", model or ""]
 
-        # Add valued flags from config
-        for key, flag in _LLAMA_CPP_FLAG_MAP.items():
-            value = config.get(key)
-            if value is not None:
-                parts.extend([flag, str(value)])
-
-        # Add boolean flags
-        for key, flag in _LLAMA_CPP_BOOL_FLAGS.items():
-            value = config.get(key)
-            if value and str(value).lower() not in ("false", "0", "no"):
-                parts.append(flag)
+        # Add valued and boolean flags from config
+        all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
+        parts.extend(self.build_flags_from_map(
+            config, all_flags, bool_keys=set(_LLAMA_CPP_BOOL_FLAGS),
+        ))
 
         return " ".join(parts)
 
@@ -152,10 +146,7 @@ class LlamaCppRuntime(RuntimePlugin):
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate llama.cpp-specific recipe fields."""
-        issues = []
-        if not recipe.model:
-            issues.append("[llama-cpp] model is required")
-        return issues
+        return super().validate_recipe(recipe)
 
     # --- Log following ---
 

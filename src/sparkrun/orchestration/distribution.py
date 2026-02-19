@@ -6,6 +6,8 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING
 
+from sparkrun.hosts import is_local_host
+
 if TYPE_CHECKING:
     from sparkrun.config import SparkrunConfig
 
@@ -68,12 +70,7 @@ def distribute_resources(
     ).hexdigest()[:12]
     _lock_id = f"sparkrun_{_lock_key}"
 
-    is_local = (
-            len(host_list) <= 1
-            and host_list[0] in ("localhost", "127.0.0.1", "")
-    )
-
-    if is_local:
+    if is_local := (len(host_list) <= 1 and is_local_host(host_list[0])):
         # Local-only: just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
             logger.info("Ensuring container image is available locally...")

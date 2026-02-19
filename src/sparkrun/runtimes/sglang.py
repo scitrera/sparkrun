@@ -133,17 +133,10 @@ class SglangRuntime(RuntimePlugin):
         if tp:
             parts.extend(["--tp-size", str(tp)])
 
-        for key, flag in _SGLANG_FLAG_MAP.items():
-            if key == "tensor_parallel":
-                continue  # already handled
-            value = config.get(key)
-            if value is None:
-                continue
-            if key in _SGLANG_BOOL_FLAGS:
-                if value and str(value).lower() not in ("false", "0", "no"):
-                    parts.append(flag)
-            else:
-                parts.extend([flag, str(value)])
+        parts.extend(self.build_flags_from_map(
+            config, _SGLANG_FLAG_MAP, bool_keys=_SGLANG_BOOL_FLAGS,
+            skip_keys={"tensor_parallel"},
+        ))
 
         return " ".join(parts)
 
@@ -172,9 +165,7 @@ class SglangRuntime(RuntimePlugin):
         """Validate SGLang-specific recipe fields."""
         from sparkrun.models.download import is_gguf_model
 
-        issues = []
-        if not recipe.model:
-            issues.append("[sglang] model is required")
+        issues = super().validate_recipe(recipe)
 
         if recipe.model and is_gguf_model(recipe.model):
             tokenizer = (recipe.defaults or {}).get("tokenizer_path")

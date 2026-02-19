@@ -383,7 +383,8 @@ def run_script_on_host(
     If *host* is ``"localhost"``, ``"127.0.0.1"``, or empty, runs locally.
     Otherwise runs via SSH.
     """
-    if host in ("localhost", "127.0.0.1", ""):
+    from sparkrun.hosts import is_local_host
+    if is_local_host(host):
         return run_local_script(script, dry_run=dry_run)
     kw = ssh_kwargs or {}
     return run_remote_script(host, script, timeout=timeout, dry_run=dry_run, **kw)
@@ -397,7 +398,8 @@ def run_command_on_host(
         dry_run: bool = False,
 ) -> RemoteResult:
     """Run a command on a host — dispatches to local or remote execution."""
-    if host in ("localhost", "127.0.0.1", ""):
+    from sparkrun.hosts import is_local_host
+    if is_local_host(host):
         return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     kw = ssh_kwargs or {}
     return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, **kw)

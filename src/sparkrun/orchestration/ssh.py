@@ -243,11 +243,11 @@ def stream_remote_logs(
         dry_run: If True, print the command that would run and return.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
+    from sparkrun.hosts import is_local_host
 
     logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
-    is_local = host in ("localhost", "127.0.0.1", "")
 
-    if is_local:
+    if is_local := is_local_host(host):
         cmd = logs_cmd.split()
     else:
         ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)
@@ -296,8 +296,9 @@ def stream_container_file_logs(
         "tail", "-f", "--lines", str(tail), log_file,
     ]
 
-    is_local = host in ("localhost", "127.0.0.1", "")
-    if is_local:
+    from sparkrun.hosts import is_local_host
+
+    if is_local := is_local_host(host):
         cmd = tail_cmd
     else:
         ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)

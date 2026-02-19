@@ -7,7 +7,7 @@ from abc import abstractmethod
 from logging import Logger
 from typing import Any, TYPE_CHECKING
 
-from scitrera_app_framework.api import Plugin, Variables
+from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
 if TYPE_CHECKING:
     from sparkrun.config import SparkrunConfig
@@ -112,13 +112,13 @@ class RuntimePlugin(Plugin):
         return "ray"
 
     def generate_node_command(
-        self,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        head_ip: str,
-        num_nodes: int,
-        node_rank: int,
-        init_port: int = 25000,
+            self,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            head_ip: str,
+            num_nodes: int,
+            node_rank: int,
+            init_port: int = 25000,
     ) -> str:
         """Generate the serve command for a specific node in native clustering.
 
@@ -142,9 +142,51 @@ class RuntimePlugin(Plugin):
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Return list of warnings/errors for runtime-specific fields.
 
-        Override in subclasses to add runtime-specific validation.
+        The base implementation checks that a model is specified.
+        Subclasses should call ``super().validate_recipe(recipe)`` and
+        extend the returned list with runtime-specific checks.
         """
-        return []
+        issues = []
+        if not recipe.model:
+            issues.append("[%s] model is required" % self.runtime_name)
+        return issues
+
+    @staticmethod
+    def build_flags_from_map(
+            config,
+            flag_map: dict[str, str],
+            bool_keys: set[str] | frozenset[str] = frozenset(),
+            skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> list[str]:
+        """Build CLI flag list from a config-key to CLI-flag mapping.
+
+        Iterates *flag_map* and looks up each key in *config*.  Keys in
+        *bool_keys* are treated as boolean toggles (flag appended when
+        truthy, omitted otherwise).  All other keys emit ``[flag, value]``
+        pairs.  Keys listed in *skip_keys* are skipped entirely.
+
+        Args:
+            config: Config chain object (must support ``.get(key)``).
+            flag_map: Mapping of recipe config key to CLI flag string.
+            bool_keys: Set of keys that should be treated as boolean flags.
+            skip_keys: Keys to skip (already handled by the caller).
+
+        Returns:
+            Flat list of CLI argument strings.
+        """
+        parts: list[str] = []
+        for key, flag in flag_map.items():
+            if key in skip_keys:
+                continue
+            value = config.get(key)
+            if value is None:
+                continue
+            if key in bool_keys:
+                if ext_parse_bool(value):
+                    parts.append(flag)
+            else:
+                parts.extend([flag, str(value)])
+        return parts
 
     def is_delegating_runtime(self) -> bool:
         """True if this runtime delegates entirely to external scripts.
@@ -157,12 +199,12 @@ class RuntimePlugin(Plugin):
     # --- Log following interface ---
 
     def follow_logs(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        tail: int = 100,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+            tail: int = 100,
     ) -> None:
         """Follow container logs after a successful launch.
 
@@ -197,23 +239,23 @@ class RuntimePlugin(Plugin):
     # specific flow from orchestration primitives.
 
     def run(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        detached: bool = True,
-        skip_ib_detect: bool = False,
-        nccl_env: dict[str, str] | None = None,
-        ib_ip_map: dict[str, str] | None = None,
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
+            nccl_env: dict[str, str] | None = None,
+            ib_ip_map: dict[str, str] | None = None,
+            **kwargs,
     ) -> int:
         """Launch the workload — solo or cluster.
 
@@ -264,11 +306,11 @@ class RuntimePlugin(Plugin):
         )
 
     def stop(
-        self,
-        hosts: list[str],
-        cluster_id: str = "sparkrun0",
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
+            self,
+            hosts: list[str],
+            cluster_id: str = "sparkrun0",
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
     ) -> int:
         """Stop a running workload.
 
@@ -294,18 +336,18 @@ class RuntimePlugin(Plugin):
     # --- Default solo implementation (used by base and simple runtimes) ---
 
     def _run_solo(
-        self,
-        host: str,
-        image: str,
-        serve_command: str,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        detached: bool = True,
-        skip_ib_detect: bool = False,
-        nccl_env: dict[str, str] | None = None,
+            self,
+            host: str,
+            image: str,
+            serve_command: str,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
+            nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -328,8 +370,9 @@ class RuntimePlugin(Plugin):
             generate_container_launch_script,
             generate_exec_serve_script,
         )
+        from sparkrun.hosts import is_local_host
 
-        is_local = host in ("localhost", "127.0.0.1", "")
+        is_local = is_local_host(host)
         container_name = generate_container_name(cluster_id, "solo")
         ssh_kwargs = build_ssh_kwargs(config)
         volumes = build_volumes(cache_dir)
@@ -395,11 +438,11 @@ class RuntimePlugin(Plugin):
         return result.returncode
 
     def _stop_solo(
-        self,
-        host: str,
-        cluster_id: str = "sparkrun0",
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
+            self,
+            host: str,
+            cluster_id: str = "sparkrun0",
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
     ) -> int:
         """Stop a solo workload by removing the container."""
         from sparkrun.orchestration.primitives import (
@@ -408,9 +451,10 @@ class RuntimePlugin(Plugin):
             cleanup_containers_local,
         )
         from sparkrun.orchestration.docker import generate_container_name
+        from sparkrun.hosts import is_local_host
 
         container_name = generate_container_name(cluster_id, "solo")
-        is_local = host in ("localhost", "127.0.0.1", "")
+        is_local = is_local_host(host)
 
         if is_local:
             cleanup_containers_local([container_name], dry_run=dry_run)

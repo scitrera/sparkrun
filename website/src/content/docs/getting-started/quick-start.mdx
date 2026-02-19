@@ -3,19 +3,69 @@ title: Quick Start
 description: Get up and running with sparkrun in minutes.
 ---
 
-## Save a cluster config
+## Single-node usage
 
-Save your DGX Spark hosts once so you don't have to specify them every time:
+No cluster setup needed — just point sparkrun at a host and run:
+
+```bash
+# Run on a single DGX Spark (defaults to localhost if no host specified)
+sparkrun run qwen3-1.7b-vllm
+
+# Run on a specific remote host
+sparkrun run qwen3-1.7b-vllm --hosts 10.24.11.13
+
+# GGUF quantized models via llama.cpp
+sparkrun run qwen3-1.7b-llama-cpp
+```
+
+sparkrun launches jobs in the background (detached containers) and follows logs. **Ctrl+C detaches from logs — it never kills your inference job.** Your model keeps serving.
+
+## Multi-node cluster setup
+
+Multi-node inference (tensor parallelism across Sparks) requires three one-time setup steps:
+
+### 1. Register your cluster
+
+Save your DGX Spark hosts using their **management network IPs** (the built-in 10 Gbps Ethernet). This makes subsequent commands shorter — they reference the cluster by name instead of repeating host lists:
 
 ```bash
 sparkrun cluster create mylab \
-  --hosts 192.168.11.13,192.168.11.14 \
+  --hosts 10.24.11.13,10.24.11.14 \
+  --user dgxuser \
   -d "My DGX Spark lab"
 
 sparkrun cluster set-default mylab
 ```
 
 The first host becomes the **head node** for multi-node jobs. Order remaining hosts however you like — they become workers.
+
+:::tip
+If the machine you're running sparkrun from is also a cluster member, use `127.0.0.1` for it in the host list (e.g., `--hosts 127.0.0.1,10.24.11.14`). This avoids SSH-to-self issues and is slightly more efficient for local operations.
+:::
+
+### 2. Set up SSH Mesh
+
+sparkrun orchestrates over SSH. Establish passwordless SSH from your control machine to each Spark:
+
+```bash
+sparkrun setup ssh
+```
+
+This is interactive — you'll be prompted for passwords. See [SSH Setup](/getting-started/ssh-setup/) for details.
+
+### 3. Configure CX-7 networking
+
+Configure the high-speed ConnectX-7 interfaces on each Spark. This assigns static IPs, sets up jumbo frames (MTU 9000), and applies netplan — all automated over SSH:
+
+```bash
+sparkrun setup cx7
+```
+
+This detects CX-7 interfaces, picks two conflict-free subnets, and configures everything. Use `--dry-run` to preview first. See [Networking Best Practices](/getting-started/networking/) for the full guide.
+
+\(If your CX7 interfaces are already set up, you can skip this step -- but also, if they're already setup, then this will make no changes and just check your setup!)
+
+sparkrun automatically discovers the CX-7 interfaces on each host and uses them for high-bandwidth operations (model sync, container distribution, NCCL).
 
 ## Run an inference job
 
@@ -29,12 +79,7 @@ sparkrun run qwen3-1.7b-vllm --tp 2
 # Override settings on the fly
 sparkrun run qwen3-1.7b-vllm --hosts 192.168.11.14 --port 9000 --gpu-mem 0.8
 sparkrun run qwen3-1.7b-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
-
-# GGUF quantized models via llama.cpp
-sparkrun run qwen3-1.7b-llama-cpp
 ```
-
-sparkrun launches jobs in the background (detached containers) and follows logs. **Ctrl+C detaches from logs — it never kills your inference job.** Your model keeps serving.
 
 ## Inspect a recipe
 

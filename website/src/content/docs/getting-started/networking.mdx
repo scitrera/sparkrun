@@ -112,18 +112,49 @@ network:
 
 If your cluster uses a switch, the switch ports should be configured for MTU 9216 to leave room for overhead. An MTU mismatch anywhere in the path silently drops jumbo frames.
 
+## Setup sequence
+
+The end-to-end setup involves three sparkrun commands, followed by a cluster update. Register the cluster first so subsequent commands can reference it by name:
+
+| Step | Command | Notes |
+|---|---|---|
+| 1. Register cluster | `sparkrun cluster create mylab --hosts <mgmt-IPs>` | Save hosts by name using management IPs |
+| 2. SSH access | `sparkrun setup ssh` | Interactive — prompts for passwords; uses default cluster |
+| 3. CX-7 networking | `sparkrun setup cx7` | Requires passwordless SSH from step 2 |
+
+`sparkrun setup ssh` is interactive — it prompts for passwords and doesn't require pre-existing passwordless SSH. `sparkrun setup cx7` runs remote scripts non-interactively, so it **does** require passwordless SSH to already be in place. That's why SSH setup comes first.
+
+Your cluster stays registered with **management IPs** — there is no need to update it after CX-7 setup. sparkrun automatically discovers CX-7 interfaces on each host and uses them for high-bandwidth operations (model sync, container distribution, NCCL), while SSH orchestration continues over the management network.
+
+```bash
+# Step 1: Register cluster with management IPs
+sparkrun cluster create mylab \
+  --hosts 10.24.11.13,10.24.11.14 \
+  --user dgxuser \
+  -d "2-node DGX Spark cluster"
+sparkrun cluster set-default mylab
+
+# Step 2: SSH setup (prompts for passwords, uses default cluster)
+sparkrun setup ssh
+
+# Step 3: Configure CX-7 interfaces (uses default cluster)
+sparkrun setup cx7
+```
+
+See [SSH Setup](/getting-started/ssh-setup/) for more details on SSH configuration options.
+
 ## Configuring CX-7 interfaces with sparkrun
 
-`sparkrun setup cx7` automates the entire CX-7 configuration process — it SSHs into each host, detects ConnectX-7 interfaces, selects two conflict-free subnets, assigns static IPs with jumbo frames, and applies the netplan configuration. This is the recommended approach.
+`sparkrun setup cx7` automates the CX-7 configuration — it SSHs into each host, detects ConnectX-7 interfaces, selects two conflict-free subnets, assigns static IPs with jumbo frames, and applies the netplan configuration. This is the recommended approach.
 
 ### Basic usage
 
 ```bash
-# Configure CX-7 on all hosts in a saved cluster
-sparkrun setup cx7 --cluster mylab
-
-# Or specify hosts directly
+# Specify hosts directly (management IPs)
 sparkrun setup cx7 --hosts 10.24.11.13,10.24.11.14
+
+# Or use a saved cluster
+sparkrun setup cx7 --cluster mylab
 
 # Preview what would be done without making changes
 sparkrun setup cx7 --cluster mylab --dry-run
@@ -274,26 +305,6 @@ ib_write_lat 192.168.11.14 -d rocep1s0f1 --report_gbits -R --force-link IB
 ```
 
 Typical latency between two directly connected Sparks is approximately **1.5 microseconds**.
-
-## Configuring sparkrun for your cluster
-
-Once networking is in place, register your cluster with sparkrun using the **first CX-7 subnet** IPs (sparkrun auto-discovers the second subnet for InfiniBand transfers):
-
-```bash
-sparkrun cluster create mylab \
-  --hosts 192.168.11.13,192.168.11.14 \
-  -d "2-node DGX Spark cluster"
-
-sparkrun cluster set-default mylab
-```
-
-Then set up SSH (over the management network) and you are ready to run multi-node inference:
-
-```bash
-sparkrun setup ssh --cluster mylab
-```
-
-See [SSH Setup](/getting-started/ssh-setup/) for details.
 
 ## Quick reference
 

@@ -93,7 +93,9 @@ Assigning IPs to both partitions allows tools like sparkrun to potentially be ab
 
 ### Jumbo frames (MTU 9000)
 
-Set MTU to **9000** on all CX-7 interfaces, including interfaces without an IP address. Jumbo frames reduce per-packet overhead and measurably improve throughput for large NCCL transfers.
+MTU is maximum transmission unit. It sets the upper bound on packet size. The default & standard MTU is 1500. Jumbo Frames are an "industry-standard" but technically not part of proper standards (which is why your Internet connection won't allow jumbo frames).
+
+Set MTU to **9000** on all CX-7 interfaces that are participating in data transfer activity. Jumbo frames reduce per-packet overhead and measurably improve throughput for large data transfers.
 
 ```yaml
 # /etc/netplan/40-cx7.yaml — set MTU on both twin interfaces
@@ -110,7 +112,11 @@ network:
       addresses: [192.168.12.13/24]
 ```
 
-If your cluster uses a switch, the switch ports should be configured for MTU 9216 to leave room for overhead. An MTU mismatch anywhere in the path silently drops jumbo frames.
+If your cluster uses a switch, the switch ports should be configured for MTU 9216 to leave room MTU 9000 + overhead.
+
+:::caution
+An MTU mismatch *anywhere* in the path may result in packets being silently dropped.
+:::
 
 ## Setup sequence
 

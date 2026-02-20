@@ -17,14 +17,32 @@ sparkrun avoids this by downloading models **as your user** on the host and sync
 
 **Fix:**
 
+sparkrun has a built-in command that fixes ownership across all cluster hosts in one shot:
+
+```bash
+# Fix permissions on your default cluster
+sparkrun setup fix-permissions
+
+# Or target specific hosts
+sparkrun setup fix-permissions --cluster mylab
+
+# Custom cache location
+sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
+
+# Preview what would be done
+sparkrun setup fix-permissions --cluster mylab --dry-run
+```
+
+This runs `chown` on `~/.cache/huggingface` across all target hosts, handling sudo detection automatically. If passwordless sudo isn't configured, it will prompt for a password once.
+
+Alternatively, you can fix a single machine manually:
+
 ```bash
 sudo chown -R $USER:$USER ~/.cache/huggingface
 ```
-
-Run this on every node where containers may have downloaded model files.
 
 **Prevention:**
 
 - Let sparkrun handle model downloading and distribution — it downloads as your user and rsyncs to target nodes.
 - Avoid running `huggingface-cli download` or model download scripts inside inference containers. Download on the host instead.
-- If a container does end up downloading files, re-run the `chown` command above to fix ownership before the next launch.
+- If a container does end up downloading files, run `sparkrun setup fix-permissions` to fix ownership before the next launch.

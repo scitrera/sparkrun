@@ -372,6 +372,118 @@ def run_remote_scripts_parallel(
     return results
 
 
+def run_remote_sudo_script(
+        host: str,
+        script: str,
+        password: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        timeout: int = 60,
+        dry_run: bool = False,
+) -> RemoteResult:
+    """Execute a script on a remote host via ``sudo -S bash -s``.
+
+    Prepends the sudo password to stdin so ``sudo -S`` can read it,
+    then the remaining stdin is consumed by ``bash -s`` as the script.
+
+    Only use this for hosts that do NOT have passwordless sudo.
+    For NOPASSWD hosts, use :func:`run_remote_script` instead — ``sudo -S``
+    on a NOPASSWD host would leave the password line in stdin for bash
+    to misinterpret as a command.
+
+    Args:
+        host: Remote hostname or IP.
+        script: Bash script content to execute.
+        password: Sudo password for the remote user.
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        timeout: Overall execution timeout in seconds.
+        dry_run: If True, log the script but don't execute.
+
+    Returns:
+        RemoteResult with returncode, stdout, stderr.
+    """
+    if dry_run:
+        logger.info("[dry-run] Would execute with sudo on %s", host)
+        return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
+
+    cmd = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    cmd.extend(["sudo", "-S", "bash", "-s"])
+    full_input = password + "\n" + script
+
+    logger.debug("  SSH sudo script -> %s (%d bytes)", host, len(script))
+
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(cmd, input=full_input, capture_output=True, text=True, timeout=timeout)
+        elapsed = time.monotonic() - t0
+        result = RemoteResult(
+            host=host, returncode=proc.returncode,
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+        if result.success:
+            logger.info("  SSH sudo script <- %s OK (%.1fs)", host, elapsed)
+        else:
+            # Filter out the sudo password prompt from stderr for cleaner logging
+            stderr_clean = proc.stderr.replace("[sudo] password for %s: " % (ssh_user or ""), "").strip()
+            logger.warning("  SSH sudo script <- %s FAILED rc=%d (%.1fs): %s",
+                           host, proc.returncode, elapsed, stderr_clean[:200])
+        return result
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        logger.error("  SSH sudo script <- %s TIMEOUT after %.0fs", host, elapsed)
+        return RemoteResult(host=host, returncode=-1, stdout="", stderr="Execution timed out")
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error("  SSH sudo script <- %s ERROR (%.1fs): %s", host, elapsed, e)
+        return RemoteResult(host=host, returncode=-1, stdout="", stderr=str(e))
+
+
+def detect_sudo_on_hosts(
+        hosts: list[str],
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        dry_run: bool = False,
+) -> set[str]:
+    """Detect which hosts have passwordless sudo.
+
+    Runs ``sudo -n true`` on each host in parallel to check whether
+    the SSH user can execute sudo commands without a password prompt.
+
+    Args:
+        hosts: List of remote hostnames or IPs.
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        dry_run: If True, return empty set without executing.
+
+    Returns:
+        Set of hostnames that have passwordless (NOPASSWD) sudo.
+    """
+    if not hosts:
+        return set()
+
+    script = 'sudo -n true 2>/dev/null && echo "SUDO_OK=1" || echo "SUDO_OK=0"'
+    results = run_remote_scripts_parallel(
+        hosts, script,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        timeout=15, dry_run=dry_run,
+    )
+
+    nopasswd_hosts: set[str] = set()
+    for r in results:
+        if r.success and "SUDO_OK=1" in r.stdout:
+            nopasswd_hosts.add(r.host)
+            logger.debug("  %s: passwordless sudo available", r.host)
+        else:
+            logger.debug("  %s: passwordless sudo NOT available", r.host)
+
+    return nopasswd_hosts
+
+
 def build_ssh_opts_string(
         ssh_user: str | None = None,
         ssh_key: str | None = None,

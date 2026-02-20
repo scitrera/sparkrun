@@ -3,13 +3,14 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import pytest
 from sparkrun.orchestration.ssh import (
     build_ssh_cmd,
     RemoteResult,
     run_remote_script,
     run_remote_command,
     run_remote_scripts_parallel,
+    run_remote_sudo_script,
+    detect_sudo_on_hosts,
 )
 
 
@@ -226,3 +227,142 @@ def test_run_remote_script_exception(mock_run):
     assert not result.success
     assert result.returncode == -1
     assert "Connection refused" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# run_remote_sudo_script tests
+# ---------------------------------------------------------------------------
+
+
+def test_run_remote_sudo_script_dry_run():
+    """Dry run returns success without subprocess."""
+    result = run_remote_sudo_script(
+        "192.168.1.100",
+        "#!/bin/bash\nchown -R user /cache",
+        "mypassword",
+        dry_run=True,
+    )
+
+    assert result.success
+    assert result.host == "192.168.1.100"
+    assert result.stdout == "[dry-run]"
+    assert result.returncode == 0
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_remote_sudo_script_mocks_subprocess(mock_run):
+    """Mock subprocess.run, verify sudo -S bash -s is called with password+script."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = "OK: fixed permissions"
+    mock_proc.stderr = ""
+    mock_run.return_value = mock_proc
+
+    script = "chown -R user /cache"
+    password = "secret123"
+    result = run_remote_sudo_script("192.168.1.100", script, password, ssh_user="testuser")
+
+    assert mock_run.called
+    call_args = mock_run.call_args
+
+    # Check command structure: ssh ... sudo -S bash -s
+    cmd = call_args[0][0]
+    assert cmd[0] == "ssh"
+    assert "sudo" in cmd
+    assert "-S" in cmd
+    assert "bash" in cmd
+    assert "-s" in cmd
+
+    # Check password + script passed as input
+    full_input = call_args[1]["input"]
+    assert full_input.startswith(password + "\n")
+    assert script in full_input
+
+    assert result.success
+    assert result.stdout == "OK: fixed permissions"
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_remote_sudo_script_timeout(mock_run):
+    """Test timeout handling for sudo script."""
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["ssh"], timeout=60)
+
+    result = run_remote_sudo_script(
+        "192.168.1.100", "chown -R user /cache", "password", timeout=60,
+    )
+
+    assert not result.success
+    assert result.returncode == -1
+    assert "timed out" in result.stderr.lower()
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_remote_sudo_script_failure(mock_run):
+    """Test handling of failed sudo command."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.stdout = ""
+    mock_proc.stderr = "[sudo] password for user: Sorry, try again."
+    mock_run.return_value = mock_proc
+
+    result = run_remote_sudo_script(
+        "192.168.1.100", "chown -R user /cache", "wrongpassword", ssh_user="user",
+    )
+
+    assert not result.success
+    assert result.returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# detect_sudo_on_hosts tests
+# ---------------------------------------------------------------------------
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_detect_sudo_on_hosts_mixed(mock_run):
+    """Test detection with mixed NOPASSWD/password hosts."""
+    def side_effect(cmd, **kwargs):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stderr = ""
+        # Determine host from the command — target is the arg before "bash"
+        # cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "host1", "bash", "-s"]
+        target = cmd[-3]  # host is 3 before end: [..., "host", "bash", "-s"]
+        if "host1" in target:
+            proc.stdout = "SUDO_OK=1\n"
+        else:
+            proc.stdout = "SUDO_OK=0\n"
+        return proc
+
+    mock_run.side_effect = side_effect
+
+    result = detect_sudo_on_hosts(["host1", "host2"])
+
+    assert result == {"host1"}
+
+
+def test_detect_sudo_on_hosts_empty():
+    """Empty host list returns empty set."""
+    result = detect_sudo_on_hosts([])
+    assert result == set()
+
+
+def test_detect_sudo_on_hosts_dry_run():
+    """Dry run returns empty set without executing."""
+    result = detect_sudo_on_hosts(["host1", "host2"], dry_run=True)
+    # Dry run: all results have stdout "[dry-run]" which doesn't contain SUDO_OK=1
+    assert result == set()
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_detect_sudo_on_hosts_all_nopasswd(mock_run):
+    """Test when all hosts have passwordless sudo."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = "SUDO_OK=1\n"
+    mock_proc.stderr = ""
+    mock_run.return_value = mock_proc
+
+    result = detect_sudo_on_hosts(["host1", "host2", "host3"])
+
+    assert result == {"host1", "host2", "host3"}

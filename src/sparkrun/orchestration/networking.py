@@ -547,67 +547,6 @@ def generate_cx7_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_len: 
     )
 
 
-def _run_remote_sudo_script(
-    host: str,
-    script: str,
-    password: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    timeout: int = 60,
-    dry_run: bool = False,
-):
-    """Execute a script on a remote host via ``sudo -S bash -s``.
-
-    Prepends the sudo password to stdin so ``sudo -S`` can read it,
-    then the remaining stdin is consumed by ``bash -s`` as the script.
-
-    Only use this for hosts that do NOT have passwordless sudo.
-    For NOPASSWD hosts, use :func:`run_remote_script` instead — ``sudo -S``
-    on a NOPASSWD host would leave the password line in stdin for bash
-    to misinterpret as a command.
-    """
-    import subprocess
-    import time
-
-    from sparkrun.orchestration.ssh import RemoteResult, build_ssh_cmd
-
-    if dry_run:
-        logger.info("[dry-run] Would execute with sudo on %s", host)
-        return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
-
-    cmd = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
-    cmd.extend(["sudo", "-S", "bash", "-s"])
-    full_input = password + "\n" + script
-
-    logger.debug("  SSH sudo script -> %s (%d bytes)", host, len(script))
-
-    t0 = time.monotonic()
-    try:
-        proc = subprocess.run(cmd, input=full_input, capture_output=True, text=True, timeout=timeout)
-        elapsed = time.monotonic() - t0
-        result = RemoteResult(
-            host=host, returncode=proc.returncode,
-            stdout=proc.stdout, stderr=proc.stderr,
-        )
-        if result.success:
-            logger.info("  SSH sudo script <- %s OK (%.1fs)", host, elapsed)
-        else:
-            # Filter out the sudo password prompt from stderr for cleaner logging
-            stderr_clean = proc.stderr.replace("[sudo] password for %s: " % (ssh_user or ""), "").strip()
-            logger.warning("  SSH sudo script <- %s FAILED rc=%d (%.1fs): %s",
-                           host, proc.returncode, elapsed, stderr_clean[:200])
-        return result
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - t0
-        logger.error("  SSH sudo script <- %s TIMEOUT after %.0fs", host, elapsed)
-        return RemoteResult(host=host, returncode=-1, stdout="", stderr="Execution timed out")
-    except Exception as e:
-        elapsed = time.monotonic() - t0
-        logger.error("  SSH sudo script <- %s ERROR (%.1fs): %s", host, elapsed, e)
-        return RemoteResult(host=host, returncode=-1, stdout="", stderr=str(e))
-
-
 def configure_cx7_host(
     host_plan: CX7HostPlan,
     mtu: int,
@@ -631,13 +570,13 @@ def configure_cx7_host(
     Returns:
         RemoteResult with the outcome.
     """
-    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.orchestration.ssh import run_remote_script, run_remote_sudo_script
 
     script = generate_cx7_configure_script(host_plan, mtu, prefix_len)
     kw = ssh_kwargs or {}
 
     if sudo_password:
-        return _run_remote_sudo_script(
+        return run_remote_sudo_script(
             host_plan.host, script, sudo_password, timeout=60, dry_run=dry_run, **kw,
         )
     else:

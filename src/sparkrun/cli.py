@@ -1282,6 +1282,167 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         sys.exit(1)
 
 
+@setup.command("fix-permissions")
+@host_options
+@click.option("--user", "-u", default=None, help="Target owner (default: SSH user)")
+@click.option("--cache-dir", default=None, help="Cache directory (default: ~/.cache/huggingface)")
+@dry_run_option
+@click.pass_context
+def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir, dry_run):
+    """Fix file ownership in HuggingFace cache on cluster hosts.
+
+    Docker containers create files as root in ~/.cache/huggingface/,
+    leaving the normal user unable to manage or clean the cache.
+    This command runs chown on all target hosts to restore ownership.
+
+    Detects passwordless sudo automatically. Hosts without NOPASSWD
+    will prompt for a sudo password once.
+
+    Examples:
+
+      sparkrun setup fix-permissions --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup fix-permissions --cluster mylab
+
+      sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
+
+      sparkrun setup fix-permissions --cluster mylab --dry-run
+    """
+    import os
+
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.ssh import (
+        detect_sudo_on_hosts,
+        run_remote_script,
+        run_remote_sudo_script,
+    )
+
+    config = SparkrunConfig()
+
+    # Resolve hosts
+    cluster_mgr = _get_cluster_manager()
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+
+    # Resolve SSH user
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+    if user is None:
+        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
+
+    # Build SSH kwargs
+    ssh_kwargs = build_ssh_kwargs(config)
+    if user:
+        ssh_kwargs["ssh_user"] = user
+
+    # Resolve cache path
+    cache_path = cache_dir  # None means use getent-based home detection
+
+    click.echo("Fixing file permissions for user '%s' on %d host(s)..." % (user, len(host_list)))
+    if cache_path:
+        click.echo("Cache directory: %s" % cache_path)
+    click.echo()
+
+    # Detect passwordless sudo on all hosts
+    nopasswd_hosts = detect_sudo_on_hosts(host_list, dry_run=dry_run, **ssh_kwargs)
+
+    password_hosts = set(host_list) - nopasswd_hosts
+    sudo_password = None
+    if password_hosts and not dry_run:
+        click.echo("Sudo password required for %d host(s)." % len(password_hosts))
+        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+
+    # Generate the chown script.
+    # Uses getent passwd to resolve the target user's home directory,
+    # avoiding tilde/HOME ambiguity when running under sudo.
+    if cache_path:
+        # Absolute path override — use directly
+        script_body = (
+            'set -euo pipefail\n'
+            'CACHE_DIR="{cache_dir}"\n'
+            '[ -d "$CACHE_DIR" ] || {{ echo "SKIP: $CACHE_DIR does not exist"; exit 0; }}\n'
+            'chown -R {user} "$CACHE_DIR"\n'
+            'echo "OK: fixed permissions on $CACHE_DIR for {user}"\n'
+        ).format(cache_dir=cache_path, user=user)
+    else:
+        # Default: resolve home via getent
+        script_body = (
+            'set -euo pipefail\n'
+            'TARGET_HOME=$(getent passwd "{user}" | cut -d: -f6)\n'
+            'if [ -z "$TARGET_HOME" ]; then echo "ERROR: cannot resolve home for {user}"; exit 1; fi\n'
+            'CACHE_DIR="$TARGET_HOME/.cache/huggingface"\n'
+            '[ -d "$CACHE_DIR" ] || {{ echo "SKIP: $CACHE_DIR does not exist"; exit 0; }}\n'
+            'chown -R {user} "$CACHE_DIR"\n'
+            'echo "OK: fixed permissions on $CACHE_DIR for {user}"\n'
+        ).format(user=user)
+
+    # For NOPASSWD hosts: prefix chown with sudo in the script itself
+    sudo_script_body = script_body.replace("chown -R", "sudo chown -R")
+
+    results: dict[str, object] = {}
+
+    # Execute on NOPASSWD hosts (script uses sudo prefix)
+    nopasswd_list = [h for h in host_list if h in nopasswd_hosts]
+    for h in nopasswd_list:
+        r = run_remote_script(h, sudo_script_body, timeout=300, dry_run=dry_run, **ssh_kwargs)
+        results[h] = r
+
+    # Execute on password hosts (run_remote_sudo_script runs as root, no sudo prefix needed)
+    password_list = [h for h in host_list if h in password_hosts]
+    for h in password_list:
+        r = run_remote_sudo_script(
+            h, script_body, sudo_password, timeout=300, dry_run=dry_run, **ssh_kwargs,
+        )
+        results[h] = r
+
+    # Build result map for retry
+    result_map = {h: r for h, r in results.items()}
+
+    # Retry individually on sudo failures (same pattern as cx7)
+    if password_hosts and sudo_password and not dry_run:
+        failed_sudo = [h for h in password_list if not result_map[h].success]
+        if failed_sudo:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(failed_sudo))
+            for fhost in failed_sudo:
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                retry_result = run_remote_sudo_script(
+                    fhost, script_body, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                )
+                result_map[fhost] = retry_result
+
+    # Report results
+    ok_count = 0
+    skip_count = 0
+    fail_count = 0
+    for h in host_list:
+        r = result_map.get(h)
+        if r is None:
+            continue
+        if r.success:
+            if "SKIP:" in r.stdout:
+                skip_count += 1
+                click.echo("  [SKIP] %s: %s" % (h, r.stdout.strip()))
+            else:
+                ok_count += 1
+                click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+        else:
+            fail_count += 1
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d fixed" % ok_count)
+    if skip_count:
+        parts.append("%d skipped (no cache)" % skip_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if fail_count:
+        sys.exit(1)
+
+
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options

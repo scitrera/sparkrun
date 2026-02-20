@@ -998,6 +998,144 @@ class TestSetupSshCommand:
         assert "10.0.0.3" in result.output
 
 
+class TestSetupFixPermissions:
+    """Test the setup fix-permissions command."""
+
+    @pytest.fixture
+    def cluster_setup(self, tmp_path, monkeypatch):
+        """Set up a config root with a test cluster."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("fix-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
+        return config_root
+
+    def test_fix_permissions_help(self, runner):
+        """Test that sparkrun setup fix-permissions --help shows expected options."""
+        result = runner.invoke(main, ["setup", "fix-permissions", "--help"])
+        assert result.exit_code == 0
+        assert "--hosts" in result.output
+        assert "--cluster" in result.output
+        assert "--user" in result.output
+        assert "--cache-dir" in result.output
+        assert "--dry-run" in result.output
+        assert "file ownership" in result.output.lower() or "Fix file ownership" in result.output
+
+    def test_fix_permissions_no_hosts_error(self, runner, tmp_path, monkeypatch):
+        """Test that fix-permissions with no hosts exits with error."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["setup", "fix-permissions"])
+        assert result.exit_code != 0
+        assert "hosts" in result.output.lower() or "Error" in result.output
+
+    def test_fix_permissions_dry_run(self, runner, cluster_setup):
+        """Test that --dry-run reports without executing."""
+        with mock.patch("sparkrun.orchestration.ssh.detect_sudo_on_hosts", return_value={"10.0.0.1", "10.0.0.2"}), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_script") as mock_script:
+            mock_script.return_value = mock.Mock(
+                success=True, stdout="[dry-run]", stderr="", host="10.0.0.1",
+            )
+            result = runner.invoke(main, [
+                "setup", "fix-permissions",
+                "--cluster", "fix-cluster",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            assert "Fixing file permissions" in result.output
+
+    def test_fix_permissions_all_nopasswd(self, runner, cluster_setup):
+        """Test when all hosts have passwordless sudo — no password prompt."""
+        mock_result_1 = mock.Mock(
+            success=True, stdout="OK: fixed permissions on /home/dgxuser/.cache/huggingface for dgxuser",
+            stderr="", host="10.0.0.1",
+        )
+        mock_result_2 = mock.Mock(
+            success=True, stdout="OK: fixed permissions on /home/dgxuser/.cache/huggingface for dgxuser",
+            stderr="", host="10.0.0.2",
+        )
+
+        def script_side_effect(host, *args, **kwargs):
+            return mock_result_1 if host == "10.0.0.1" else mock_result_2
+
+        with mock.patch("sparkrun.orchestration.ssh.detect_sudo_on_hosts", return_value={"10.0.0.1", "10.0.0.2"}), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=script_side_effect), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+            result = runner.invoke(main, [
+                "setup", "fix-permissions",
+                "--cluster", "fix-cluster",
+            ])
+            assert result.exit_code == 0
+            # No password prompt should have appeared
+            mock_sudo.assert_not_called()
+            assert "OK" in result.output
+            assert "fixed" in result.output.lower()
+
+    def test_fix_permissions_mixed_sudo(self, runner, cluster_setup):
+        """Test mixed sudo — password hosts prompt, NOPASSWD hosts don't."""
+        mock_nopasswd_result = mock.Mock(
+            success=True, stdout="OK: fixed permissions on /home/dgxuser/.cache/huggingface for dgxuser",
+            stderr="", host="10.0.0.1",
+        )
+        mock_password_result = mock.Mock(
+            success=True, stdout="OK: fixed permissions on /home/dgxuser/.cache/huggingface for dgxuser",
+            stderr="", host="10.0.0.2",
+        )
+
+        with mock.patch("sparkrun.orchestration.ssh.detect_sudo_on_hosts", return_value={"10.0.0.1"}), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_nopasswd_result), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script", return_value=mock_password_result):
+            result = runner.invoke(main, [
+                "setup", "fix-permissions",
+                "--cluster", "fix-cluster",
+            ], input="sudopassword\n")
+            assert result.exit_code == 0
+            assert "2 fixed" in result.output
+
+    def test_fix_permissions_cache_dir_override(self, runner, cluster_setup):
+        """Test that --cache-dir is passed through to the script."""
+        mock_result = mock.Mock(
+            success=True, stdout="OK: fixed permissions on /data/hf-cache for dgxuser",
+            stderr="", host="10.0.0.1",
+        )
+
+        with mock.patch("sparkrun.orchestration.ssh.detect_sudo_on_hosts", return_value={"10.0.0.1", "10.0.0.2"}), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result) as mock_script:
+            result = runner.invoke(main, [
+                "setup", "fix-permissions",
+                "--cluster", "fix-cluster",
+                "--cache-dir", "/data/hf-cache",
+            ])
+            assert result.exit_code == 0
+            # Verify the script contains the custom cache dir
+            for call in mock_script.call_args_list:
+                script_arg = call[0][1]  # second positional arg is the script
+                assert "/data/hf-cache" in script_arg
+
+    def test_fix_permissions_skip_nonexistent_cache(self, runner, cluster_setup):
+        """Test that hosts with no cache dir are reported as SKIP."""
+        mock_result = mock.Mock(
+            success=True, stdout="SKIP: /home/dgxuser/.cache/huggingface does not exist",
+            stderr="", host="10.0.0.1",
+        )
+
+        with mock.patch("sparkrun.orchestration.ssh.detect_sudo_on_hosts", return_value={"10.0.0.1", "10.0.0.2"}), \
+             mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
+            result = runner.invoke(main, [
+                "setup", "fix-permissions",
+                "--cluster", "fix-cluster",
+            ])
+            assert result.exit_code == 0
+            assert "SKIP" in result.output
+            assert "skipped" in result.output.lower()
+
+
 class TestLogCommand:
     """Test the logs command."""
 

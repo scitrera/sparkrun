@@ -30,7 +30,7 @@ roceP2p1s0f0 port 1 ==> enP2p1s0f0np0 (Up)
 roceP2p1s0f1 port 1 ==> enP2p1s0f1np1 (Down)
 ```
 
-With a single cable plugged into one port, you get **two active Ethernet interfaces** (e.g., `enp1s0f1np1` and `enP2p1s0f1np1`) and **two active RoCEv2 interfaces** (e.g., `rocep1s0f1` and `roceP2p1s0f1`). Each pair represents one PCIe x4 partition capable of ~100 Gbps.
+With a single cable plugged into one port, you get **two active Ethernet interfaces** (e.g., `enp1s0f1np0` and `enP2p1s0f1np0`) and **two active RoCEv2 interfaces** (e.g., `rocep1s0f0` and `roceP2p1s0f0`). Each pair represents one PCIe x4 partition capable of ~100 Gbps.
 
 Using two cables (one per physical port) also results in two devices per port — four total — but does not meaningfully increase point-to-point bandwidth between two Sparks. **A single cable is sufficient for full 200 Gbps between two nodes.**
 

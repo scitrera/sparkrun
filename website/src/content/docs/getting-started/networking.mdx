@@ -23,7 +23,7 @@ DGX Spark has a unique hardware constraint: the SoC provides a maximum of **PCIe
 To work around this, each physical QSFP56 port is split into **two PCIe x4 partitions**. Each partition appears as a separate network device pair in Linux — one Ethernet interface and one RoCEv2 interface:
 
 ```
-# Example output of ibdev2netdev with one cable in the outer port
+# Example output of ibdev2netdev with one cable in the "first" port (p0)
 rocep1s0f0 port 1 ==> enp1s0f0np0 (Up)
 rocep1s0f1 port 1 ==> enp1s0f1np1 (Down)
 roceP2p1s0f0 port 1 ==> enP2p1s0f0np0 (Up)

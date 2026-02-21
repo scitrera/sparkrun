@@ -15,13 +15,11 @@ description: Using vLLM for inference on DGX Spark.
 
 ## Container images
 
-sparkrun works with ready-built images:
+sparkrun works with ready-built images including:
 
-```yaml
-container: scitrera/dgx-spark-vllm:0.16.0-t5
-```
-
-Also works with other vLLM images including those from NVIDIA.
+- [Self-built community images from eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (often the first to have the latest fixes)
+- [scitrera/dgx-spark-vllm](https://hub.docker.com/r/scitrera/dgx-spark-vllm)
+- [Official NVIDIA Images](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/vllm)
 
 ## Example recipe
 

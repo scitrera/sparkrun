@@ -18,7 +18,7 @@ sparkrun show qwen3-1.7b-vllm
 ## Step by step
 
 1. **Set `model`** to the HuggingFace model ID you want to serve
-2. **Set `container`** to a known-good image for your runtime
+2. **Set `container`** — see [Runtimes Overview](/runtimes/overview/) for maintained images and latest tags.
 3. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and a low `max_model_len`, then increase after confirming the model loads
 4. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works
 5. **Validate**: `sparkrun recipe validate your-recipe.yaml`
@@ -54,6 +54,7 @@ command: |
 
 ## Tips
 
+- Check the [Runtimes Overview](/runtimes/overview/) to verify you are using the correct or latest container images and runtime options for DGX Spark.
 - Use `--dry-run` liberally. It shows the exact Docker commands without executing anything.
 - `sparkrun show <recipe>` displays rendered defaults plus VRAM estimation — use it to sanity-check before launching.
 - For models that barely fit in VRAM, lower `max_model_len` first. KV cache scales with sequence length.

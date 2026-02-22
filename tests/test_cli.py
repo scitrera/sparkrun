@@ -546,6 +546,25 @@ class TestTensorParallelValidation:
             assert "tensor_parallel=" not in result.output
             mock_run.assert_called_once()
 
+    def test_solo_flag_truncates_multiple_hosts(self, runner, reset_bootstrap):
+        """--solo with multiple hosts should truncate to first host only."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                "qwen3-coder-next-fp8-sglang-cluster",
+                "--solo",
+                "--dry-run",
+                "--hosts", "10.0.0.1,10.0.0.2",
+            ])
+
+            assert result.exit_code == 0
+            assert "solo" in result.output.lower()
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            # Must receive only 1 host despite 2 being provided
+            assert len(call_kwargs["hosts"]) == 1
+            assert call_kwargs["hosts"] == ["10.0.0.1"]
+
 
 class TestOptionOverrides:
     """Test --option / -o arbitrary parameter overrides."""

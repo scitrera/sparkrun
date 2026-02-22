@@ -486,6 +486,7 @@ def run(
     if recipe.mode == "solo":
         is_solo = True
     if is_solo and len(host_list) > 1:
+        click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
         host_list = host_list[:1]
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts

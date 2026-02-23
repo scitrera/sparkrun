@@ -369,6 +369,104 @@ def test_eugr_validate_recipe():
     assert all("model is required" not in issue for issue in issues)
 
 
+class TestEugrRunDelegated:
+    """Test command construction in EugrVllmRuntime.run_delegated()."""
+
+    @pytest.fixture
+    def eugr_recipe(self):
+        return Recipe.from_dict({
+            "name": "test-recipe",
+            "model": "meta-llama/Llama-2-7b-hf",
+            "runtime": "eugr-vllm",
+            "command": "vllm serve model",
+        })
+
+    @pytest.fixture
+    def eugr_runtime(self, tmp_path):
+        """Create runtime with a fake repo containing run-recipe.sh."""
+        runtime = EugrVllmRuntime()
+        repo_dir = tmp_path / "eugr-repo"
+        repo_dir.mkdir()
+        (repo_dir / "run-recipe.sh").write_text("#!/bin/bash\nexit 0\n")
+        (repo_dir / "run-recipe.sh").chmod(0o755)
+        return runtime, repo_dir
+
+    def test_daemon_flag_passed_when_detached(self, eugr_runtime, eugr_recipe):
+        """daemon=True should append --daemon to eugr command."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.Mock(returncode=0)
+                runtime.run_delegated(eugr_recipe, {}, daemon=True)
+
+                cmd = mock_run.call_args[0][0]
+                assert "--daemon" in cmd
+
+    def test_no_daemon_flag_when_foreground(self, eugr_runtime, eugr_recipe):
+        """daemon=False (foreground) should not append --daemon."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.Mock(returncode=0)
+                runtime.run_delegated(eugr_recipe, {}, daemon=False)
+
+                cmd = mock_run.call_args[0][0]
+                assert "--daemon" not in cmd
+
+    def test_solo_flag_passed(self, eugr_runtime, eugr_recipe):
+        """solo=True should append --solo to eugr command."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.Mock(returncode=0)
+                runtime.run_delegated(eugr_recipe, {}, solo=True)
+
+                cmd = mock_run.call_args[0][0]
+                assert "--solo" in cmd
+
+    def test_hosts_passed_as_comma_list(self, eugr_runtime, eugr_recipe):
+        """hosts list should be joined with commas after -n flag."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = mock.Mock(returncode=0)
+                runtime.run_delegated(
+                    eugr_recipe, {}, hosts=["10.0.0.1", "10.0.0.2"],
+                )
+
+                cmd = mock_run.call_args[0][0]
+                n_idx = cmd.index("-n")
+                assert cmd[n_idx + 1] == "10.0.0.1,10.0.0.2"
+
+    def test_run_maps_detached_to_daemon(self, eugr_runtime, eugr_recipe):
+        """run() should map detached=True to daemon=True in run_delegated()."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "run_delegated", return_value=0) as mock_del:
+            runtime.run(
+                hosts=["10.0.0.1"],
+                image="test:latest",
+                serve_command="vllm serve",
+                recipe=eugr_recipe,
+                overrides={},
+                detached=True,
+            )
+            assert mock_del.call_args.kwargs["daemon"] is True
+
+    def test_run_foreground_no_daemon(self, eugr_runtime, eugr_recipe):
+        """run() with detached=False should pass daemon=False."""
+        runtime, repo_dir = eugr_runtime
+        with mock.patch.object(runtime, "run_delegated", return_value=0) as mock_del:
+            runtime.run(
+                hosts=["10.0.0.1"],
+                image="test:latest",
+                serve_command="vllm serve",
+                recipe=eugr_recipe,
+                overrides={},
+                detached=False,
+            )
+            assert mock_del.call_args.kwargs["daemon"] is False
+
+
 # --- Base RuntimePlugin Tests ---
 
 def test_base_runtime_is_enabled_false():

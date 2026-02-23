@@ -148,11 +148,34 @@ class EugrVllmRuntime(RuntimePlugin):
     def run_delegated(self, recipe: Recipe, overrides: dict[str, Any],
                       hosts: list[str] | None = None, solo: bool = False,
                       setup: bool = False, dry_run: bool = False,
+                      daemon: bool = False,
                       cache_dir: Path | None = None,
                       registry_cache_root: Path | None = None) -> int:
-        """Delegate entirely to eugr's run-recipe.sh.
+        """Delegate entirely to eugr's ``run-recipe.sh``.
 
-        Returns the process exit code.
+        Converts the sparkrun recipe back to eugr v1 format via
+        :meth:`write_eugr_recipe`, then invokes eugr's script with
+        the appropriate flags.  Overrides are forwarded as ``--key value``
+        CLI arguments so eugr can apply them to its own config chain.
+
+        Args:
+            recipe: Loaded sparkrun recipe (converted to eugr v1 on disk).
+            overrides: CLI override values forwarded as ``--key value`` flags.
+            hosts: Target hostnames.  Passed as ``-n host1,host2,...``.
+                ``None`` omits the flag (eugr uses its own discovery).
+            solo: Pass ``--solo`` for single-node mode (no Ray cluster).
+            setup: Pass ``--setup`` to run first-time host configuration.
+            dry_run: Pass ``--dry-run`` to preview without executing.
+            daemon: Pass ``--daemon`` to eugr (detached mode, no log
+                following).  sparkrun defaults to detached launches while
+                eugr defaults to foreground, so this flag bridges the two
+                conventions.  Mapped from ``detached`` in :meth:`run`.
+            cache_dir: Explicit cache directory for the eugr repo clone.
+            registry_cache_root: Root of sparkrun's registry cache;
+                reuses an existing eugr clone if present.
+
+        Returns:
+            Process exit code (0 = success).
         """
         repo_dir = self.ensure_repo(cache_dir, registry_cache_root=registry_cache_root)
         recipe_path = self.write_eugr_recipe(recipe, repo_dir)
@@ -169,6 +192,8 @@ class EugrVllmRuntime(RuntimePlugin):
             cmd.append("--setup")
         if dry_run:
             cmd.append("--dry-run")
+        if daemon:
+            cmd.append("--daemon")
         if hosts:
             cmd.extend(["-n", ",".join(hosts)])
 
@@ -239,6 +264,7 @@ class EugrVllmRuntime(RuntimePlugin):
             solo=is_solo,
             setup=setup,
             dry_run=dry_run,
+            daemon=detached,
             cache_dir=Path(cache_dir) if cache_dir else None,
             registry_cache_root=registry_cache_root,
         )

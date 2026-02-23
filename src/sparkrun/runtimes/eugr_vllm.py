@@ -148,9 +148,15 @@ class EugrVllmRuntime(RuntimePlugin):
     def run_delegated(self, recipe: Recipe, overrides: dict[str, Any],
                       hosts: list[str] | None = None, solo: bool = False,
                       setup: bool = False, dry_run: bool = False,
+                      daemon: bool = False,
                       cache_dir: Path | None = None,
                       registry_cache_root: Path | None = None) -> int:
         """Delegate entirely to eugr's run-recipe.sh.
+
+        Args:
+            daemon: Pass ``--daemon`` to eugr (detached mode, no log following).
+                sparkrun defaults to detached launches while eugr defaults to
+                foreground, so this flag bridges the two conventions.
 
         Returns the process exit code.
         """
@@ -169,6 +175,8 @@ class EugrVllmRuntime(RuntimePlugin):
             cmd.append("--setup")
         if dry_run:
             cmd.append("--dry-run")
+        if daemon:
+            cmd.append("--daemon")
         if hosts:
             cmd.extend(["-n", ",".join(hosts)])
 
@@ -239,6 +247,7 @@ class EugrVllmRuntime(RuntimePlugin):
             solo=is_solo,
             setup=setup,
             dry_run=dry_run,
+            daemon=detached,
             cache_dir=Path(cache_dir) if cache_dir else None,
             registry_cache_root=registry_cache_root,
         )

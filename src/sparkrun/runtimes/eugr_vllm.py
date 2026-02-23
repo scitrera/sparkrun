@@ -151,14 +151,31 @@ class EugrVllmRuntime(RuntimePlugin):
                       daemon: bool = False,
                       cache_dir: Path | None = None,
                       registry_cache_root: Path | None = None) -> int:
-        """Delegate entirely to eugr's run-recipe.sh.
+        """Delegate entirely to eugr's ``run-recipe.sh``.
+
+        Converts the sparkrun recipe back to eugr v1 format via
+        :meth:`write_eugr_recipe`, then invokes eugr's script with
+        the appropriate flags.  Overrides are forwarded as ``--key value``
+        CLI arguments so eugr can apply them to its own config chain.
 
         Args:
-            daemon: Pass ``--daemon`` to eugr (detached mode, no log following).
-                sparkrun defaults to detached launches while eugr defaults to
-                foreground, so this flag bridges the two conventions.
+            recipe: Loaded sparkrun recipe (converted to eugr v1 on disk).
+            overrides: CLI override values forwarded as ``--key value`` flags.
+            hosts: Target hostnames.  Passed as ``-n host1,host2,...``.
+                ``None`` omits the flag (eugr uses its own discovery).
+            solo: Pass ``--solo`` for single-node mode (no Ray cluster).
+            setup: Pass ``--setup`` to run first-time host configuration.
+            dry_run: Pass ``--dry-run`` to preview without executing.
+            daemon: Pass ``--daemon`` to eugr (detached mode, no log
+                following).  sparkrun defaults to detached launches while
+                eugr defaults to foreground, so this flag bridges the two
+                conventions.  Mapped from ``detached`` in :meth:`run`.
+            cache_dir: Explicit cache directory for the eugr repo clone.
+            registry_cache_root: Root of sparkrun's registry cache;
+                reuses an existing eugr clone if present.
 
-        Returns the process exit code.
+        Returns:
+            Process exit code (0 = success).
         """
         repo_dir = self.ensure_repo(cache_dir, registry_cache_root=registry_cache_root)
         recipe_path = self.write_eugr_recipe(recipe, repo_dir)

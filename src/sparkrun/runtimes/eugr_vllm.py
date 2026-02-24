@@ -53,9 +53,9 @@ class EugrVllmRuntime(RuntimePlugin):
         return recipe.command or ""
 
     def ensure_repo(
-        self,
-        cache_dir: Path | None = None,
-        registry_cache_root: Path | None = None,
+            self,
+            cache_dir: Path | None = None,
+            registry_cache_root: Path | None = None,
     ) -> Path:
         """Clone or update the eugr repo in sparkrun's cache.
 
@@ -186,8 +186,9 @@ class EugrVllmRuntime(RuntimePlugin):
 
         cmd = [str(run_script), str(recipe_path)]
 
-        if solo:
-            cmd.append("--solo")
+        # NOTE: do not use explicit solo with eugr repo it has a different meaning (always 127.0.0.1) and is implicit with hosts config
+        # if solo:
+        #     cmd.append("--solo")
         if setup:
             cmd.append("--setup")
         if dry_run:
@@ -260,7 +261,7 @@ class EugrVllmRuntime(RuntimePlugin):
         return self.run_delegated(
             recipe=recipe,
             overrides=overrides,
-            hosts=hosts if not is_solo else None,
+            hosts=hosts, # always send hosts explicitly
             solo=is_solo,
             setup=setup,
             dry_run=dry_run,

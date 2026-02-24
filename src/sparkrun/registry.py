@@ -356,6 +356,9 @@ class RegistryManager:
                     progress(entry.name, ok)
             else:
                 logger.warning("Registry %s is disabled, skipping update", name)
+                results[entry.name] = False
+                if progress:
+                    progress(entry.name, False)
         else:
             # Update all enabled registries
             for entry in registries:

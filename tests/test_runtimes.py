@@ -341,7 +341,7 @@ def test_eugr_resolve_container_default():
     runtime = EugrVllmRuntime()
 
     container = runtime.resolve_container(recipe)
-    assert container == "vllm-node-tf5"
+    assert container == "vllm-node"
 
 
 def test_eugr_generate_command_from_template():

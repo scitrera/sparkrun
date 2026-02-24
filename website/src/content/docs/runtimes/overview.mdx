@@ -12,7 +12,7 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 | `vllm` | vLLM | Yes (Ray) | Production inference, broad model support |
 | `sglang` | SGLang | Yes (native) | High-throughput inference, structured generation, experimental GGUF |
 | `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
-| `eugr-vllm` | vLLM (eugr) | Yes (delegated) | Gold standard community vLLM — nightly builds, mods, battle-tested |
+| `eugr-vllm` | vLLM (eugr) | Yes (Ray) | Gold standard community vLLM — nightly builds, mods, battle-tested |
 
 ## How runtimes work
 
@@ -29,7 +29,7 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 - **vLLM** is the default and most widely supported. Use it unless you have a specific reason to choose another.
 - **SGLang** offers competitive performance, good structured generation support, and experimental GGUF quantized model serving.
 - **llama.cpp** is ideal for GGUF quantized models or when you want a lightweight alternative.
-- **eugr-vllm** is the gold standard for community-driven vLLM — nightly builds, mods, and a battle-tested container pipeline.
+- **eugr-vllm** extends vLLM with eugr's container build system and mod support — nightly builds, mods, and a battle-tested container pipeline.
 
 ## Maintained container images
 

@@ -128,7 +128,7 @@ Which inference engine to use. Determines how sparkrun launches and manages the 
 | `vllm` | vLLM | Ray | First-class. Solo and multi-node via Ray. |
 | `sglang` | SGLang | Native | First-class. Solo and multi-node via SGLang's built-in distribution. |
 | `llama-cpp` | llama.cpp | N/A | Solo mode. GGUF quantized models via `llama-server`. |
-| `eugr-vllm` | vLLM (eugr) | Delegated | Compatibility runtime. Delegates to eugr/spark-vllm-docker scripts. |
+| `eugr-vllm` | vLLM (eugr) | Ray | Extends vLLM with eugr container builds and mod support. |
 
 If omitted, defaults to `vllm`. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`, `mods`)
 are automatically detected as `eugr-vllm`.

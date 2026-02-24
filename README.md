@@ -187,25 +187,25 @@ the head node connects via `--rpc`. This is still evolving both upstream and in 
 experimental. Note that the fastest DGX Spark interconnect communication will be via NCCL and RoCE -- and the 
 llama.cpp RPC mechanism involves a lot more overhead. 
 
-### eugr-vllm (compatibility runtime)
+### eugr-vllm
 
-Full compatibility with [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker). This runtime delegates
-entirely to eugr's scripts — mods, local builds, and all eugr-specific features work natively because sparkrun calls
-their code directly rather than reimplementing it.
+Extends the native `vllm` runtime with [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container
+builds and mod support. All sparkrun orchestration features work natively — multi-node Ray clustering, container
+distribution, InfiniBand detection, log following, and cluster stop — while eugr-specific features (local container
+builds via `build-and-copy.sh`, mod application) are integrated into the launch pipeline.
 
 Use this when you need a nightly vLLM build, custom modifications, or anything that requires building containers locally
-from eugr's repo.
+from eugr's repo. For prebuilt images without mods or custom builds, use the standard `vllm` runtime instead.
 
-The recipe format for sparkrun is designed to be mostly compatible with eugr's (more like a v2 format) -- sparkrun will
-translate any variations in recipe format to the eugr repo format automatically. Changes were mostly to ensure greater
-compatibility with multiple runtimes and to reduce redundancy (somewhat). The full command listing is preserved to
-ensure greater compatibility, but long-term, runtime implementations should be able to generate commands.
+The recipe format for sparkrun is designed to be mostly compatible with eugr's format — sparkrun translates any
+variations automatically. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`, `mods`) are
+auto-detected as `eugr-vllm`.
 
 ```yaml
 # eugr-vllm recipe example
 runtime: eugr-vllm
 model: my-org/custom-model
-container: vllm-node-tf5
+container: vllm-node
 runtime_config:
   mods: [ my-custom-mod ]
   build_args: [ --some-flag ]
@@ -215,10 +215,11 @@ runtime_config:
 
 **Recipes** are YAML files that describe an inference workload: the model, container image, runtime, and default
 parameters. sparkrun ships bundled recipes and supports custom registries (any git repo with YAML files). Sparkrun
-includes limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running
-to eugr's repo also...). The idea in the long-run is to merge recipes from multiple registries into a single unified
-catalog. And be able to run them even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing
-to worry about the underlying command differences. See the [RECIPES](./RECIPES.md) specification file for more details.
+includes limited recipes and also includes the eugr repo as a default registry. Recipes from eugr's format are
+auto-detected and run natively through sparkrun's orchestration pipeline. The idea in the long run is to merge recipes
+from multiple registries into a single unified catalog and be able to run them even if they were designed for different
+runtimes (e.g. vLLM vs SGLang) without needing to worry about the underlying command differences. See the
+[RECIPES](./RECIPES.md) specification file for more details.
 
 **Runtimes** are plugins that know how to launch a specific inference engine. sparkrun discovers them via Python entry
 points, so custom runtimes can be added by installing a package.

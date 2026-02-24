@@ -222,8 +222,9 @@ class RuntimePlugin(Plugin):
     def is_delegating_runtime(self) -> bool:
         """True if this runtime delegates entirely to external scripts.
 
-        Delegating runtimes (like eugr-vllm) bypass sparkrun's orchestration
-        layer and instead call external tools directly.
+        Delegating runtimes bypass sparkrun's orchestration layer and
+        instead call external tools directly.  No built-in runtimes
+        currently delegate — all use native orchestration.
         """
         return False
 

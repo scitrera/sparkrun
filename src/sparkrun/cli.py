@@ -504,6 +504,9 @@ def run(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
+    # Pre-launch preparation (e.g., eugr container builds)
+    runtime.prepare(recipe, host_list, config=config, dry_run=dry_run)
+
     # Distribution phase: ensure image/model locally, distribute to hosts,
     # detect IB for NCCL env + fast transfer routing.
     # Always runs for non-delegating runtimes (hash checks make it cheap

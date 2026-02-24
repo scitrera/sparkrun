@@ -137,6 +137,39 @@ class RuntimePlugin(Plugin):
             "%s does not implement native clustering" % type(self).__name__
         )
 
+    def prepare(
+            self,
+            recipe: Recipe,
+            hosts: list[str],
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+    ) -> None:
+        """Pre-launch preparation (e.g., building container images).
+
+        Called by the CLI before resource distribution.  Override in
+        subclasses that need to build or transform images before they
+        can be distributed to hosts.
+        """
+        pass
+
+    def _pre_serve(
+            self,
+            hosts_containers: list[tuple[str, str]],
+            ssh_kwargs: dict,
+            dry_run: bool,
+    ) -> None:
+        """Hook called after containers are launched but before serve command.
+
+        Override in subclasses to apply modifications (e.g., eugr mods)
+        to containers before the inference server starts.
+
+        Args:
+            hosts_containers: List of (host, container_name) pairs.
+            ssh_kwargs: SSH connection kwargs.
+            dry_run: Dry-run mode.
+        """
+        pass
+
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Return list of warnings/errors for runtime-specific fields.
 
@@ -189,8 +222,9 @@ class RuntimePlugin(Plugin):
     def is_delegating_runtime(self) -> bool:
         """True if this runtime delegates entirely to external scripts.
 
-        Delegating runtimes (like eugr-vllm) bypass sparkrun's orchestration
-        layer and instead call external tools directly.
+        Delegating runtimes bypass sparkrun's orchestration layer and
+        instead call external tools directly.  No built-in runtimes
+        currently delegate — all use native orchestration.
         """
         return False
 
@@ -517,6 +551,9 @@ class RuntimePlugin(Plugin):
             logger.error("Failed to launch container: %s", result.stderr)
             return 1
         logger.info("Step 2/3: Container launched (%.1fs)", time.monotonic() - t0)
+
+        # Pre-serve hook (e.g., apply mods to container)
+        self._pre_serve([(host, container_name)], ssh_kwargs, dry_run)
 
         # Step 3: Execute serve command
         t0 = time.monotonic()

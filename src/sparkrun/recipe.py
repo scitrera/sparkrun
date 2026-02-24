@@ -139,8 +139,8 @@ class Recipe:
 
         The v1 format is the eugr/spark-vllm-docker native format.
         Recipes declaring ``recipe_version: "1"`` with a vllm target
-        should use the ``eugr-vllm`` runtime which delegates to eugr's
-        own scripts and container builds.
+        should use the ``eugr-vllm`` runtime which extends vllm with
+        eugr's container builds and mod support.
         """
         if not self.runtime or self.runtime == "vllm":
             self.runtime = "eugr-vllm"

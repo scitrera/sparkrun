@@ -209,6 +209,12 @@ class VllmRuntime(RuntimePlugin):
         )
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
+        # Auto-detect available ports to avoid collisions with running instances
+        from sparkrun.orchestration.primitives import find_available_port
+        ray_port = find_available_port(head_host, ray_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        if dashboard:
+            dashboard_port = find_available_port(head_host, dashboard_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
         # Step 3: Launch Ray head
         t0 = time.monotonic()
         logger.info("Step 3/5: Launching Ray head on %s...", head_host)
@@ -288,6 +294,12 @@ class VllmRuntime(RuntimePlugin):
             logger.info("Step 4/5: Workers launched (%.1fs)", time.monotonic() - t0)
         else:
             logger.info("Step 4/5: No worker hosts, skipping")
+
+        # Pre-serve hook (e.g., apply mods to containers)
+        all_containers = [(head_host, head_container)]
+        for worker in worker_hosts:
+            all_containers.append((worker, worker_container))
+        self._pre_serve(all_containers, ssh_kwargs, dry_run)
 
         # Step 5: Execute serve command on head
         t0 = time.monotonic()

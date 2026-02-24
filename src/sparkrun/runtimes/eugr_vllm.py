@@ -1,4 +1,4 @@
-"""eugr-vllm runtime: full delegation to eugr/spark-vllm-docker scripts."""
+"""eugr-vllm runtime: extends VllmRuntime with eugr container builds and mods."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from logging import Logger
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-import yaml
 from scitrera_app_framework import Variables, get_working_path
 
-from sparkrun.runtimes.base import RuntimePlugin
+from sparkrun.runtimes.vllm import VllmRuntime
 
 if TYPE_CHECKING:
+    from sparkrun.config import SparkrunConfig
     from sparkrun.recipe import Recipe
 
 logger = logging.getLogger(__name__)
@@ -21,15 +21,22 @@ logger = logging.getLogger(__name__)
 EUGR_REPO_URL = "https://github.com/eugr/spark-vllm-docker.git"
 
 
-class EugrVllmRuntime(RuntimePlugin):
-    """Full delegation to eugr/spark-vllm-docker.
+class EugrVllmRuntime(VllmRuntime):
+    """eugr-vllm runtime extending native vLLM with eugr build and mod support.
 
-    This runtime clones the eugr repo and calls their scripts directly.
-    Mods, local builds, and all eugr-specific features work natively
-    because we're running their code, not reimplementing it.
+    Inherits all Ray-based orchestration from VllmRuntime (container launch,
+    cluster management, log following, stop).  Adds eugr-specific features:
+
+    - ``prepare()``: builds container images via eugr's ``build-and-copy.sh``
+      when the recipe specifies ``build_args``.
+    - ``_pre_serve()``: applies eugr mods (``docker cp`` + ``run.sh``) to
+      containers after launch but before the serve command starts.
     """
 
     _v: Variables = None
+    _repo_dir: Path | None = None
+    _mods: list[str] = []
+
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
 
@@ -38,31 +45,189 @@ class EugrVllmRuntime(RuntimePlugin):
         self._v = v
         return self
 
-    def is_delegating_runtime(self) -> bool:
-        """eugr-vllm delegates entirely to external scripts."""
-        return True
-
     def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
-        """Resolve container -- eugr manages its own container builds."""
-        return recipe.container or "vllm-node-tf5"
+        """Resolve container -- eugr images use plain names, not prefix:tag."""
+        return recipe.container or "vllm-node"
 
-    def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
-                         is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
-        """Generate command -- eugr scripts handle command generation internally."""
-        return recipe.command or ""
+    def validate_recipe(self, recipe: Recipe) -> list[str]:
+        """Validate eugr-vllm-specific recipe fields."""
+        issues = super().validate_recipe(recipe)
+        if not recipe.command:
+            issues.append("[eugr-vllm] command template is recommended for eugr recipes")
+        return issues
+
+    # --- Pre-launch preparation ---
+
+    def prepare(
+            self,
+            recipe: Recipe,
+            hosts: list[str],
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+    ) -> None:
+        """Build container image and cache mod info for _pre_serve.
+
+        Called by the CLI before resource distribution.  If the recipe
+        has ``build_args``, calls eugr's ``build-and-copy.sh`` to build
+        the image locally.  If the recipe has ``mods``, caches the mod
+        list and repo path for later application in ``_pre_serve()``.
+        """
+        build_args = recipe.runtime_config.get("build_args", [])
+        has_mods = bool(recipe.runtime_config.get("mods"))
+        if not build_args and not has_mods:
+            return  # nothing eugr-specific to prepare
+
+        # Ensure repo is available (for build script and mods)
+        registry_cache_root = None
+        if config is not None:
+            registry_cache_root = Path(config.cache_dir) / "registries"
+        self._repo_dir = self.ensure_repo(registry_cache_root=registry_cache_root)
+
+        # Cache mod names for _pre_serve hook
+        self._mods = recipe.runtime_config.get("mods", [])
+
+        if not build_args:
+            return
+
+        # Build image using eugr's build-and-copy.sh
+        image = recipe.container or "vllm-node"
+        self._build_image(image, build_args, dry_run)
+
+    def _build_image(self, image: str, build_args: list[str], dry_run: bool = False) -> None:
+        """Build container image via eugr's build-and-copy.sh.
+
+        Args:
+            image: Target image name (passed as ``-t``).
+            build_args: Additional build arguments forwarded to the script.
+            dry_run: Show what would be done without executing.
+        """
+        build_script = self._repo_dir / "build-and-copy.sh"
+        if not build_script.exists():
+            raise RuntimeError("build-and-copy.sh not found at %s" % build_script)
+
+        cmd = [str(build_script), "-t", image] + build_args
+        logger.info("Building eugr container: %s", " ".join(cmd))
+
+        if dry_run:
+            return
+
+        result = subprocess.run(cmd, cwd=str(self._repo_dir))
+        if result.returncode != 0:
+            raise RuntimeError("eugr container build failed (exit %d)" % result.returncode)
+
+    # --- Pre-serve mod application ---
+
+    def _pre_serve(
+            self,
+            hosts_containers: list[tuple[str, str]],
+            ssh_kwargs: dict,
+            dry_run: bool,
+    ) -> None:
+        """Apply eugr mods to containers after launch, before serve command.
+
+        Each mod is a directory containing a ``run.sh`` script.  The mod
+        directory is copied into the container at ``/workspace/mods/<name>``
+        and ``run.sh`` is executed inside the container.
+        """
+        mods = getattr(self, "_mods", [])
+        repo_dir = getattr(self, "_repo_dir", None)
+        if not mods or not repo_dir:
+            return
+
+        logger.info("Applying %d mod(s) to %d container(s)...", len(mods), len(hosts_containers))
+        for host, container_name in hosts_containers:
+            for mod_name in mods:
+                self._apply_mod(host, container_name, mod_name, repo_dir, ssh_kwargs, dry_run)
+
+    def _apply_mod(
+            self,
+            host: str,
+            container_name: str,
+            mod_name: str,
+            repo_dir: Path,
+            ssh_kwargs: dict,
+            dry_run: bool,
+    ) -> None:
+        """Copy a single mod into a container and execute its run.sh.
+
+        For local hosts, uses ``docker cp`` and ``docker exec`` directly.
+        For remote hosts, rsyncs the mod to a temp directory, then uses
+        ``docker cp`` and ``docker exec`` via SSH.
+
+        Args:
+            host: Target hostname.
+            container_name: Docker container name.
+            mod_name: Mod directory name (relative to repo root).
+            repo_dir: Path to the eugr repo clone.
+            ssh_kwargs: SSH connection kwargs.
+            dry_run: Show what would be done without executing.
+        """
+        mod_path = repo_dir / mod_name
+        if not mod_path.is_dir() or not (mod_path / "run.sh").exists():
+            logger.warning("Mod '%s' not found or missing run.sh at %s", mod_name, mod_path)
+            return
+
+        logger.info("Applying mod '%s' to %s on %s...", mod_name, container_name, host)
+        if dry_run:
+            return
+
+        mod_basename = Path(mod_name).name
+        container_dest = "/workspace/mods/%s" % mod_basename
+
+        from sparkrun.hosts import is_local_host
+
+        if is_local_host(host):
+            # Local: docker cp directly
+            subprocess.run(
+                ["docker", "exec", container_name, "mkdir", "-p", container_dest],
+                check=True,
+            )
+            subprocess.run(
+                ["docker", "cp", "%s/." % mod_path, "%s:%s/" % (container_name, container_dest)],
+                check=True,
+            )
+            subprocess.run(
+                ["docker", "exec", container_name, "bash", "-c",
+                 "cd %s && chmod +x run.sh && ./run.sh" % container_dest],
+                check=True,
+            )
+        else:
+            # Remote: rsync mod to temp dir, docker cp, docker exec, cleanup
+            from sparkrun.orchestration.ssh import run_rsync_parallel
+            from sparkrun.orchestration.primitives import run_script_on_host
+
+            remote_tmp = "/tmp/sparkrun_mod_%s" % mod_basename
+            run_script_on_host(
+                host, "mkdir -p %s" % remote_tmp,
+                ssh_kwargs=ssh_kwargs, timeout=30,
+            )
+            # rsync mod contents to remote
+            run_rsync_parallel(
+                [host], str(mod_path) + "/", remote_tmp + "/",
+                ssh_kwargs=ssh_kwargs,
+            )
+            # docker cp into container and run
+            script = (
+                "docker exec {c} mkdir -p {dest}\n"
+                "docker cp {tmp}/. {c}:{dest}/\n"
+                "docker exec {c} bash -c 'cd {dest} && chmod +x run.sh && ./run.sh'\n"
+                "rm -rf {tmp}\n"
+            ).format(c=container_name, dest=container_dest, tmp=remote_tmp)
+            run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=300)
+
+    # --- Repo management (kept from original) ---
 
     def ensure_repo(
-        self,
-        cache_dir: Path | None = None,
-        registry_cache_root: Path | None = None,
+            self,
+            cache_dir: Path | None = None,
+            registry_cache_root: Path | None = None,
     ) -> Path:
         """Clone or update the eugr repo in sparkrun's cache.
 
         If the registry system already has a cached clone of the eugr-vllm
         repo (from recipe syncing), reuses it instead of cloning a second
         copy.  Sparse checkout is disabled on the registry clone so that
-        scripts like ``run-recipe.sh`` are available.
+        scripts like ``build-and-copy.sh`` are available.
         """
         # Check if registry already has this repo cloned
         if registry_cache_root is not None:
@@ -118,153 +283,3 @@ class EugrVllmRuntime(RuntimePlugin):
                 "Failed to update eugr repo (continuing with existing): %s",
                 result.stderr.strip(),
             )
-
-    def write_eugr_recipe(self, recipe: Recipe, repo_dir: Path) -> Path:
-        """Convert sparkrun v2 recipe back to eugr v1 format."""
-        eugr_data = {
-            "recipe_version": "1",
-            "name": recipe.name,
-            "description": recipe.description,
-            "model": recipe.model,
-            "container": recipe.container or "vllm-node-tf5",
-            "cluster_only": recipe.min_nodes > 1,
-            "solo_only": recipe.max_nodes == 1 if recipe.max_nodes else False,
-            "build_args": recipe.runtime_config.get("build_args", []),
-            "mods": recipe.runtime_config.get("mods", []),
-            "defaults": recipe.defaults,
-            "env": recipe.env,
-        }
-        if recipe.command:
-            eugr_data["command"] = recipe.command
-
-        recipes_dir = repo_dir / "recipes"
-        recipes_dir.mkdir(exist_ok=True)
-        out_path = recipes_dir / ("_sparkrun_%s.yaml" % recipe.slug)
-        with open(out_path, "w") as f:
-            yaml.dump(eugr_data, f, default_flow_style=False, sort_keys=False)
-
-        return out_path
-
-    def run_delegated(self, recipe: Recipe, overrides: dict[str, Any],
-                      hosts: list[str] | None = None, solo: bool = False,
-                      setup: bool = False, dry_run: bool = False,
-                      daemon: bool = False,
-                      cache_dir: Path | None = None,
-                      registry_cache_root: Path | None = None) -> int:
-        """Delegate entirely to eugr's ``run-recipe.sh``.
-
-        Converts the sparkrun recipe back to eugr v1 format via
-        :meth:`write_eugr_recipe`, then invokes eugr's script with
-        the appropriate flags.  Overrides are forwarded as ``--key value``
-        CLI arguments so eugr can apply them to its own config chain.
-
-        Args:
-            recipe: Loaded sparkrun recipe (converted to eugr v1 on disk).
-            overrides: CLI override values forwarded as ``--key value`` flags.
-            hosts: Target hostnames.  Passed as ``-n host1,host2,...``.
-                ``None`` omits the flag (eugr uses its own discovery).
-            solo: Pass ``--solo`` for single-node mode (no Ray cluster).
-            setup: Pass ``--setup`` to run first-time host configuration.
-            dry_run: Pass ``--dry-run`` to preview without executing.
-            daemon: Pass ``--daemon`` to eugr (detached mode, no log
-                following).  sparkrun defaults to detached launches while
-                eugr defaults to foreground, so this flag bridges the two
-                conventions.  Mapped from ``detached`` in :meth:`run`.
-            cache_dir: Explicit cache directory for the eugr repo clone.
-            registry_cache_root: Root of sparkrun's registry cache;
-                reuses an existing eugr clone if present.
-
-        Returns:
-            Process exit code (0 = success).
-        """
-        repo_dir = self.ensure_repo(cache_dir, registry_cache_root=registry_cache_root)
-        recipe_path = self.write_eugr_recipe(recipe, repo_dir)
-
-        run_script = repo_dir / "run-recipe.sh"
-        if not run_script.exists():
-            raise RuntimeError("eugr run-recipe.sh not found at %s" % run_script)
-
-        cmd = [str(run_script), str(recipe_path)]
-
-        if solo:
-            cmd.append("--solo")
-        if setup:
-            cmd.append("--setup")
-        if dry_run:
-            cmd.append("--dry-run")
-        if daemon:
-            cmd.append("--daemon")
-        if hosts:
-            cmd.extend(["-n", ",".join(hosts)])
-
-        # Pass overrides as CLI flags
-        for key, value in overrides.items():
-            flag = key.replace("_", "-")
-            cmd.extend(["--%s" % flag, str(value)])
-
-        logger.info("Delegating to eugr: %s", " ".join(cmd))
-        result = subprocess.run(cmd, cwd=str(repo_dir))
-        return result.returncode
-
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate eugr-vllm-specific recipe fields."""
-        issues = super().validate_recipe(recipe)
-        if not recipe.command:
-            issues.append("[eugr-vllm] command template is recommended for eugr recipes")
-        return issues
-
-    # --- Log following ---
-
-    def follow_logs(
-            self,
-            hosts: list[str],
-            cluster_id: str = "sparkrun0",
-            config=None,
-            dry_run: bool = False,
-            tail: int = 100,
-    ) -> None:
-        """No-op — eugr-vllm delegates to external scripts."""
-        pass
-
-    # --- Launch / Stop ---
-
-    def run(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            skip_ib_detect: bool = False,
-            setup: bool = False,
-            **kwargs,
-    ) -> int:
-        """Launch via eugr delegation.
-
-        Wraps :meth:`run_delegated` with the standard runtime interface.
-        """
-        # Derive registry cache root from config so ensure_repo() can
-        # reuse an existing registry clone instead of double-cloning.
-        registry_cache_root = None
-        if config is not None:
-            registry_cache_root = Path(config.cache_dir) / "registries"
-
-        is_solo = len(hosts) <= 1
-        return self.run_delegated(
-            recipe=recipe,
-            overrides=overrides,
-            hosts=hosts if not is_solo else None,
-            solo=is_solo,
-            setup=setup,
-            dry_run=dry_run,
-            daemon=detached,
-            cache_dir=Path(cache_dir) if cache_dir else None,
-            registry_cache_root=registry_cache_root,
-        )

@@ -78,7 +78,7 @@ All runtimes extend `RuntimePlugin` (in `runtimes/base.py`), which itself extend
 | **vllm** | `runtimes/vllm.py` | Ray head/worker | `"ray"` — starts Ray cluster, exec serve on head |
 | **sglang** | `runtimes/sglang.py` | Native distributed | `"native"` — each node runs serve with `--node-rank` |
 | **llama-cpp** | `runtimes/llama_cpp.py` | Experimental RPC | `"rpc"` — workers run `rpc-server`, head connects via `--rpc` |
-| **eugr-vllm** | `runtimes/eugr_vllm.py` | Delegating | Calls eugr's external scripts directly |
+| **eugr-vllm** | `runtimes/eugr_vllm.py` | Ray (inherited) | Extends VllmRuntime with eugr container builds and mods |
 
 Runtimes must implement `generate_command()` and `resolve_container()`. The `cluster_strategy()` return value determines which orchestration path the base class uses.
 

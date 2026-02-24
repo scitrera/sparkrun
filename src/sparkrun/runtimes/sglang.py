@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.runtimes.base import RuntimePlugin
@@ -188,6 +189,70 @@ class SglangRuntime(RuntimePlugin):
         """SGLang names the head container ``{cluster_id}_node_0``."""
         return self._container_name(cluster_id, 0)
 
+    # --- Background log capture for startup diagnostics ---
+
+    @staticmethod
+    def _start_log_capture(
+            host: str,
+            container_name: str,
+            ssh_kwargs: dict,
+    ) -> subprocess.Popen | None:
+        """Start a background ``docker logs -f`` process, capturing output.
+
+        Returns the Popen handle (or ``None`` if the process couldn't start).
+        The caller should later pass this to :meth:`_stop_log_capture`.
+        """
+        from sparkrun.orchestration.docker import docker_logs_cmd
+        from sparkrun.orchestration.ssh import build_ssh_cmd
+        from sparkrun.hosts import is_local_host
+
+        logs_cmd = docker_logs_cmd(container_name, follow=True, tail=200)
+
+        if is_local_host(host):
+            cmd = logs_cmd.split()
+        else:
+            ssh_base = build_ssh_cmd(
+                host,
+                ssh_user=ssh_kwargs.get("ssh_user"),
+                ssh_key=ssh_kwargs.get("ssh_key"),
+                ssh_options=ssh_kwargs.get("ssh_options"),
+            )
+            cmd = ssh_base + logs_cmd.split()
+
+        try:
+            return subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except OSError:
+            logger.debug("Failed to start background log capture for %s", container_name)
+            return None
+
+    @staticmethod
+    def _stop_log_capture(proc: subprocess.Popen | None) -> list[str]:
+        """Terminate a background log capture and return captured lines."""
+        if proc is None:
+            return []
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+        lines: list[str] = []
+        if proc.stdout:
+            try:
+                raw = proc.stdout.read()
+                lines = raw.splitlines()
+            except (OSError, ValueError):
+                pass
+            finally:
+                proc.stdout.close()
+        return lines
+
     # --- Cluster stop ---
 
     def _stop_cluster(
@@ -306,6 +371,10 @@ class SglangRuntime(RuntimePlugin):
         logger.info("  Head IP: %s", head_ip)
         logger.info("Step 3/6: IP detection done (%.1fs)", time.monotonic() - t0)
 
+        # Auto-detect available init port to avoid collisions with running instances
+        from sparkrun.orchestration.primitives import find_available_port
+        init_port = find_available_port(head_host, init_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
         # Generate per-node commands
         head_command = self.generate_node_command(
             recipe=recipe, overrides=overrides,
@@ -337,20 +406,34 @@ class SglangRuntime(RuntimePlugin):
         logger.info("Step 4/6: Head node launched (%.1fs)", time.monotonic() - t0)
 
         # Step 5: Wait for head init port
+        # Capture head container logs in the background so we can surface
+        # them if the node fails to become ready (avoids manual SSH).
         t0 = time.monotonic()
         if not dry_run:
             logger.info("Step 5/6: Waiting for head node init port %s:%d...", head_host, init_port)
-            ready = wait_for_port(
-                head_host, init_port,
-                max_retries=60, retry_interval=2,
-                ssh_kwargs=ssh_kwargs, dry_run=dry_run,
-                container_name=head_container,
-            )
-            if not ready:
-                logger.error(
-                    "Head node failed to become ready. "
-                    "Check logs: ssh %s 'docker logs %s'", head_host, head_container,
+
+            log_proc = self._start_log_capture(head_host, head_container, ssh_kwargs)
+            try:
+                ready = wait_for_port(
+                    head_host, init_port,
+                    max_retries=60, retry_interval=2,
+                    ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                    container_name=head_container,
                 )
+            finally:
+                captured = self._stop_log_capture(log_proc)
+
+            if not ready:
+                logger.error("Head node failed to become ready on %s.", head_host)
+                if captured:
+                    logger.error("Container logs for %s:", head_container)
+                    for line in captured[-150:]:
+                        logger.error("  %s", line)
+                else:
+                    logger.error(
+                        "No logs captured. Check manually: ssh %s 'docker logs %s'",
+                        head_host, head_container,
+                    )
                 return 1
             logger.info("Step 5/6: Head node ready (%.1fs)", time.monotonic() - t0)
         else:

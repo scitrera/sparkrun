@@ -413,8 +413,8 @@ class TestEugrRunDelegated:
                 cmd = mock_run.call_args[0][0]
                 assert "--daemon" not in cmd
 
-    def test_solo_flag_passed(self, eugr_runtime, eugr_recipe):
-        """solo=True should append --solo to eugr command."""
+    def test_solo_flag_not_passed(self, eugr_runtime, eugr_recipe):
+        """solo=True should NOT append --solo to eugr command (eugr handles it implicitly)."""
         runtime, repo_dir = eugr_runtime
         with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
@@ -422,7 +422,7 @@ class TestEugrRunDelegated:
                 runtime.run_delegated(eugr_recipe, {}, solo=True)
 
                 cmd = mock_run.call_args[0][0]
-                assert "--solo" in cmd
+                assert "--solo" not in cmd
 
     def test_hosts_passed_as_comma_list(self, eugr_runtime, eugr_recipe):
         """hosts list should be joined with commas after -n flag."""

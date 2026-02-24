@@ -415,6 +415,47 @@ def is_container_running(
 
 
 # ---------------------------------------------------------------------------
+# Port availability detection
+# ---------------------------------------------------------------------------
+
+def find_available_port(
+        host: str,
+        port: int,
+        max_attempts: int = 10,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+) -> int:
+    """Find an available TCP port on a remote host, starting from *port*.
+
+    Checks if *port* is free using ``nc -z``.  If occupied, increments
+    and retries up to *max_attempts* times.
+
+    Returns the first available port, or the original port if *dry_run*
+    or all attempts fail (with a warning).
+    """
+    if dry_run:
+        return port
+
+    kw = ssh_kwargs or {}
+    original = port
+
+    for _ in range(max_attempts):
+        result = run_remote_command(host, "nc -z localhost %d" % port, timeout=5, **kw)
+        if not result.success:
+            # nc failed → port is free
+            if port != original:
+                logger.info("Port %d in use on %s, using %d instead", original, host, port)
+            return port
+        port += 1
+
+    logger.warning(
+        "All %d ports starting from %d are in use on %s; using %d anyway",
+        max_attempts, original, host, original,
+    )
+    return original
+
+
+# ---------------------------------------------------------------------------
 # Port readiness polling
 # ---------------------------------------------------------------------------
 

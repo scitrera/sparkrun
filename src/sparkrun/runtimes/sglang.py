@@ -306,6 +306,10 @@ class SglangRuntime(RuntimePlugin):
         logger.info("  Head IP: %s", head_ip)
         logger.info("Step 3/6: IP detection done (%.1fs)", time.monotonic() - t0)
 
+        # Auto-detect available init port to avoid collisions with running instances
+        from sparkrun.orchestration.primitives import find_available_port
+        init_port = find_available_port(head_host, init_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
         # Generate per-node commands
         head_command = self.generate_node_command(
             recipe=recipe, overrides=overrides,

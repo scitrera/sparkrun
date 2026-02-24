@@ -209,6 +209,12 @@ class VllmRuntime(RuntimePlugin):
         )
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
+        # Auto-detect available ports to avoid collisions with running instances
+        from sparkrun.orchestration.primitives import find_available_port
+        ray_port = find_available_port(head_host, ray_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        if dashboard:
+            dashboard_port = find_available_port(head_host, dashboard_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
         # Step 3: Launch Ray head
         t0 = time.monotonic()
         logger.info("Step 3/5: Launching Ray head on %s...", head_host)

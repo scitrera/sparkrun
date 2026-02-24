@@ -2043,7 +2043,14 @@ def recipe_update(ctx, registry, config_path=None, ):
     try:
         # Count how many registries will be updated
         if registry:
-            entries = [registry_mgr.get_registry(registry)]
+            entry = registry_mgr.get_registry(registry)
+            if not getattr(entry, "enabled", True):
+                click.echo(
+                    f"Error: Registry '{registry}' is disabled; enable it in the config before updating.",
+                    err=True,
+                )
+                sys.exit(1)
+            entries = [entry]
         else:
             entries = [e for e in registry_mgr.list_registries() if e.enabled]
 

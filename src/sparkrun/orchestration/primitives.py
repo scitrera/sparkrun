@@ -421,7 +421,7 @@ def is_container_running(
 def find_available_port(
         host: str,
         port: int,
-        max_attempts: int = 10,
+        max_attempts: int = 24,
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
 ) -> int:

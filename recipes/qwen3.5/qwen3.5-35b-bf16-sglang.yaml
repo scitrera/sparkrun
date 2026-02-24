@@ -1,7 +1,7 @@
 model: Qwen/Qwen3.5-35B-A3B
 runtime: sglang
 min_nodes: 1
-container: scitrera/dgx-spark-sglang:0.5.9-dev-9fac90d8-t5
+container: scitrera/dgx-spark-sglang:0.5.9-t5
 
 metadata:
   description: Qwen3.5 35B A3B (upstream, no quant) SGLang
@@ -13,7 +13,7 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.85
+  gpu_memory_utilization: 0.80
   max_model_len: 262144
   served_model_name: qwen3.5-35b
   attention_backend: triton

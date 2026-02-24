@@ -9,10 +9,21 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 
 | Runtime | Engine | Multi-Node | Use Case |
 |---|---|---|---|
-| `vllm` | vLLM | Yes (Ray) | Production inference, broad model support |
+| `vllm-distributed` | vLLM | Yes (native) | Default vLLM variant. Uses vLLM's built-in distributed backend. |
+| `vllm-ray` | vLLM | Yes (Ray) | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Yes (native) | High-throughput inference, structured generation, experimental GGUF |
 | `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
-| `eugr-vllm` | vLLM (eugr) | Yes (Ray) | Gold standard community vLLM — nightly builds, mods, battle-tested |
+| `eugr-vllm` | vLLM (eugr) | Yes (Ray) | Gold standard community vLLM — nightly builds, mods, battle-tested. Extends `vllm-ray`. |
+
+### The `vllm` alias
+
+You can write `runtime: vllm` in a recipe — sparkrun treats it as a virtual alias and resolves it to a concrete runtime:
+
+1. If the recipe has eugr signals (`build_args`, `mods`, or `recipe_version: "1"`) → **`eugr-vllm`**
+2. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
+3. Otherwise → **`vllm-distributed`** (the default)
+
+Both `vllm-distributed` and `vllm-ray` use the same container images and support the same vLLM flags — they differ only in how multi-node clustering is orchestrated.
 
 ## How runtimes work
 
@@ -20,16 +31,18 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 
 - Container launch configuration (volumes, networking, GPU access)
 - InfiniBand/RDMA detection and NCCL environment variables
-- Multi-node clustering (Ray for vLLM, native for SGLang)
+- Multi-node clustering (native distributed for `vllm-distributed` and `sglang`, Ray for `vllm-ray` and `eugr-vllm`)
 - Model pre-sync and cache path resolution
 - Command generation when no explicit `command` template is provided
 
 ## Choosing a runtime
 
-- **vLLM** is the default and most widely supported. Use it unless you have a specific reason to choose another.
+- **vLLM** is the default and most widely supported. Write `runtime: vllm` and sparkrun picks the right variant automatically (see [the `vllm` alias](#the-vllm-alias) above).
+  - **vllm-distributed** (default) uses vLLM's built-in distributed backend — each node runs the full serve command with node-rank arguments (`--nnodes`, `--node-rank`, `--master-addr`).
+  - **vllm-ray** uses Ray head/worker orchestration — a Ray cluster is formed first, then the serve command runs on the head node.
 - **SGLang** offers competitive performance, good structured generation support, and experimental GGUF quantized model serving.
 - **llama.cpp** is ideal for GGUF quantized models or when you want a lightweight alternative.
-- **eugr-vllm** extends vLLM with eugr's container build system and mod support — nightly builds, mods, and a battle-tested container pipeline.
+- **eugr-vllm** extends `vllm-ray` with eugr's container build system and mod support — nightly builds, mods, and a battle-tested container pipeline.
 
 ## Maintained container images
 

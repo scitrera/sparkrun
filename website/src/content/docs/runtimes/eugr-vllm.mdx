@@ -3,9 +3,9 @@ title: eugr-vllm
 description: The gold standard for community-driven use of vLLM on DGX Spark.
 ---
 
-The `eugr-vllm` runtime extends sparkrun's native `vllm` runtime with support for [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container builds and mods. Eugr's repo is the gold standard for community-driven use of vLLM on the NVIDIA DGX Spark — frequently updated with patches and details to support the latest models. It provides a container build system to facilitate building the latest from the main branch of vLLM and a system of maintained mods to resolve issues related to running models on the Spark.
+The `eugr-vllm` runtime extends sparkrun's [`vllm-ray`](/runtimes/vllm/) variant with support for [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container builds and mods. Eugr's repo is the gold standard for community-driven use of vLLM on the NVIDIA DGX Spark — frequently updated with patches and details to support the latest models. It provides a container build system to facilitate building the latest from the main branch of vLLM and a system of maintained mods to resolve issues related to running models on the Spark.
 
-Since `eugr-vllm` extends `vllm`, it inherits all native Ray-based orchestration: multi-node clustering, container distribution, InfiniBand detection, log following, and cluster stop all work identically to the `vllm` runtime. The eugr-specific additions are:
+Since `eugr-vllm` extends `vllm-ray`, it inherits all Ray-based orchestration: multi-node clustering via Ray head/worker nodes, container distribution, InfiniBand detection, log following, and cluster stop all work identically to the `vllm-ray` runtime. The eugr-specific additions are:
 
 - **Container builds**: When a recipe specifies `build_args`, sparkrun calls eugr's `build-and-copy.sh` to build the image locally before distribution.
 - **Mods**: When a recipe specifies `mods`, sparkrun copies each mod directory into the container and runs its `run.sh` after container launch but before the serve command starts.
@@ -18,7 +18,7 @@ Use `eugr-vllm` when you want:
 - Custom modifications (mods) to patch as needed for the latest models
 - Local container builds with full control
 
-For prebuilt images without mods or custom builds, use the standard `vllm` runtime instead.
+For prebuilt images without mods or custom builds, use the standard `vllm` runtime instead (which resolves to [`vllm-distributed`](/runtimes/vllm/) by default).
 
 ## Example recipe
 

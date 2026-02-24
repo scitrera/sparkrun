@@ -104,12 +104,14 @@ Which inference engine to use:
 
 | Value | Engine | Clustering | Notes |
 |---|---|---|---|
-| `vllm` | vLLM | Ray | First-class. Solo and multi-node. |
+| `vllm` | vLLM | varies | Virtual alias — resolves to `vllm-distributed` (default) or `vllm-ray`. See [vLLM runtime](/runtimes/vllm/). |
+| `vllm-distributed` | vLLM | Native | Default vLLM variant. Uses vLLM's built-in distributed backend. |
+| `vllm-ray` | vLLM | Ray | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Native | First-class. Solo and multi-node. |
 | `llama-cpp` | llama.cpp | N/A | Solo mode. GGUF models. |
-| `eugr-vllm` | vLLM (eugr) | Ray | Extends vLLM with eugr builds and mods. |
+| `eugr-vllm` | vLLM (eugr) | Ray | Extends `vllm-ray` with eugr builds and mods. |
 
-Defaults to `vllm` if omitted.
+Defaults to `vllm` if omitted, which resolves to `vllm-distributed` unless Ray hints are present.
 
 ### `container` (required)
 

@@ -297,10 +297,16 @@ def test_sglang_validate_recipe_no_model():
 
 # --- EugrVllmRuntime Tests ---
 
-def test_eugr_is_delegating():
-    """EugrVllmRuntime.is_delegating_runtime() returns True."""
+def test_eugr_inherits_vllm():
+    """EugrVllmRuntime extends VllmRuntime."""
     runtime = EugrVllmRuntime()
-    assert runtime.is_delegating_runtime() is True
+    assert isinstance(runtime, VllmRuntime)
+
+
+def test_eugr_is_not_delegating():
+    """EugrVllmRuntime.is_delegating_runtime() returns False (native orchestration)."""
+    runtime = EugrVllmRuntime()
+    assert runtime.is_delegating_runtime() is False
 
 
 def test_eugr_runtime_name():
@@ -338,19 +344,37 @@ def test_eugr_resolve_container_default():
     assert container == "vllm-node-tf5"
 
 
-def test_eugr_generate_command():
-    """Generate command returns recipe command or empty."""
+def test_eugr_generate_command_from_template():
+    """Generate command renders recipe command template (inherited from VllmRuntime)."""
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "eugr-vllm",
-        "command": "custom-serve-command",
+        "command": "vllm serve {model} --port {port}",
+        "defaults": {"port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)
     runtime = EugrVllmRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert cmd == "custom-serve-command"
+    assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
+
+
+def test_eugr_generate_command_structured():
+    """Without a command template, generates vllm serve from defaults (inherited)."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "eugr-vllm",
+        "defaults": {"port": 8000, "tensor_parallel": 2},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = EugrVllmRuntime()
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert cmd.startswith("vllm serve meta-llama/Llama-2-7b-hf")
+    assert "-tp 2" in cmd
+    assert "--port 8000" in cmd
 
 
 def test_eugr_validate_recipe():
@@ -369,102 +393,159 @@ def test_eugr_validate_recipe():
     assert all("model is required" not in issue for issue in issues)
 
 
-class TestEugrRunDelegated:
-    """Test command construction in EugrVllmRuntime.run_delegated()."""
-
-    @pytest.fixture
-    def eugr_recipe(self):
-        return Recipe.from_dict({
-            "name": "test-recipe",
-            "model": "meta-llama/Llama-2-7b-hf",
-            "runtime": "eugr-vllm",
-            "command": "vllm serve model",
-        })
+class TestEugrPrepare:
+    """Test EugrVllmRuntime.prepare() — container build and mod caching."""
 
     @pytest.fixture
     def eugr_runtime(self, tmp_path):
-        """Create runtime with a fake repo containing run-recipe.sh."""
+        """Create runtime with a fake repo containing build-and-copy.sh."""
         runtime = EugrVllmRuntime()
         repo_dir = tmp_path / "eugr-repo"
         repo_dir.mkdir()
-        (repo_dir / "run-recipe.sh").write_text("#!/bin/bash\nexit 0\n")
-        (repo_dir / "run-recipe.sh").chmod(0o755)
+        (repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 0\n")
+        (repo_dir / "build-and-copy.sh").chmod(0o755)
+        # Create a sample mod directory
+        mod_dir = repo_dir / "mods" / "flash-attn"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "run.sh").write_text("#!/bin/bash\necho applied\n")
         return runtime, repo_dir
 
-    def test_daemon_flag_passed_when_detached(self, eugr_runtime, eugr_recipe):
-        """daemon=True should append --daemon to eugr command."""
+    def test_prepare_with_build_args(self, eugr_runtime):
+        """prepare() calls build-and-copy.sh when build_args present."""
         runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+            "container": "my-image",
+            "runtime_config": {"build_args": ["--some-flag"]},
+        })
         with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
-                runtime.run_delegated(eugr_recipe, {}, daemon=True)
+                runtime.prepare(recipe, ["10.0.0.1"])
 
+                # Should call build-and-copy.sh with -t and build_args
                 cmd = mock_run.call_args[0][0]
-                assert "--daemon" in cmd
+                assert str(repo_dir / "build-and-copy.sh") in cmd[0]
+                assert "-t" in cmd
+                assert "my-image" in cmd
+                assert "--some-flag" in cmd
 
-    def test_no_daemon_flag_when_foreground(self, eugr_runtime, eugr_recipe):
-        """daemon=False (foreground) should not append --daemon."""
+    def test_prepare_without_build_args_or_mods(self, eugr_runtime):
+        """prepare() is a no-op when no build_args or mods."""
         runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+        })
+        with mock.patch.object(runtime, "ensure_repo") as mock_ensure:
+            runtime.prepare(recipe, ["10.0.0.1"])
+            # ensure_repo should not be called when nothing to prepare
+            mock_ensure.assert_not_called()
+
+    def test_prepare_dry_run(self, eugr_runtime):
+        """prepare() in dry-run does not execute the build."""
+        runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+            "runtime_config": {"build_args": ["--flag"]},
+        })
         with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=0)
-                runtime.run_delegated(eugr_recipe, {}, daemon=False)
+                runtime.prepare(recipe, ["10.0.0.1"], dry_run=True)
+                # subprocess.run should not be called in dry-run
+                mock_run.assert_not_called()
 
-                cmd = mock_run.call_args[0][0]
-                assert "--daemon" not in cmd
-
-    def test_solo_flag_not_passed(self, eugr_runtime, eugr_recipe):
-        """solo=True should NOT append --solo to eugr command (eugr handles it implicitly)."""
+    def test_prepare_caches_mods(self, eugr_runtime):
+        """prepare() caches mod list for later _pre_serve() call."""
         runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["mods/flash-attn"]},
+        })
+        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            runtime.prepare(recipe, ["10.0.0.1"])
+            assert runtime._mods == ["mods/flash-attn"]
+            assert runtime._repo_dir == repo_dir
+
+    def test_prepare_build_failure_raises(self, eugr_runtime):
+        """prepare() raises RuntimeError on build failure."""
+        runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+            "runtime_config": {"build_args": ["--flag"]},
+        })
         with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=0)
-                runtime.run_delegated(eugr_recipe, {}, solo=True)
+                mock_run.return_value = mock.Mock(returncode=1)
+                with pytest.raises(RuntimeError, match="eugr container build failed"):
+                    runtime.prepare(recipe, ["10.0.0.1"])
 
-                cmd = mock_run.call_args[0][0]
-                assert "--solo" not in cmd
 
-    def test_hosts_passed_as_comma_list(self, eugr_runtime, eugr_recipe):
-        """hosts list should be joined with commas after -n flag."""
-        runtime, repo_dir = eugr_runtime
-        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+class TestEugrPreServe:
+    """Test EugrVllmRuntime._pre_serve() — mod application."""
+
+    @pytest.fixture
+    def eugr_runtime_with_mods(self, tmp_path):
+        """Create runtime with repo and mod directory."""
+        runtime = EugrVllmRuntime()
+        repo_dir = tmp_path / "eugr-repo"
+        mod_dir = repo_dir / "mods" / "my-mod"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "run.sh").write_text("#!/bin/bash\necho ok\n")
+        runtime._repo_dir = repo_dir
+        runtime._mods = ["mods/my-mod"]
+        return runtime
+
+    def test_pre_serve_with_mods_local(self, eugr_runtime_with_mods):
+        """_pre_serve() applies mods to local containers via docker cp/exec."""
+        runtime = eugr_runtime_with_mods
+        with mock.patch("sparkrun.hosts.is_local_host", return_value=True):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
-                runtime.run_delegated(
-                    eugr_recipe, {}, hosts=["10.0.0.1", "10.0.0.2"],
+                runtime._pre_serve(
+                    [("localhost", "sparkrun_abc_solo")],
+                    ssh_kwargs={}, dry_run=False,
                 )
+                # Should have 3 subprocess calls: mkdir, cp, exec run.sh
+                assert mock_run.call_count == 3
+                # Verify docker exec mkdir
+                assert "mkdir" in mock_run.call_args_list[0][0][0]
+                # Verify docker cp
+                assert "docker" in mock_run.call_args_list[1][0][0][0]
+                assert "cp" in mock_run.call_args_list[1][0][0][1]
 
-                cmd = mock_run.call_args[0][0]
-                n_idx = cmd.index("-n")
-                assert cmd[n_idx + 1] == "10.0.0.1,10.0.0.2"
-
-    def test_run_maps_detached_to_daemon(self, eugr_runtime, eugr_recipe):
-        """run() should map detached=True to daemon=True in run_delegated()."""
-        runtime, repo_dir = eugr_runtime
-        with mock.patch.object(runtime, "run_delegated", return_value=0) as mock_del:
-            runtime.run(
-                hosts=["10.0.0.1"],
-                image="test:latest",
-                serve_command="vllm serve",
-                recipe=eugr_recipe,
-                overrides={},
-                detached=True,
+    def test_pre_serve_without_mods(self):
+        """_pre_serve() is a no-op when no mods cached."""
+        runtime = EugrVllmRuntime()
+        # _mods defaults to empty, _repo_dir defaults to None
+        with mock.patch("subprocess.run") as mock_run:
+            runtime._pre_serve(
+                [("localhost", "sparkrun_abc_solo")],
+                ssh_kwargs={}, dry_run=False,
             )
-            assert mock_del.call_args.kwargs["daemon"] is True
+            mock_run.assert_not_called()
 
-    def test_run_foreground_no_daemon(self, eugr_runtime, eugr_recipe):
-        """run() with detached=False should pass daemon=False."""
-        runtime, repo_dir = eugr_runtime
-        with mock.patch.object(runtime, "run_delegated", return_value=0) as mock_del:
-            runtime.run(
-                hosts=["10.0.0.1"],
-                image="test:latest",
-                serve_command="vllm serve",
-                recipe=eugr_recipe,
-                overrides={},
-                detached=False,
+    def test_pre_serve_dry_run(self, eugr_runtime_with_mods):
+        """_pre_serve() in dry-run does not execute mod commands."""
+        runtime = eugr_runtime_with_mods
+        with mock.patch("subprocess.run") as mock_run:
+            runtime._pre_serve(
+                [("localhost", "sparkrun_abc_solo")],
+                ssh_kwargs={}, dry_run=True,
             )
-            assert mock_del.call_args.kwargs["daemon"] is False
+            mock_run.assert_not_called()
+
+    def test_pre_serve_missing_mod_warns(self, tmp_path):
+        """_pre_serve() warns and skips if mod directory is missing."""
+        runtime = EugrVllmRuntime()
+        runtime._repo_dir = tmp_path / "empty-repo"
+        runtime._repo_dir.mkdir()
+        runtime._mods = ["nonexistent-mod"]
+        with mock.patch("subprocess.run") as mock_run:
+            runtime._pre_serve(
+                [("localhost", "sparkrun_abc_solo")],
+                ssh_kwargs={}, dry_run=False,
+            )
+            mock_run.assert_not_called()
 
 
 # --- Base RuntimePlugin Tests ---
@@ -688,18 +769,34 @@ class TestSglangFollowLogs:
 
 
 class TestEugrFollowLogs:
-    """Test EugrVllmRuntime.follow_logs() is a no-op."""
+    """Test EugrVllmRuntime.follow_logs() — inherited from VllmRuntime."""
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
-    def test_follow_logs_is_noop(self, mock_stream):
-        """eugr-vllm follow_logs does not call stream_remote_logs."""
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_solo_tails_serve_log(self, mock_stream):
+        """Single-host eugr tails serve log in solo container (inherited)."""
         runtime = EugrVllmRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1"],
             cluster_id="test0",
         )
 
-        mock_stream.assert_not_called()
+        mock_stream.assert_called_once()
+        assert mock_stream.call_args[0][0] == "10.0.0.1"
+        assert mock_stream.call_args[0][1] == "test0_solo"
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_cluster_tails_head(self, mock_stream):
+        """Multi-host eugr tails serve log on head container (inherited from vllm)."""
+        runtime = EugrVllmRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1", "10.0.0.2"],
+            cluster_id="mycluster",
+        )
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "10.0.0.1"
+        assert args[0][1] == "mycluster_head"
 
 
 # --- LlamaCppRuntime Tests ---

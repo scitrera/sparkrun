@@ -295,6 +295,12 @@ class VllmRuntime(RuntimePlugin):
         else:
             logger.info("Step 4/5: No worker hosts, skipping")
 
+        # Pre-serve hook (e.g., apply mods to containers)
+        all_containers = [(head_host, head_container)]
+        for i, worker in enumerate(worker_hosts):
+            all_containers.append((worker, generate_container_name(cluster_id, "worker_%d" % i)))
+        self._pre_serve(all_containers, ssh_kwargs, dry_run)
+
         # Step 5: Execute serve command on head
         t0 = time.monotonic()
         logger.info(

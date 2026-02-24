@@ -80,7 +80,10 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     if runtime in ("vllm", "") and (data.get("build_args") or data.get("mods")):
         return "eugr-vllm"
     if runtime == "vllm":
-        defaults = data.get("defaults") or {}
+        defaults = data.get("defaults")
+        if defaults is not None and not isinstance(defaults, dict):
+            raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
+        defaults = defaults or {}
         if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
             return "vllm-ray"
         if _RAY_BACKEND_RE.search(data.get("command") or ""):

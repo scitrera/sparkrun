@@ -839,3 +839,13 @@ class TestResolverChain:
         assert resolve_runtime({"runtime": ""}) == "vllm-distributed"
         recipe = Recipe.from_dict({"name": "T", "model": "m", "runtime": ""})
         assert recipe.runtime == "vllm-distributed"
+
+    @pytest.mark.parametrize("bad_defaults", [
+        "some_string",
+        ["item1", "item2"],
+        42,
+    ])
+    def test_resolve_runtime_non_dict_defaults_raises(self, bad_defaults):
+        """Non-mapping 'defaults' field is treated as a malformed recipe."""
+        with pytest.raises(RecipeError, match="defaults.*mapping"):
+            resolve_runtime({"runtime": "vllm", "defaults": bad_defaults})

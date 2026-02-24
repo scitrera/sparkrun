@@ -694,18 +694,65 @@ class RuntimePlugin(Plugin):
         logger.info("Mode:           %s", mode)
         logger.info("=" * 60)
 
-    def _print_connection_info(self, hosts, cluster_id):
+    def _stop_native_cluster(
+            self,
+            hosts: list[str],
+            cluster_id: str,
+            config=None,
+            dry_run: bool = False,
+    ) -> int:
+        """Stop a native cluster by iterating ranked node containers.
+
+        Shared implementation for runtimes using the native clustering
+        strategy (SGLang, vllm-distributed) where each node has a
+        ``{cluster_id}_node_{rank}`` container.
+
+        Args:
+            hosts: All hosts in the cluster.
+            cluster_id: Cluster identifier.
+            config: SparkrunConfig instance for SSH settings.
+            dry_run: Show what would be done without executing.
+
+        Returns:
+            Exit code (0 = success).
+        """
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+        from sparkrun.orchestration.ssh import run_remote_command
+        from sparkrun.orchestration.docker import docker_stop_cmd, generate_node_container_name
+
+        ssh_kwargs = build_ssh_kwargs(config)
+        for rank, host in enumerate(hosts):
+            container_name = generate_node_container_name(cluster_id, rank)
+            run_remote_command(
+                host, docker_stop_cmd(container_name),
+                timeout=30, dry_run=dry_run, **ssh_kwargs,
+            )
+
+        logger.info("Cluster '%s' stopped on %d host(s)", cluster_id, len(hosts))
+        return 0
+
+    def _print_connection_info(self, hosts, cluster_id, *, per_node_logs=False):
         """Print standardized post-launch connection info.
 
         Args:
             hosts: All hosts in the cluster.
             cluster_id: Cluster identifier.
+            per_node_logs: If True, print per-node ``docker logs`` commands
+                using ranked container names (for native-cluster runtimes).
         """
         logger.info("=" * 60)
         logger.info("Cluster launched successfully. Nodes: %d", len(hosts))
         logger.info("")
         logger.info("To view logs:    sparkrun logs <recipe> --hosts %s", ",".join(hosts))
         logger.info("To stop cluster: sparkrun stop <recipe> --hosts %s", ",".join(hosts))
+        if per_node_logs:
+            from sparkrun.orchestration.docker import generate_node_container_name
+            logger.info("")
+            for rank, host in enumerate(hosts):
+                logger.info(
+                    "  Node %d: ssh %s 'docker logs %s'",
+                    rank, host, generate_node_container_name(cluster_id, rank),
+                )
         logger.info("=" * 60)
 
     def __repr__(self) -> str:

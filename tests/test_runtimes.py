@@ -6,9 +6,10 @@ from unittest import mock
 import pytest
 from sparkrun.orchestration.job_metadata import generate_cluster_id
 from sparkrun.recipe import Recipe
-from sparkrun.runtimes.vllm import VllmRuntime
+from sparkrun.runtimes.vllm_ray import VllmRayRuntime
+from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
-from sparkrun.runtimes.eugr_vllm import EugrVllmRuntime
+from sparkrun.runtimes.eugr_vllm_ray import EugrVllmRayRuntime
 from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
 from sparkrun.runtimes.base import RuntimePlugin
 
@@ -53,9 +54,9 @@ class TestGenerateClusterId:
 # --- VllmRuntime Tests ---
 
 def test_vllm_runtime_name():
-    """VllmRuntime.runtime_name == 'vllm'."""
-    runtime = VllmRuntime()
-    assert runtime.runtime_name == "vllm"
+    """VllmRayRuntime.runtime_name == 'vllm-ray'."""
+    runtime = VllmRayRuntime()
+    assert runtime.runtime_name == "vllm-ray"
 
 
 def test_vllm_resolve_container_from_recipe():
@@ -67,7 +68,7 @@ def test_vllm_resolve_container_from_recipe():
         "container": "custom-vllm:v1.0",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     container = runtime.resolve_container(recipe)
     assert container == "custom-vllm:v1.0"
@@ -81,7 +82,7 @@ def test_vllm_resolve_container_default():
         "runtime": "vllm",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     container = runtime.resolve_container(recipe)
     assert container == "scitrera/dgx-spark-vllm:latest"
@@ -97,7 +98,7 @@ def test_vllm_generate_command_from_template():
         "defaults": {"port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
@@ -116,7 +117,7 @@ def test_vllm_generate_command_structured():
         },
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert cmd.startswith("vllm serve meta-llama/Llama-2-7b-hf")
@@ -134,7 +135,7 @@ def test_vllm_generate_command_cluster():
         "defaults": {"tensor_parallel": 4},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2)
     assert "--distributed-executor-backend ray" in cmd
@@ -153,7 +154,7 @@ def test_vllm_generate_command_bool_flags():
         },
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--enforce-eager" in cmd
@@ -169,7 +170,7 @@ def test_vllm_validate_recipe_valid():
         "runtime": "vllm",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     issues = runtime.validate_recipe(recipe)
     assert issues == []
@@ -182,7 +183,7 @@ def test_vllm_validate_recipe_no_model():
         "runtime": "vllm",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
@@ -191,7 +192,7 @@ def test_vllm_validate_recipe_no_model():
 
 def test_vllm_cluster_env():
     """get_cluster_env returns RAY_memory_monitor_refresh_ms."""
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
     env = runtime.get_cluster_env(head_ip="192.168.1.100", num_nodes=2)
 
     assert env["RAY_memory_monitor_refresh_ms"] == "0"
@@ -295,23 +296,275 @@ def test_sglang_validate_recipe_no_model():
     assert "model is required" in issues[0]
 
 
+# --- VllmDistributedRuntime Tests ---
+
+def test_vllm_distributed_runtime_name():
+    """VllmDistributedRuntime.runtime_name == 'vllm-distributed'."""
+    runtime = VllmDistributedRuntime()
+    assert runtime.runtime_name == "vllm-distributed"
+
+
+def test_vllm_distributed_cluster_strategy():
+    """vllm-distributed uses native clustering, not Ray."""
+    runtime = VllmDistributedRuntime()
+    assert runtime.cluster_strategy() == "native"
+
+
+def test_vllm_distributed_resolve_container():
+    """Default container uses same images as vllm-ray."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    container = runtime.resolve_container(recipe)
+    assert container == "scitrera/dgx-spark-vllm:latest"
+
+
+def test_vllm_distributed_generate_command_structured():
+    """Generates vllm serve command with tp, port, etc."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {
+            "port": 8000,
+            "tensor_parallel": 2,
+            "gpu_memory_utilization": 0.9,
+        },
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert cmd.startswith("vllm serve meta-llama/Llama-2-7b-hf")
+    assert "-tp 2" in cmd
+    assert "--port 8000" in cmd
+    assert "--gpu-memory-utilization 0.9" in cmd
+
+
+def test_vllm_distributed_generate_command_no_ray():
+    """Cluster mode does NOT include --distributed-executor-backend ray."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-70b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"tensor_parallel": 4},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(
+        recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100"
+    )
+    assert "--distributed-executor-backend" not in cmd
+
+
+def test_vllm_distributed_generate_command_cluster():
+    """Cluster mode adds --nnodes, --master-addr, --master-port."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-70b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"tensor_parallel": 4},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(
+        recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100"
+    )
+    assert "--nnodes 2" in cmd
+    assert "--master-addr 192.168.1.100" in cmd
+    assert "--master-port 25000" in cmd
+    assert "-tp 4" in cmd
+
+
+def test_vllm_distributed_generate_node_command_head():
+    """Head node (rank 0) gets --nnodes, --node-rank 0, --master-addr, --master-port, NO --headless."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-70b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"tensor_parallel": 2},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_node_command(
+        recipe=recipe, overrides={},
+        head_ip="192.168.1.100", num_nodes=2,
+        node_rank=0, init_port=25000,
+    )
+    assert cmd.startswith("vllm serve meta-llama/Llama-2-70b-hf")
+    assert "-tp 2" in cmd
+    assert "--nnodes 2" in cmd
+    assert "--node-rank 0" in cmd
+    assert "--master-addr 192.168.1.100" in cmd
+    assert "--master-port 25000" in cmd
+    assert "--headless" not in cmd
+
+
+def test_vllm_distributed_generate_node_command_worker():
+    """Worker nodes (rank > 0) get --headless in addition to cluster flags."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-70b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"tensor_parallel": 2},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_node_command(
+        recipe=recipe, overrides={},
+        head_ip="192.168.1.100", num_nodes=2,
+        node_rank=1, init_port=25000,
+    )
+    assert cmd.startswith("vllm serve meta-llama/Llama-2-70b-hf")
+    assert "-tp 2" in cmd
+    assert "--nnodes 2" in cmd
+    assert "--node-rank 1" in cmd
+    assert "--master-addr 192.168.1.100" in cmd
+    assert "--master-port 25000" in cmd
+    assert "--headless" in cmd
+
+
+def test_vllm_distributed_cluster_env():
+    """Returns NCCL_CUMEM_ENABLE and OMP_NUM_THREADS (no Ray vars)."""
+    runtime = VllmDistributedRuntime()
+    env = runtime.get_cluster_env(head_ip="192.168.1.100", num_nodes=2)
+
+    assert env["NCCL_CUMEM_ENABLE"] == "0"
+    assert env["OMP_NUM_THREADS"] == "4"
+    assert "RAY_memory_monitor_refresh_ms" not in env
+
+
+def test_vllm_distributed_validate_recipe():
+    """Valid recipe returns no issues."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    issues = runtime.validate_recipe(recipe)
+    assert issues == []
+
+
+def test_vllm_distributed_validate_recipe_no_model():
+    """Missing model returns issue."""
+    recipe_data = {
+        "name": "test-recipe",
+        "runtime": "vllm-distributed",
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    issues = runtime.validate_recipe(recipe)
+    assert len(issues) == 1
+    assert "model is required" in issues[0]
+
+
+def test_vllm_distributed_container_name():
+    """Container naming uses {cluster_id}_node_{rank} pattern."""
+    from sparkrun.orchestration.docker import generate_node_container_name
+
+    assert generate_node_container_name("spark0", 0) == "spark0_node_0"
+    assert generate_node_container_name("spark0", 1) == "spark0_node_1"
+    assert generate_node_container_name("spark0", 5) == "spark0_node_5"
+
+
+def test_vllm_distributed_bool_flags():
+    """Boolean flags work correctly."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {
+            "enforce_eager": True,
+            "enable_prefix_caching": False,
+            "trust_remote_code": True,
+        },
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--enforce-eager" in cmd
+    assert "--trust-remote-code" in cmd
+    # enable_prefix_caching is False, should not appear
+    assert "--enable-prefix-caching" not in cmd
+
+
+class TestVllmDistributedFollowLogs:
+    """Test VllmDistributedRuntime.follow_logs()."""
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_solo_uses_file_logs(self, mock_stream):
+        """Single-host vllm-distributed tails serve log file inside solo container."""
+        runtime = VllmDistributedRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="test0",
+        )
+
+        mock_stream.assert_called_once()
+        assert mock_stream.call_args[0][1] == "test0_solo"
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_cluster_uses_node_0(self, mock_stream):
+        """Multi-host vllm-distributed follows the _node_0 container (docker logs mode)."""
+        runtime = VllmDistributedRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1", "10.0.0.2"],
+            cluster_id="mycluster",
+        )
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "10.0.0.1"
+        assert args[0][1] == "mycluster_node_0"
+
+
+def test_vllm_distributed_overrides_in_command():
+    """CLI overrides properly override defaults."""
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"port": 8000},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(recipe, {"port": 9000}, is_cluster=False)
+    assert "--port 9000" in cmd
+    assert "--port 8000" not in cmd
+
+
 # --- EugrVllmRuntime Tests ---
 
 def test_eugr_inherits_vllm():
     """EugrVllmRuntime extends VllmRuntime."""
-    runtime = EugrVllmRuntime()
-    assert isinstance(runtime, VllmRuntime)
+    runtime = EugrVllmRayRuntime()
+    assert isinstance(runtime, VllmRayRuntime)
 
 
 def test_eugr_is_not_delegating():
     """EugrVllmRuntime.is_delegating_runtime() returns False (native orchestration)."""
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
     assert runtime.is_delegating_runtime() is False
 
 
 def test_eugr_runtime_name():
     """runtime_name == 'eugr-vllm'."""
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
     assert runtime.runtime_name == "eugr-vllm"
 
 
@@ -324,7 +577,7 @@ def test_eugr_resolve_container():
         "container": "custom-eugr:latest",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
 
     container = runtime.resolve_container(recipe)
     assert container == "custom-eugr:latest"
@@ -338,7 +591,7 @@ def test_eugr_resolve_container_default():
         "runtime": "eugr-vllm",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
 
     container = runtime.resolve_container(recipe)
     assert container == "vllm-node"
@@ -354,7 +607,7 @@ def test_eugr_generate_command_from_template():
         "defaults": {"port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
@@ -369,7 +622,7 @@ def test_eugr_generate_command_structured():
         "defaults": {"port": 8000, "tensor_parallel": 2},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert cmd.startswith("vllm serve meta-llama/Llama-2-7b-hf")
@@ -386,7 +639,7 @@ def test_eugr_validate_recipe():
         "command": "vllm serve model",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = EugrVllmRuntime()
+    runtime = EugrVllmRayRuntime()
 
     issues = runtime.validate_recipe(recipe)
     # Should pass validation
@@ -399,7 +652,7 @@ class TestEugrPrepare:
     @pytest.fixture
     def eugr_runtime(self, tmp_path):
         """Create runtime with a fake repo containing build-and-copy.sh."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         repo_dir = tmp_path / "eugr-repo"
         repo_dir.mkdir()
         (repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 0\n")
@@ -486,7 +739,7 @@ class TestEugrPreServe:
     @pytest.fixture
     def eugr_runtime_with_mods(self, tmp_path):
         """Create runtime with repo and mod directory."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         repo_dir = tmp_path / "eugr-repo"
         mod_dir = repo_dir / "mods" / "my-mod"
         mod_dir.mkdir(parents=True)
@@ -515,7 +768,7 @@ class TestEugrPreServe:
 
     def test_pre_serve_without_mods(self):
         """_pre_serve() is a no-op when no mods cached."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         # _mods defaults to empty, _repo_dir defaults to None
         with mock.patch("subprocess.run") as mock_run:
             runtime._pre_serve(
@@ -536,7 +789,7 @@ class TestEugrPreServe:
 
     def test_pre_serve_missing_mod_warns(self, tmp_path):
         """_pre_serve() warns and skips if mod directory is missing."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         runtime._repo_dir = tmp_path / "empty-repo"
         runtime._repo_dir.mkdir()
         runtime._mods = ["nonexistent-mod"]
@@ -587,7 +840,7 @@ def test_vllm_cluster_injects_ray_backend_into_template():
         "defaults": {"tensor_parallel": 2, "port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     # Solo mode: no injection
     cmd_solo = runtime.generate_command(recipe, {}, is_cluster=False)
@@ -607,7 +860,7 @@ def test_vllm_cluster_preserves_existing_backend_in_template():
         "command": "vllm serve {model} --distributed-executor-backend ray",
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2)
     assert cmd.count("--distributed-executor-backend") == 1
@@ -622,7 +875,7 @@ def test_vllm_overrides_in_command():
         "defaults": {"port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)
-    runtime = VllmRuntime()
+    runtime = VllmRayRuntime()
 
     # Override port
     cmd = runtime.generate_command(recipe, {"port": 9000}, is_cluster=False)
@@ -713,7 +966,7 @@ class TestVllmFollowLogs:
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_solo_tails_serve_log(self, mock_stream):
         """Single-host vllm tails serve log in solo container."""
-        runtime = VllmRuntime()
+        runtime = VllmRayRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1"],
             cluster_id="test0",
@@ -726,7 +979,7 @@ class TestVllmFollowLogs:
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_cluster_tails_serve_log_on_head(self, mock_stream):
         """Multi-host vllm tails serve log in _head container on hosts[0]."""
-        runtime = VllmRuntime()
+        runtime = VllmRayRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1", "10.0.0.2"],
             cluster_id="mycluster",
@@ -774,7 +1027,7 @@ class TestEugrFollowLogs:
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_solo_tails_serve_log(self, mock_stream):
         """Single-host eugr tails serve log in solo container (inherited)."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1"],
             cluster_id="test0",
@@ -787,7 +1040,7 @@ class TestEugrFollowLogs:
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_cluster_tails_head(self, mock_stream):
         """Multi-host eugr tails serve log on head container (inherited from vllm)."""
-        runtime = EugrVllmRuntime()
+        runtime = EugrVllmRayRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1", "10.0.0.2"],
             cluster_id="mycluster",

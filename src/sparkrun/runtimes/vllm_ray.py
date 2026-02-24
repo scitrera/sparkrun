@@ -39,10 +39,15 @@ _VLLM_BOOL_FLAGS = {
 }
 
 
-class VllmRuntime(RuntimePlugin):
-    """Native vLLM runtime using prebuilt container images."""
+class VllmRayRuntime(RuntimePlugin):
+    """vLLM runtime using Ray for multi-node clustering.
 
-    runtime_name = "vllm"
+    Uses Ray head/worker orchestration for distributed inference.
+    Registered as ``"vllm-ray"``; the virtual ``"vllm"`` alias
+    routes here when the recipe hints at Ray usage.
+    """
+
+    runtime_name = "vllm-ray"
     default_image_prefix = "scitrera/dgx-spark-vllm"
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
@@ -182,7 +187,8 @@ class VllmRuntime(RuntimePlugin):
         ssh_kwargs = build_ssh_kwargs(config)
         volumes = build_volumes(cache_dir)
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=len(hosts))
-        all_env = merge_env(env, runtime_env)
+        # Runtime defaults first, recipe env overrides (power users can tweak)
+        all_env = merge_env(runtime_env, env)
 
         self._print_cluster_banner(
             "Ray Cluster Launcher", hosts, image, cluster_id,

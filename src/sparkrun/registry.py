@@ -10,7 +10,7 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -170,7 +170,7 @@ class RegistryManager:
         env["GIT_TERMINAL_PROMPT"] = "0"
         return env
 
-    def _clone_or_pull(self, entry: RegistryEntry) -> None:
+    def _clone_or_pull(self, entry: RegistryEntry) -> bool:
         """Clone or update a registry repository.
 
         Uses shallow clone with sparse checkout for efficiency. Git command
@@ -178,6 +178,9 @@ class RegistryManager:
 
         Args:
             entry: Registry entry to sync
+
+        Returns:
+            True if the operation succeeded, False otherwise.
         """
         cache_dir = self._cache_dir(entry.name)
         git_env = self._git_env()
@@ -199,6 +202,7 @@ class RegistryManager:
                     logger.debug(
                         "Git pull failed for %s: %s", entry.name, result.stderr
                     )
+                    return False
             else:
                 # Fresh clone with sparse checkout
                 logger.debug("Cloning registry %s", entry.name)
@@ -227,7 +231,7 @@ class RegistryManager:
                     logger.debug(
                         "Git clone failed for %s: %s", entry.name, result.stderr
                     )
-                    return
+                    return False
 
                 # Configure sparse checkout for subpath only
                 result = subprocess.run(
@@ -252,10 +256,15 @@ class RegistryManager:
                         entry.name,
                         result.stderr,
                     )
+                    return False
         except subprocess.TimeoutExpired:
             logger.debug("Git operation timed out for %s", entry.name)
+            return False
         except Exception as e:
             logger.debug("Failed to sync registry %s: %s", entry.name, e)
+            return False
+
+        return True
 
     def add_registry(self, entry: RegistryEntry) -> None:
         """Add a new registry.
@@ -315,29 +324,48 @@ class RegistryManager:
                 return entry
         raise RegistryError(f"Registry {name!r} not found")
 
-    def update(self, name: str | None = None) -> None:
+    def update(
+            self,
+            name: str | None = None,
+            progress: Callable[[str, bool], None] | None = None,
+    ) -> dict[str, bool]:
         """Update one or all registries.
 
         Performs shallow clone or pull for specified registry or all enabled
         registries if name is None.
 
         Args:
-            name: Optional registry name to update, or None for all
+            name: Optional registry name to update, or None for all.
+            progress: Optional callback invoked after each registry with
+                ``(registry_name, success)``.
+
+        Returns:
+            Mapping of registry name to success status for each registry
+            that was attempted.
         """
         registries = self._load_registries()
+        results: dict[str, bool] = {}
 
         if name is not None:
             # Update single registry
             entry = self.get_registry(name)
             if entry.enabled:
-                self._clone_or_pull(entry)
+                ok = self._clone_or_pull(entry)
+                results[entry.name] = ok
+                if progress:
+                    progress(entry.name, ok)
             else:
                 logger.warning("Registry %s is disabled, skipping update", name)
         else:
             # Update all enabled registries
             for entry in registries:
                 if entry.enabled:
-                    self._clone_or_pull(entry)
+                    ok = self._clone_or_pull(entry)
+                    results[entry.name] = ok
+                    if progress:
+                        progress(entry.name, ok)
+
+        return results
 
     def ensure_initialized(self) -> None:
         """Ensure registries are initialized.
@@ -395,7 +423,7 @@ class RegistryManager:
         if not recipe_dir.is_dir():
             return recipes
 
-        from sparkrun.recipe import _effective_runtime
+        from sparkrun.recipe import resolve_runtime
 
         for f in sorted(recipe_dir.rglob("*.yaml")):
             stem = f.stem
@@ -410,7 +438,7 @@ class RegistryManager:
                     "path": str(f),
                     "model": data.get("model", ""),
                     "description": data.get("description", ""),
-                    "runtime": _effective_runtime(data),
+                    "runtime": resolve_runtime(data),
                     "registry": registry_name,
                     "min_nodes": data.get("min_nodes", 1),
                     "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",

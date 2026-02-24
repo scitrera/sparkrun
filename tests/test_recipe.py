@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
-from sparkrun.recipe import Recipe, RecipeError, find_recipe, list_recipes
+from sparkrun.recipe import Recipe, RecipeError, find_recipe, list_recipes, resolve_runtime
 
 
 def test_load_v2_recipe(tmp_recipe_dir: Path):
@@ -23,7 +23,7 @@ def test_load_v2_recipe(tmp_recipe_dir: Path):
     assert recipe.name == "Test vLLM Recipe"
     assert recipe.description == "A test recipe for vLLM"
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
-    assert recipe.runtime == "vllm"
+    assert recipe.runtime == "vllm-distributed"
     assert recipe.mode == "auto"
     assert recipe.container == "scitrera/dgx-spark-vllm:latest"
     assert recipe.sparkrun_version == "2"
@@ -93,7 +93,7 @@ def test_recipe_from_dict(sample_v2_recipe_data: dict[str, Any]):
 
     assert recipe.name == "Sample vLLM Recipe"
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
-    assert recipe.runtime == "vllm"
+    assert recipe.runtime == "vllm-distributed"
     assert recipe.mode == "auto"
     assert recipe.min_nodes == 1
     assert recipe.max_nodes == 4
@@ -346,7 +346,7 @@ def test_list_recipes(tmp_recipe_dir: Path):
     # Verify recipe metadata
     vllm_recipe = next(r for r in recipes if r["file"] == "test-vllm")
     assert vllm_recipe["name"] == "Test vLLM Recipe"
-    assert vllm_recipe["runtime"] == "vllm"
+    assert vllm_recipe["runtime"] == "vllm-distributed"
     assert "path" in vllm_recipe
 
 
@@ -709,3 +709,133 @@ class TestRecipeMetadata:
             auto_detect=False,
         )
         assert est.gpu_memory_utilization == 0.5
+
+
+class TestResolverChain:
+    """Test the resolver chain and resolve_runtime() function."""
+
+    def test_resolve_v1_sets_eugr(self):
+        """v1 recipe resolves to eugr-vllm."""
+        recipe = Recipe.from_dict({
+            "recipe_version": "1",
+            "name": "Test",
+            "model": "test-model",
+        })
+        assert recipe.runtime == "eugr-vllm"
+
+    def test_resolve_eugr_signals_build_args(self):
+        """build_args triggers eugr-vllm."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "build_args": ["--pre-tf"],
+        })
+        assert recipe.runtime == "eugr-vllm"
+
+    def test_resolve_eugr_signals_mods(self):
+        """mods triggers eugr-vllm."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "mods": ["mods/fix.patch"],
+        })
+        assert recipe.runtime == "eugr-vllm"
+
+    def test_resolve_vllm_defaults_to_distributed(self):
+        """Bare vllm -> vllm-distributed."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+        })
+        assert recipe.runtime == "vllm-distributed"
+
+    def test_resolve_vllm_ray_hint_in_defaults(self):
+        """distributed_executor_backend: ray -> vllm-ray."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "defaults": {"distributed_executor_backend": "ray"},
+        })
+        assert recipe.runtime == "vllm-ray"
+
+    def test_resolve_vllm_ray_hint_in_command(self):
+        """Command template with ray -> vllm-ray."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "command": "vllm serve {model} --distributed-executor-backend ray",
+        })
+        assert recipe.runtime == "vllm-ray"
+
+    @pytest.mark.parametrize("runtime", ["sglang", "vllm-ray", "vllm-distributed", "llama-cpp"])
+    def test_resolve_explicit_runtime_unchanged(self, runtime: str):
+        """Explicit non-vllm runtimes pass through unchanged."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": runtime,
+        })
+        assert recipe.runtime == runtime
+
+    def test_resolve_eugr_takes_priority_over_vllm_variant(self):
+        """v1 with ray hints still gets eugr-vllm (not vllm-ray)."""
+        recipe = Recipe.from_dict({
+            "recipe_version": "1",
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "defaults": {"distributed_executor_backend": "ray"},
+        })
+        assert recipe.runtime == "eugr-vllm"
+
+    @pytest.mark.parametrize("data,expected", [
+        ({"runtime": "vllm"}, "vllm-distributed"),
+        ({"runtime": "sglang"}, "sglang"),
+        ({"recipe_version": "1"}, "eugr-vllm"),
+        ({"runtime": "vllm", "build_args": ["a"]}, "eugr-vllm"),
+        ({"runtime": "vllm", "mods": ["m"]}, "eugr-vllm"),
+        ({"runtime": "vllm", "defaults": {"distributed_executor_backend": "ray"}}, "vllm-ray"),
+        ({"runtime": "vllm", "command": "vllm serve --distributed-executor-backend ray"}, "vllm-ray"),
+        ({"runtime": "llama-cpp"}, "llama-cpp"),
+        ({"runtime": "vllm-distributed"}, "vllm-distributed"),
+        ({"runtime": "vllm-ray"}, "vllm-ray"),
+    ])
+    def test_resolve_runtime_matches_recipe(self, data: dict[str, Any], expected: str):
+        """resolve_runtime(data) matches Recipe.from_dict(data).runtime."""
+        full_data = {"name": "Test", "model": "test-model", **data}
+        assert resolve_runtime(full_data) == expected
+        assert Recipe.from_dict(full_data).runtime == expected
+
+    def test_resolve_runtime_standalone(self):
+        """resolve_runtime() works on raw dicts without Recipe construction."""
+        assert resolve_runtime({"runtime": "vllm"}) == "vllm-distributed"
+        assert resolve_runtime({"runtime": "sglang"}) == "sglang"
+        assert resolve_runtime({"recipe_version": "1"}) == "eugr-vllm"
+        assert resolve_runtime({}) == "vllm-distributed"
+
+    @pytest.mark.parametrize("cmd", [
+        "vllm serve {model} --distributed-executor-backend  ray",
+        "vllm serve {model} --distributed-executor-backend\tray",
+        "vllm serve {model} --distributed-executor-backend\n  ray",
+    ])
+    def test_resolve_vllm_ray_hint_whitespace_variants(self, cmd: str):
+        """Ray hint in command is detected despite varied whitespace."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "command": cmd,
+        })
+        assert recipe.runtime == "vllm-ray"
+        assert resolve_runtime({"runtime": "vllm", "command": cmd}) == "vllm-ray"
+
+    def test_resolve_runtime_empty_runtime_string(self):
+        """Empty runtime string is treated like 'vllm'."""
+        assert resolve_runtime({"runtime": ""}) == "vllm-distributed"
+        recipe = Recipe.from_dict({"name": "T", "model": "m", "runtime": ""})
+        assert recipe.runtime == "vllm-distributed"

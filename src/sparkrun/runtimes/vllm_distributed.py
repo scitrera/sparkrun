@@ -1,4 +1,9 @@
-"""Native SGLang runtime for sparkrun."""
+"""Native vLLM distributed runtime for sparkrun.
+
+Uses vLLM's built-in multi-node support (``--nnodes``, ``--node-rank``,
+``--master-addr``, ``--master-port``, ``--headless``) instead of Ray.
+Follows the same orchestration pattern as SGLang's native distribution.
+"""
 
 from __future__ import annotations
 
@@ -6,60 +11,39 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.runtimes.base import RuntimePlugin
+from sparkrun.runtimes.vllm_ray import _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS
 
 if TYPE_CHECKING:
     from sparkrun.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
-# SGLang CLI flag mapping
-_SGLANG_FLAG_MAP = {
-    "port": "--port",
-    "host": "--host",
-    "tensor_parallel": "--tp-size",
-    "gpu_memory_utilization": "--mem-fraction-static",
-    "max_model_len": "--context-length",
-    "max_num_seqs": "--max-running-requests",
-    "served_model_name": "--served-model-name",
-    "dtype": "--dtype",
-    "quantization": "--quantization",
-    "trust_remote_code": "--trust-remote-code",
-    "chunked_prefill": "--chunked-prefill-size",
-    "kv_cache_dtype": "--kv-cache-dtype",
-    "tokenizer_path": "--tokenizer-path",
-}
 
-_SGLANG_BOOL_FLAGS = {
-    "trust_remote_code", "enable_torch_compile", "disable_radix_cache",
-}
+class VllmDistributedRuntime(RuntimePlugin):
+    """vLLM runtime using native distributed mode (no Ray).
 
-
-class SglangRuntime(RuntimePlugin):
-    """Native SGLang runtime using prebuilt container images.
-
-    SGLang uses its own distributed init mechanism for multi-node inference,
-    not Ray.  Each node runs the full ``sglang.launch_server`` command with
-    ``--dist-init-addr``, ``--nnodes``, and ``--node-rank`` arguments.
+    Each node runs the full ``vllm serve`` command with node-specific
+    ``--nnodes``, ``--node-rank``, ``--master-addr``, and ``--master-port``
+    arguments.  Worker nodes additionally receive ``--headless``.
     """
 
-    runtime_name = "sglang"
-    default_image_prefix = "scitrera/dgx-spark-sglang"
+    runtime_name = "vllm-distributed"
+    default_image_prefix = "scitrera/dgx-spark-vllm"
 
     def cluster_strategy(self) -> str:
-        """SGLang uses native multi-node distribution, not Ray."""
+        """vLLM distributed uses native multi-node distribution, not Ray."""
         return "native"
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
                          head_ip: str | None = None) -> str:
-        """Generate the sglang launch_server command.
+        """Generate the vllm serve command.
 
         For cluster mode this produces the *base* command without
         ``--node-rank``.  Use :meth:`generate_node_command` to get the
         per-node variant.
         """
         config = recipe.build_config_chain(overrides)
-        self._inject_gguf_model(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -77,14 +61,14 @@ class SglangRuntime(RuntimePlugin):
             node_rank: int,
             init_port: int = 25000,
     ) -> str:
-        """Generate the sglang command for a specific node.
+        """Generate the vllm serve command for a specific node.
 
-        Produces the full ``sglang.launch_server`` invocation with the
-        node-specific ``--dist-init-addr``, ``--nnodes``, and
-        ``--node-rank`` flags appended.
+        Produces the full ``vllm serve`` invocation with the node-specific
+        ``--nnodes``, ``--node-rank``, ``--master-addr``, and
+        ``--master-port`` flags appended.  Workers (rank > 0) also get
+        ``--headless``.
         """
         config = recipe.build_config_chain(overrides)
-        self._inject_gguf_model(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -93,99 +77,70 @@ class SglangRuntime(RuntimePlugin):
         else:
             base = self._build_base_command(recipe, config)
 
-        # Append sglang multi-node arguments
+        # Append vLLM native multi-node arguments
         parts = [
             base,
-            "--dist-init-addr %s:%d" % (head_ip, init_port),
             "--nnodes %d" % num_nodes,
             "--node-rank %d" % node_rank,
+            "--master-addr %s" % head_ip,
+            "--master-port %d" % init_port,
         ]
+        if node_rank > 0:
+            parts.append("--headless")
         return " ".join(parts)
 
-    @staticmethod
-    def _inject_gguf_model(config) -> None:
-        """Ensure ``{model}`` in command templates resolves to the GGUF file path.
-
-        When a GGUF model has been pre-synced, the CLI stores the
-        container-internal path as ``_gguf_model_path`` in overrides.
-        This helper copies that value into the ``model`` key so that
-        ``{model}`` in recipe command templates renders the local file
-        path instead of the raw HF repo spec (which includes the
-        sparkrun-specific ``:quant`` suffix that runtimes cannot parse).
-        """
-        gguf_path = config.get("_gguf_model_path")
-        if gguf_path:
-            config.put("model", str(gguf_path))
-
     def _build_base_command(self, recipe: Recipe, config) -> str:
-        """Build the sglang command without cluster-specific arguments."""
-        # For GGUF models, use the resolved file path instead of the HF repo name
-        model_path = config.get("_gguf_model_path") or recipe.model
-        parts = ["python3", "-m", "sglang.launch_server", "--model-path", str(model_path)]
+        """Build the vllm serve command without cluster-specific arguments."""
+        parts = ["vllm", "serve", recipe.model]
 
         tp = config.get("tensor_parallel")
         if tp:
-            parts.extend(["--tp-size", str(tp)])
+            parts.extend(["-tp", str(tp)])
 
+        # Add flags from defaults (skip tp and distributed_executor_backend)
+        skip = {"tensor_parallel", "distributed_executor_backend"}
         parts.extend(self.build_flags_from_map(
-            config, _SGLANG_FLAG_MAP, bool_keys=_SGLANG_BOOL_FLAGS,
-            skip_keys={"tensor_parallel"},
+            config, _VLLM_FLAG_MAP, bool_keys=_VLLM_BOOL_FLAGS, skip_keys=skip,
         ))
 
         return " ".join(parts)
 
     def _build_command(self, recipe: Recipe, config, is_cluster: bool,
                        num_nodes: int, head_ip: str | None = None) -> str:
-        """Build the sglang launch_server command from structured config.
+        """Build the vllm serve command from structured config.
 
-        For cluster mode, includes ``--dist-init-addr`` and ``--nnodes`` but
-        NOT ``--node-rank`` (that is added per-node by the orchestrator or
+        For cluster mode, includes ``--nnodes``, ``--master-addr``, and
+        ``--master-port`` but NOT ``--node-rank`` (that is added per-node
         by :meth:`generate_node_command`).
         """
         base = self._build_base_command(recipe, config)
 
         if is_cluster and head_ip:
-            base += " --dist-init-addr %s:25000 --nnodes %d" % (head_ip, num_nodes)
+            base += " --nnodes %d --master-addr %s --master-port 25000" % (num_nodes, head_ip)
 
         return base
 
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
-        """Return SGLang-specific cluster environment variables."""
+        """Return vLLM distributed-specific cluster environment variables.
+
+        Sets ``OMP_NUM_THREADS=4`` by default to avoid thread
+        over-subscription on multi-node clusters.  Recipe ``env`` can
+        override any of these values (runtime defaults are merged first,
+        recipe env wins).
+        """
         return {
             "NCCL_CUMEM_ENABLE": "0",
+            "OMP_NUM_THREADS": "4",
         }
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate SGLang-specific recipe fields."""
-        from sparkrun.models.download import is_gguf_model
-
-        issues = super().validate_recipe(recipe)
-
-        if recipe.model and is_gguf_model(recipe.model):
-            tokenizer = (recipe.defaults or {}).get("tokenizer_path")
-            cmd = recipe.command or ""
-            cmd_has_tokenizer = "--tokenizer-path" in cmd or "{tokenizer_path}" in cmd
-
-            if not tokenizer and not cmd_has_tokenizer:
-                issues.append(
-                    "[sglang] GGUF model detected but no tokenizer path configured. "
-                    "SGLang requires --tokenizer-path pointing to the base (non-GGUF) HF model. "
-                    "Set 'tokenizer_path' in defaults (e.g. tokenizer_path: Qwen/Qwen3-1.7B) "
-                    "or add --tokenizer-path to the command template."
-                )
-            if tokenizer and cmd and not cmd_has_tokenizer:
-                issues.append(
-                    "[sglang] GGUF recipe has 'tokenizer_path' in defaults but the command "
-                    "template does not reference {tokenizer_path} or --tokenizer-path. "
-                    "Add '--tokenizer-path {tokenizer_path}' to the command template."
-                )
-
-        return issues
+        """Validate vLLM distributed-specific recipe fields."""
+        return super().validate_recipe(recipe)
 
     # --- Log following hooks ---
 
     def _head_container_name(self, cluster_id: str) -> str:
-        """SGLang names the head container ``{cluster_id}_node_0``."""
+        """vLLM distributed names the head container ``{cluster_id}_node_0``."""
         from sparkrun.orchestration.docker import generate_node_container_name
         return generate_node_container_name(cluster_id, 0)
 
@@ -198,7 +153,7 @@ class SglangRuntime(RuntimePlugin):
             config=None,
             dry_run: bool = False,
     ) -> int:
-        """Stop an SGLang native cluster."""
+        """Stop a vLLM distributed native cluster."""
         return self._stop_native_cluster(hosts, cluster_id, config=config, dry_run=dry_run)
 
     # --- Cluster launch ---
@@ -222,15 +177,15 @@ class SglangRuntime(RuntimePlugin):
             init_port: int = 25000,
             **kwargs,
     ) -> int:
-        """Orchestrate a multi-node SGLang cluster using native distribution.
+        """Orchestrate a multi-node vLLM cluster using native distribution.
 
         Steps:
         1. Clean up existing containers on all hosts.
         2. Detect InfiniBand on all hosts (parallel).
         3. Detect head node IP.
         4. Launch head node (rank 0).
-        5. Wait for head init port to be ready.
-        6. Launch worker nodes in parallel.
+        5. Wait for master port to be ready.
+        6. Launch worker nodes in parallel (with --headless).
         """
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -260,8 +215,8 @@ class SglangRuntime(RuntimePlugin):
         all_env = merge_env(runtime_env, env)
 
         self._print_cluster_banner(
-            "SGLang Cluster Launcher", hosts, image, cluster_id,
-            {"Init Port": init_port}, dry_run,
+            "vLLM Distributed Cluster Launcher", hosts, image, cluster_id,
+            {"Master Port": init_port}, dry_run,
         )
 
         # Step 1: Cleanup
@@ -318,7 +273,7 @@ class SglangRuntime(RuntimePlugin):
         )
         head_script = self._generate_node_script(
             image=image, container_name=head_container,
-            serve_command=head_command, label="sglang node",
+            serve_command=head_command, label="vllm node",
             env=all_env, volumes=volumes, nccl_env=nccl_env,
         )
         head_result = run_remote_script(
@@ -329,12 +284,12 @@ class SglangRuntime(RuntimePlugin):
             return 1
         logger.info("Step 4/6: Head node launched (%.1fs)", time.monotonic() - t0)
 
-        # Step 5: Wait for head init port
+        # Step 5: Wait for master port
         # Capture head container logs in the background so we can surface
         # them if the node fails to become ready (avoids manual SSH).
         t0 = time.monotonic()
         if not dry_run:
-            logger.info("Step 5/6: Waiting for head node init port %s:%d...", head_host, init_port)
+            logger.info("Step 5/6: Waiting for head node master port %s:%d...", head_host, init_port)
 
             log_proc = start_log_capture(head_host, head_container, ssh_kwargs)
             try:
@@ -361,7 +316,7 @@ class SglangRuntime(RuntimePlugin):
                 return 1
             logger.info("Step 5/6: Head node ready (%.1fs)", time.monotonic() - t0)
         else:
-            logger.info("Step 5/6: [dry-run] Would wait for head init port %d", init_port)
+            logger.info("Step 5/6: [dry-run] Would wait for master port %d", init_port)
 
         # Step 6: Launch worker nodes in parallel
         t0 = time.monotonic()
@@ -382,7 +337,7 @@ class SglangRuntime(RuntimePlugin):
                     worker_container = generate_node_container_name(cluster_id, rank)
                     worker_script = self._generate_node_script(
                         image=image, container_name=worker_container,
-                        serve_command=worker_command, label="sglang node",
+                        serve_command=worker_command, label="vllm node",
                         env=all_env, volumes=volumes, nccl_env=nccl_env,
                     )
                     future = executor.submit(

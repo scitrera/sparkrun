@@ -10,7 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 from scitrera_app_framework import Variables, get_working_path
 
-from sparkrun.runtimes.vllm import VllmRuntime
+from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 
 if TYPE_CHECKING:
     from sparkrun.config import SparkrunConfig
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 EUGR_REPO_URL = "https://github.com/eugr/spark-vllm-docker.git"
 
 
-class EugrVllmRuntime(VllmRuntime):
+class EugrVllmRayRuntime(VllmRayRuntime):
     """eugr-vllm runtime extending native vLLM with eugr build and mod support.
 
     Inherits all Ray-based orchestration from VllmRuntime (container launch,
@@ -40,7 +40,7 @@ class EugrVllmRuntime(VllmRuntime):
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
 
-    def initialize(self, v: Variables, logger_arg: Logger) -> EugrVllmRuntime:
+    def initialize(self, v: Variables, logger_arg: Logger) -> EugrVllmRayRuntime:
         """Initialize the eugr-vllm runtime plugin."""
         self._v = v
         return self

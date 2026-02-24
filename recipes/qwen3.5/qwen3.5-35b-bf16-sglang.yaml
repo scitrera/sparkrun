@@ -1,0 +1,43 @@
+model: Qwen/Qwen3.5-35B-A3B
+runtime: sglang
+min_nodes: 1
+container: scitrera/dgx-spark-sglang:0.5.9-dev-9fac90d8-t5
+
+metadata:
+  description: Qwen3.5 35B A3B (upstream, no quant) SGLang
+  maintainer: scitrera.ai <open-source-team@scitrera.com>
+  model_params: 35B
+  model_dtype: bf16
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.85
+  max_model_len: 262144
+  served_model_name: qwen3.5-35b
+  attention_backend: triton
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder
+  speculative_algo: NEXTN
+  speculative_num_steps: 3
+  speculative_eagle_topk: 1
+  speculative_num_draft_tokens: 4
+
+command: |
+  python3 -m sglang.launch_server \
+      --model-path {model} \
+      --served-model-name {served_model_name} \
+      --context-length {max_model_len} \
+      --mem-fraction-static {gpu_memory_utilization} \
+      --tp-size {tensor_parallel} \
+      --host {host} \
+      --port {port} \
+      --attention-backend {attention_backend} \
+      --reasoning-parser {reasoning_parser} \
+      --tool-call-parser {tool_call_parser} \
+      --speculative-algo {speculative_algo} \
+      --speculative-num-steps {speculative_num_steps} \
+      --speculative-eagle-topk {speculative_eagle_topk} \
+      --speculative-num-draft-tokens {speculative_num_draft_tokens} \
+      --trust-remote-code

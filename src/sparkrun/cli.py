@@ -2041,11 +2041,38 @@ def recipe_update(ctx, registry, config_path=None, ):
     config, registry_mgr = _get_config_and_registry(config_path)
 
     try:
-        registry_mgr.update(registry)
+        # Count how many registries will be updated
         if registry:
-            click.echo(f"Registry '{registry}' updated successfully.")
+            entry = registry_mgr.get_registry(registry)
+            if not getattr(entry, "enabled", True):
+                click.echo(
+                    f"Error: Registry '{registry}' is disabled; enable it in the config before updating.",
+                    err=True,
+                )
+                sys.exit(1)
+            entries = [entry]
         else:
-            click.echo("All registries updated successfully.")
+            entries = [e for e in registry_mgr.list_registries() if e.enabled]
+
+        count = len(entries)
+        if count == 0:
+            click.echo("No enabled registries to update.")
+            return
+
+        click.echo(f"Updating {count} registr{'y' if count == 1 else 'ies'}...")
+
+        def _progress(name: str, success: bool) -> None:
+            status = "done" if success else "FAILED"
+            click.echo(f"  Updating {name}... {status}")
+
+        results = registry_mgr.update(registry, progress=_progress)
+        succeeded = sum(1 for v in results.values() if v)
+        failed = sum(1 for v in results.values() if not v)
+
+        if failed:
+            click.echo(f"{succeeded} of {count} registries updated ({failed} failed).")
+        else:
+            click.echo(f"{succeeded} registr{'y' if succeeded == 1 else 'ies'} updated.")
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

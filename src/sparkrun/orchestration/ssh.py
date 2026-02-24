@@ -316,6 +316,85 @@ def stream_container_file_logs(
         logger.info("\nLog following stopped.")
 
 
+def start_log_capture(
+        host: str,
+        container_name: str,
+        ssh_kwargs: dict,
+        tail: int = 200,
+) -> subprocess.Popen | None:
+    """Start a background ``docker logs -f`` process, capturing output.
+
+    Returns the Popen handle (or ``None`` if the process couldn't start).
+    The caller should later pass this to :func:`stop_log_capture`.
+
+    Args:
+        host: Target hostname or IP.
+        container_name: Name of the Docker container to follow.
+        ssh_kwargs: SSH connection kwargs (ssh_user, ssh_key, ssh_options).
+        tail: Number of existing log lines to include.
+
+    Returns:
+        A :class:`subprocess.Popen` handle, or ``None`` on failure.
+    """
+    from sparkrun.orchestration.docker import docker_logs_cmd
+    from sparkrun.hosts import is_local_host
+
+    logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
+
+    if is_local_host(host):
+        cmd = logs_cmd.split()
+    else:
+        ssh_base = build_ssh_cmd(
+            host,
+            ssh_user=ssh_kwargs.get("ssh_user"),
+            ssh_key=ssh_kwargs.get("ssh_key"),
+            ssh_options=ssh_kwargs.get("ssh_options"),
+        )
+        cmd = ssh_base + logs_cmd.split()
+
+    try:
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError:
+        logger.debug("Failed to start background log capture for %s", container_name)
+        return None
+
+
+def stop_log_capture(proc: subprocess.Popen | None) -> list[str]:
+    """Terminate a background log capture and return captured lines.
+
+    Args:
+        proc: The Popen handle returned by :func:`start_log_capture`,
+            or ``None`` (in which case an empty list is returned).
+
+    Returns:
+        List of captured log lines.
+    """
+    if proc is None:
+        return []
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+
+    lines: list[str] = []
+    if proc.stdout:
+        try:
+            raw = proc.stdout.read()
+            lines = raw.splitlines()
+        except (OSError, ValueError):
+            pass
+        finally:
+            proc.stdout.close()
+    return lines
+
+
 def run_remote_scripts_parallel(
         hosts: list[str],
         script: str,

@@ -10,9 +10,9 @@ from sparkrun.bootstrap import (
     get_runtime,
     list_runtimes,
 )
-from sparkrun.runtimes.vllm import VllmRuntime
+from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
-from sparkrun.runtimes.eugr_vllm import EugrVllmRuntime
+from sparkrun.runtimes.eugr_vllm_ray import EugrVllmRayRuntime
 
 
 def test_init_sparkrun_returns_variables():
@@ -57,23 +57,24 @@ def test_list_runtimes_discovers_all():
     assert "eugr-vllm" in runtimes
     assert "llama-cpp" in runtimes
     assert "sglang" in runtimes
-    assert "vllm" in runtimes
-    assert len(runtimes) == 4
+    assert "vllm-ray" in runtimes
+    assert "vllm-distributed" in runtimes
+    assert len(runtimes) == 5
 
 
-def test_get_runtime_vllm():
-    """Get the vllm runtime and verify it's a VllmRuntime with correct name.
+def test_get_runtime_vllm_ray():
+    """Get the vllm-ray runtime and verify it's a VllmRayRuntime with correct name.
 
-    Tests retrieval of the native vLLM runtime plugin.
+    Tests retrieval of the vLLM Ray runtime plugin.
     """
     import sparkrun.bootstrap
     sparkrun.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
-    runtime = get_runtime("vllm", v=v)
+    runtime = get_runtime("vllm-ray", v=v)
 
-    assert isinstance(runtime, VllmRuntime)
-    assert runtime.runtime_name == "vllm"
+    assert isinstance(runtime, VllmRayRuntime)
+    assert runtime.runtime_name == "vllm-ray"
 
 
 def test_get_runtime_sglang():
@@ -102,7 +103,7 @@ def test_get_runtime_eugr_vllm():
     v = init_sparkrun(log_level="WARNING")
     runtime = get_runtime("eugr-vllm", v=v)
 
-    assert isinstance(runtime, EugrVllmRuntime)
+    assert isinstance(runtime, EugrVllmRayRuntime)
     assert runtime.runtime_name == "eugr-vllm"
 
 
@@ -133,7 +134,7 @@ def test_runtime_classes_are_distinct():
 
     v = init_sparkrun(log_level="WARNING")
 
-    vllm_rt = get_runtime("vllm", v=v)
+    vllm_rt = get_runtime("vllm-ray", v=v)
     sglang_rt = get_runtime("sglang", v=v)
     eugr_rt = get_runtime("eugr-vllm", v=v)
 
@@ -168,7 +169,7 @@ def test_runtime_is_multi_extension():
     sparkrun.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
-    runtime = get_runtime("vllm", v=v)
+    runtime = get_runtime("vllm-ray", v=v)
 
     # RuntimePlugin should be multi-extension to allow multiple runtimes
     assert runtime.is_multi_extension(v) is True
@@ -184,7 +185,7 @@ def test_runtime_extension_point_name():
 
     v = init_sparkrun(log_level="WARNING")
 
-    vllm_rt = get_runtime("vllm", v=v)
+    vllm_rt = get_runtime("vllm-ray", v=v)
     sglang_rt = get_runtime("sglang", v=v)
     eugr_rt = get_runtime("eugr-vllm", v=v)
 

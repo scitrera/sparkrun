@@ -187,6 +187,22 @@ def generate_container_name(cluster_id: str, role: str = "head") -> str:
     return f"{cluster_id}_{role}"
 
 
+def generate_node_container_name(cluster_id: str, rank: int) -> str:
+    """Generate a container name for a ranked node: ``{cluster_id}_node_{rank}``.
+
+    Used by native-cluster runtimes (SGLang, vllm-distributed) where
+    each node gets a rank-indexed container name.
+
+    Args:
+        cluster_id: Cluster identifier (e.g. ``sparkrun0``).
+        rank: Node rank (0 = head, 1+ = workers).
+
+    Returns:
+        Container name string.
+    """
+    return "%s_node_%d" % (cluster_id, rank)
+
+
 def enumerate_cluster_containers(cluster_id: str, num_hosts: int) -> list[str]:
     """Return all possible container names for a cluster.
 
@@ -208,5 +224,5 @@ def enumerate_cluster_containers(cluster_id: str, num_hosts: int) -> list[str]:
         generate_container_name(cluster_id, "worker"),
     ]
     for rank in range(num_hosts):
-        names.append("%s_node_%d" % (cluster_id, rank))
+        names.append(generate_node_container_name(cluster_id, rank))
     return names

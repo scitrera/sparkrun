@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
+
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
     "model_revision",
@@ -28,22 +30,65 @@ _KNOWN_KEYS = {
 }
 
 
-def _effective_runtime(data: dict[str, Any]) -> str:
-    """Determine the effective runtime from raw recipe data.
+def _resolve_v1_migration(recipe: Recipe) -> None:
+    """v1 format recipes -> eugr-vllm runtime."""
+    if recipe.sparkrun_version != "1":
+        return
+    if recipe.runtime in ("vllm", ""):
+        recipe.runtime = "eugr-vllm"
 
-    Detects eugr-vllm recipes via two signals:
-    1. ``recipe_version: "1"`` — the eugr native format.
-    2. Presence of ``build_args`` or ``mods`` keys — eugr-specific fields
-       that are a dead giveaway even without an explicit version declaration.
+
+def _resolve_eugr_signals(recipe: Recipe) -> None:
+    """build_args or mods present -> eugr-vllm."""
+    if recipe.runtime not in ("vllm", ""):
+        return
+    rc = recipe.runtime_config
+    if rc.get("build_args") or rc.get("mods"):
+        recipe.runtime = "eugr-vllm"
+
+
+def _resolve_vllm_variant(recipe: Recipe) -> None:
+    """Bare 'vllm' (or empty) -> 'vllm-distributed' (default) or 'vllm-ray' (Ray hints)."""
+    if recipe.runtime not in ("vllm", ""):
+        return
+    if str(recipe.defaults.get("distributed_executor_backend", "")).lower() == "ray":
+        recipe.runtime = "vllm-ray"
+        return
+    if recipe.command and _RAY_BACKEND_RE.search(recipe.command):
+        recipe.runtime = "vllm-ray"
+        return
+    recipe.runtime = "vllm-distributed"
+
+
+_RECIPE_RESOLVERS = [
+    _resolve_v1_migration,
+    _resolve_eugr_signals,
+    _resolve_vllm_variant,
+]
+
+
+def resolve_runtime(data: dict[str, Any]) -> str:
+    """Lightweight runtime resolution from raw data (for listing/display).
+
+    Mirrors the runtime-affecting resolvers in :data:`_RECIPE_RESOLVERS`
+    without constructing a full Recipe.
     """
-    runtime = data.get("runtime", "vllm")
-    if runtime != "vllm":
-        return runtime
+    runtime = data.get("runtime", "vllm") or "vllm"
     version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
-    if version == "1":
+    if runtime in ("vllm", "") and version == "1":
         return "eugr-vllm"
-    if data.get("build_args") or data.get("mods"):
+    if runtime in ("vllm", "") and (data.get("build_args") or data.get("mods")):
         return "eugr-vllm"
+    if runtime == "vllm":
+        defaults = data.get("defaults")
+        if defaults is not None and not isinstance(defaults, dict):
+            raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
+        defaults = defaults or {}
+        if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
+            return "vllm-ray"
+        if _RAY_BACKEND_RE.search(data.get("command") or ""):
+            return "vllm-ray"
+        return "vllm-distributed"
     return runtime
 
 
@@ -81,6 +126,14 @@ class Recipe:
         elif self.mode == 'auto' and self.max_nodes == 1:
             self.mode = 'solo'
 
+        # Topology - Handle solo_only/cluster_only as first-class fields (works for both v1 and v2)
+        if data.get("cluster_only"):
+            self.min_nodes = max(self.min_nodes, 2)
+            self.mode = "cluster"
+        if data.get("solo_only"):
+            self.max_nodes = 1
+            self.mode = "solo"
+
         # Container
         self.container: str = data.get("container", "")
 
@@ -115,35 +168,9 @@ class Recipe:
             if k not in _KNOWN_KEYS and k not in self.runtime_config:
                 self.runtime_config[k] = v
 
-        # v1 compatibility migration
-        if self.sparkrun_version == "1":
-            self._migrate_v1(data)
-
-        # build_args / mods are eugr-specific fields — a dead giveaway
-        # even without an explicit v1 declaration
-        if self.runtime == "vllm" and (
-            self.runtime_config.get("build_args") or self.runtime_config.get("mods")
-        ):
-            self.runtime = "eugr-vllm"
-
-        # Handle solo_only/cluster_only as first-class fields (works for both v1 and v2)
-        if data.get("cluster_only"):
-            self.min_nodes = max(self.min_nodes, 2)
-            self.mode = "cluster"
-        if data.get("solo_only"):
-            self.max_nodes = 1
-            self.mode = "solo"
-
-    def _migrate_v1(self, data: dict[str, Any]):
-        """Map eugr v1 recipe fields to v2 schema.
-
-        The v1 format is the eugr/spark-vllm-docker native format.
-        Recipes declaring ``recipe_version: "1"`` with a vllm target
-        should use the ``eugr-vllm`` runtime which extends vllm with
-        eugr's container builds and mod support.
-        """
-        if not self.runtime or self.runtime == "vllm":
-            self.runtime = "eugr-vllm"
+        # Post-init resolver chain — all runtime/migration logic lives here
+        for resolver in _RECIPE_RESOLVERS:
+            resolver(self)
 
     @property
     def slug(self) -> str:
@@ -427,10 +454,10 @@ def list_recipes(search_paths: list[Path] | None = None,
                         "name": data.get("name", stem) if isinstance(data, dict) else stem,
                         "file": stem,
                         "path": str(f),
-                        "runtime": _effective_runtime(data) if isinstance(data, dict) else "unknown",
+                        "runtime": resolve_runtime(data) if isinstance(data, dict) else "unknown",
                     }
                     if isinstance(data, dict):
-                        entry["min_nodes"] = data.get("min_nodes", 1)
+                        entry["min_nodes"] = data.get("min_nodes", '1')
                         defaults = data.get("defaults", {})
                         if isinstance(defaults, dict):
                             entry["tp"] = defaults.get("tensor_parallel", "")
@@ -467,5 +494,3 @@ def filter_recipes(
         rt_lower = runtime.lower()
         result = [r for r in result if r.get("runtime", "").lower() == rt_lower]
     return result
-
-

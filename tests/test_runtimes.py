@@ -64,7 +64,7 @@ def test_vllm_resolve_container_from_recipe():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "container": "custom-vllm:v1.0",
     }
     recipe = Recipe.from_dict(recipe_data)
@@ -79,7 +79,7 @@ def test_vllm_resolve_container_default():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
     }
     recipe = Recipe.from_dict(recipe_data)
     runtime = VllmRayRuntime()
@@ -93,7 +93,7 @@ def test_vllm_generate_command_from_template():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "command": "vllm serve {model} --port {port}",
         "defaults": {"port": 8000},
     }
@@ -109,7 +109,7 @@ def test_vllm_generate_command_structured():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "defaults": {
             "port": 8000,
             "tensor_parallel": 2,
@@ -131,7 +131,7 @@ def test_vllm_generate_command_cluster():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-70b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "defaults": {"tensor_parallel": 4},
     }
     recipe = Recipe.from_dict(recipe_data)
@@ -147,7 +147,7 @@ def test_vllm_generate_command_bool_flags():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "defaults": {
             "enforce_eager": True,
             "enable_prefix_caching": False,
@@ -167,7 +167,7 @@ def test_vllm_validate_recipe_valid():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
     }
     recipe = Recipe.from_dict(recipe_data)
     runtime = VllmRayRuntime()
@@ -180,7 +180,7 @@ def test_vllm_validate_recipe_no_model():
     """Missing model returns issue."""
     recipe_data = {
         "name": "test-recipe",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
     }
     recipe = Recipe.from_dict(recipe_data)
     runtime = VllmRayRuntime()
@@ -835,7 +835,7 @@ def test_vllm_cluster_injects_ray_backend_into_template():
     recipe_data = {
         "name": "test-recipe",
         "model": "nvidia/some-model",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "command": "vllm serve {model} -tp {tensor_parallel} --port {port}",
         "defaults": {"tensor_parallel": 2, "port": 8000},
     }
@@ -856,7 +856,7 @@ def test_vllm_cluster_preserves_existing_backend_in_template():
     recipe_data = {
         "name": "test-recipe",
         "model": "nvidia/some-model",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "command": "vllm serve {model} --distributed-executor-backend ray",
     }
     recipe = Recipe.from_dict(recipe_data)
@@ -871,7 +871,7 @@ def test_vllm_overrides_in_command():
     recipe_data = {
         "name": "test-recipe",
         "model": "meta-llama/Llama-2-7b-hf",
-        "runtime": "vllm",
+        "runtime": "vllm-ray",
         "defaults": {"port": 8000},
     }
     recipe = Recipe.from_dict(recipe_data)

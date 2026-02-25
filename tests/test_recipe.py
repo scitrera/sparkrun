@@ -849,3 +849,64 @@ class TestResolverChain:
         """Non-mapping 'defaults' field is treated as a malformed recipe."""
         with pytest.raises(RecipeError, match="defaults.*mapping"):
             resolve_runtime({"runtime": "vllm", "defaults": bad_defaults})
+
+    # --- Command-hint resolver tests ---
+
+    @pytest.mark.parametrize("cmd,expected", [
+        ("vllm serve {model} -tp 4", "vllm-distributed"),
+        ("vllm serve {model} --distributed-executor-backend ray", "vllm-ray"),
+        ("sglang serve {model} --tp-size 4", "sglang"),
+        ("sglang serve --model {model}", "sglang"),
+        ("python -m sglang.launch_server --model {model}", "sglang"),
+        ("python3 -m sglang.launch_server --model {model}", "sglang"),
+        ("llama-server --model {model} -ngl 999", "llama-cpp"),
+    ])
+    def test_resolve_command_hint(self, cmd: str, expected: str):
+        """Command prefix infers runtime when no explicit runtime is set."""
+        data = {"name": "Test", "model": "test-model", "command": cmd}
+        assert Recipe.from_dict(data).runtime == expected
+        assert resolve_runtime(data) == expected
+
+    def test_resolve_command_hint_no_runtime_field(self):
+        """Command hint works even when runtime field is entirely absent."""
+        data = {"name": "Test", "model": "m", "command": "sglang serve m"}
+        assert Recipe.from_dict(data).runtime == "sglang"
+        assert resolve_runtime(data) == "sglang"
+
+    def test_resolve_command_hint_empty_runtime(self):
+        """Command hint works when runtime is explicitly empty string."""
+        data = {"name": "T", "model": "m", "runtime": "", "command": "llama-server --model m"}
+        assert Recipe.from_dict(data).runtime == "llama-cpp"
+        assert resolve_runtime(data) == "llama-cpp"
+
+    def test_resolve_command_hint_explicit_runtime_wins(self):
+        """Explicit non-default runtime is not overridden by command hint."""
+        data = {
+            "name": "T", "model": "m",
+            "runtime": "sglang",
+            "command": "vllm serve {model}",
+        }
+        assert Recipe.from_dict(data).runtime == "sglang"
+
+    def test_resolve_command_hint_vllm_serve_stays_vllm(self):
+        """vllm serve command leaves runtime as vllm for variant resolution."""
+        data = {"name": "T", "model": "m", "command": "vllm serve {model}"}
+        assert Recipe.from_dict(data).runtime == "vllm-distributed"
+        assert resolve_runtime(data) == "vllm-distributed"
+
+    def test_resolve_command_hint_no_command(self):
+        """No command field → normal fallback to vllm-distributed."""
+        data = {"name": "T", "model": "m"}
+        assert Recipe.from_dict(data).runtime == "vllm-distributed"
+
+    def test_resolve_command_hint_does_not_override_v1(self):
+        """v1 migration still wins for v1 recipes with a command."""
+        data = {
+            "recipe_version": "1",
+            "name": "T", "model": "m",
+            "command": "sglang serve {model}",
+        }
+        # v1 with default runtime → eugr-vllm takes priority
+        # (command hint sets sglang, but v1 migration doesn't touch non-vllm)
+        recipe = Recipe.from_dict(data)
+        assert recipe.runtime == "sglang"

@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
+_CMD_VLLM_RE = re.compile(r"^vllm\s+serve\b")
+_CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_server)\b")
+_CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
 
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
@@ -28,6 +31,32 @@ _KNOWN_KEYS = {
     "cluster_only", "solo_only",
     "metadata",
 }
+
+
+def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
+    """Infer runtime from command prefix when no explicit runtime is set.
+
+    Only fires when runtime is the default ``""`` (empty) and the
+    recipe has a ``command`` field.  Recognises:
+
+    - ``vllm serve ...`` → ``"vllm"`` (vllm flavor left for downstream resolvers)
+    - ``sglang serve ...`` or ``python -m sglang.launch_server ...`` → ``"sglang"``
+    - ``llama-server ...`` → ``"llama-cpp"``
+    """
+    if recipe.runtime:  # if runtime defined, then we do nothing
+        return
+    cmd = (recipe.command or "").strip()
+    if not cmd:
+        return
+    # vllm serve → keep as "vllm" for _resolve_vllm_variant to pick the variant
+    if _CMD_VLLM_RE.match(cmd):
+        recipe.runtime = "vllm"
+    elif _CMD_SGLANG_RE.match(cmd):
+        recipe.runtime = "sglang"
+    elif _CMD_LLAMA_CPP_RE.match(cmd):
+        recipe.runtime = "llama-cpp"
+
+    return
 
 
 def _resolve_v1_migration(recipe: Recipe) -> None:
@@ -61,6 +90,7 @@ def _resolve_vllm_variant(recipe: Recipe) -> None:
 
 
 _RECIPE_RESOLVERS = [
+    _resolve_runtime_from_command_hint,
     _resolve_v1_migration,
     _resolve_eugr_signals,
     _resolve_vllm_variant,
@@ -73,20 +103,31 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     Mirrors the runtime-affecting resolvers in :data:`_RECIPE_RESOLVERS`
     without constructing a full Recipe.
     """
-    runtime = data.get("runtime", "vllm") or "vllm"
+    runtime = data.get("runtime") or ""
+
+    # Command-hint resolver (mirrors _resolve_runtime_from_command_hint)
+    # Only fires when runtime is not explicitly set
+    cmd = (data.get("command") or "").strip()
+    if not runtime and cmd:
+        if _CMD_SGLANG_RE.match(cmd):
+            return "sglang"
+        if _CMD_LLAMA_CPP_RE.match(cmd):
+            return "llama-cpp"
+        # vllm serve or unrecognised → fall through to vllm variant resolution
+
     version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
     if runtime in ("vllm", "") and version == "1":
         return "eugr-vllm"
     if runtime in ("vllm", "") and (data.get("build_args") or data.get("mods")):
         return "eugr-vllm"
-    if runtime == "vllm":
+    if runtime in ("vllm", ""):
         defaults = data.get("defaults")
         if defaults is not None and not isinstance(defaults, dict):
             raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
         if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
             return "vllm-ray"
-        if _RAY_BACKEND_RE.search(data.get("command") or ""):
+        if _RAY_BACKEND_RE.search(cmd):
             return "vllm-ray"
         return "vllm-distributed"
     return runtime
@@ -112,7 +153,7 @@ class Recipe:
         self.description: str = data.get("description", "")
         self.model: str = data.get("model", "")
         self.model_revision: str | None = data.get("model_revision")
-        self.runtime: str = data.get("runtime", "vllm")
+        self.runtime: str = data.get("runtime", "")  # init to empty string if not provided
         self.runtime_version: str = data.get("runtime_version", "")
 
         # Topology

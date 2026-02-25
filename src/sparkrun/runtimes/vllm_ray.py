@@ -96,12 +96,12 @@ class VllmRayRuntime(RuntimePlugin):
 
     def get_extra_volumes(self) -> dict[str, str]:
         """Mount vLLM tuning configs if available."""
-        from sparkrun.tuning import get_vllm_tuning_volumes
+        from sparkrun.tuning.vllm import get_vllm_tuning_volumes
         return get_vllm_tuning_volumes() or {}
 
     def get_extra_env(self) -> dict[str, str]:
         """Set VLLM_TUNED_CONFIG_FOLDER if tuning configs exist."""
-        from sparkrun.tuning import get_vllm_tuning_env
+        from sparkrun.tuning.vllm import get_vllm_tuning_env
         return get_vllm_tuning_env() or {}
 
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:

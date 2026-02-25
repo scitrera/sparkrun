@@ -8,31 +8,29 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from sparkrun.tuning import (
-    get_sglang_tuning_dir,
-    get_sglang_tuning_volumes,
-    get_sglang_tuning_env,
-    get_vllm_tuning_dir,
-    get_vllm_tuning_volumes,
-    get_vllm_tuning_env,
-    TUNING_CONTAINER_PATH,
-    TUNING_CONTAINER_OUTPUT_PATH,
-    VLLM_TUNING_CONTAINER_PATH,
-    VLLM_TUNING_CONTAINER_OUTPUT_PATH,
-)
 from sparkrun.tuning.sglang import (
     build_tuning_command,
+    get_sglang_tuning_dir,
+    get_sglang_tuning_env,
+    get_sglang_tuning_volumes,
     SglangTuner,
-    TUNE_CONTAINER_NAME,
     SGLANG_CLONE_DIR,
+    TUNE_CONTAINER_NAME,
+    TUNING_CONTAINER_OUTPUT_PATH,
+    TUNING_CONTAINER_PATH,
     DEFAULT_TP_SIZES,
     _format_duration,
 )
 from sparkrun.tuning.vllm import (
     build_vllm_tuning_command,
+    get_vllm_tuning_dir,
+    get_vllm_tuning_env,
+    get_vllm_tuning_volumes,
     VllmTuner,
     TUNE_VLLM_CONTAINER_NAME,
     VLLM_CLONE_DIR,
+    VLLM_TUNING_CONTAINER_OUTPUT_PATH,
+    VLLM_TUNING_CONTAINER_PATH,
     DEFAULT_TP_SIZES as VLLM_DEFAULT_TP_SIZES,
 )
 
@@ -55,7 +53,7 @@ class TestGetSglangTuningDir:
 class TestGetSglangTuningVolumes:
     def test_returns_none_when_dir_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.DEFAULT_CACHE_DIR",
+            "sparkrun.tuning._common.DEFAULT_CACHE_DIR",
             tmp_path / "nonexistent_cache",
         )
         assert get_sglang_tuning_volumes() is None
@@ -63,10 +61,8 @@ class TestGetSglangTuningVolumes:
     def test_returns_none_when_dir_empty(self, tmp_path, monkeypatch):
         tuning_dir = tmp_path / "sparkrun" / "tuning" / "sglang"
         tuning_dir.mkdir(parents=True)
-        monkeypatch.setattr("sparkrun.tuning.DEFAULT_CACHE_DIR", tmp_path / "sparkrun")
-        # Override the function's internal path computation
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_dir",
+            "sparkrun.tuning.sglang.get_sglang_tuning_dir",
             lambda: tuning_dir,
         )
         assert get_sglang_tuning_volumes() is None
@@ -76,7 +72,7 @@ class TestGetSglangTuningVolumes:
         tuning_dir.mkdir(parents=True)
         (tuning_dir / "config.json").write_text("{}")
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_dir",
+            "sparkrun.tuning.sglang.get_sglang_tuning_dir",
             lambda: tuning_dir,
         )
         result = get_sglang_tuning_volumes()
@@ -89,7 +85,7 @@ class TestGetSglangTuningVolumes:
         nested.mkdir(parents=True)
         (nested / "E=128_N=256.json").write_text("{}")
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_dir",
+            "sparkrun.tuning.sglang.get_sglang_tuning_dir",
             lambda: tuning_dir,
         )
         result = get_sglang_tuning_volumes()
@@ -99,14 +95,14 @@ class TestGetSglangTuningVolumes:
 class TestGetSglangTuningEnv:
     def test_returns_none_when_no_configs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_volumes",
+            "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: None,
         )
         assert get_sglang_tuning_env() is None
 
     def test_returns_env_when_configs_exist(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_volumes",
+            "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: {"/some/path": TUNING_CONTAINER_PATH},
         )
         result = get_sglang_tuning_env()
@@ -154,13 +150,27 @@ class TestBuildTuningCommand:
         assert "SGLANG_MOE_CONFIG_DIR=" in cmd
         assert TUNING_CONTAINER_OUTPUT_PATH in cmd
 
-    def test_versioned_output_dir(self):
+    def test_config_dir_is_base_path(self):
+        """SGLANG_MOE_CONFIG_DIR should be the base output path — SGLang
+        internally appends configs/triton_<ver>/ via get_config_file_name()."""
         cmd = build_tuning_command("test-model", 2, triton_version="3.6.0")
-        assert "SGLANG_MOE_CONFIG_DIR=%s/triton_3_6_0" % TUNING_CONTAINER_OUTPUT_PATH in cmd
-
-    def test_no_version_uses_base_output_dir(self):
-        cmd = build_tuning_command("test-model", 2)
         assert "SGLANG_MOE_CONFIG_DIR=%s " % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        # Should NOT double-nest the triton version in the env var
+        assert "SGLANG_MOE_CONFIG_DIR=%s/triton_" % TUNING_CONTAINER_OUTPUT_PATH not in cmd
+
+    def test_versioned_mkdir(self):
+        """When triton_version is provided, pre-create the versioned subdir."""
+        cmd = build_tuning_command("test-model", 2, triton_version="3.6.0")
+        assert "mkdir -p %s/configs/triton_3_6_0" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+
+    def test_no_version_creates_base_configs_dir(self):
+        cmd = build_tuning_command("test-model", 2)
+        assert "mkdir -p %s/configs" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+
+    def test_unknown_version_creates_base_configs_dir(self):
+        cmd = build_tuning_command("test-model", 2, triton_version="unknown")
+        assert "mkdir -p %s/configs " % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        assert "triton_unknown" not in cmd
 
     def test_runs_from_clone_dir(self):
         cmd = build_tuning_command("test-model", 1)
@@ -314,7 +324,7 @@ class TestSglangRuntimeAutoMount:
         """SglangRuntime.get_extra_volumes returns {} when no tuning configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_volumes",
+            "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: None,
         )
         runtime = get_runtime("sglang", v)
@@ -324,7 +334,7 @@ class TestSglangRuntimeAutoMount:
         """SglangRuntime.get_extra_env returns {} when no tuning configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_env",
+            "sparkrun.tuning.sglang.get_sglang_tuning_env",
             lambda: None,
         )
         runtime = get_runtime("sglang", v)
@@ -335,7 +345,7 @@ class TestSglangRuntimeAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"/cache/tuning/sglang": TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_volumes",
+            "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: expected,
         )
         runtime = get_runtime("sglang", v)
@@ -346,7 +356,7 @@ class TestSglangRuntimeAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"SGLANG_MOE_CONFIG_DIR": TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_sglang_tuning_env",
+            "sparkrun.tuning.sglang.get_sglang_tuning_env",
             lambda: expected,
         )
         runtime = get_runtime("sglang", v)
@@ -394,7 +404,7 @@ class TestGetVllmTuningDir:
 class TestGetVllmTuningVolumes:
     def test_returns_none_when_dir_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.DEFAULT_CACHE_DIR",
+            "sparkrun.tuning._common.DEFAULT_CACHE_DIR",
             tmp_path / "nonexistent_cache",
         )
         assert get_vllm_tuning_volumes() is None
@@ -403,7 +413,7 @@ class TestGetVllmTuningVolumes:
         tuning_dir = tmp_path / "sparkrun" / "tuning" / "vllm"
         tuning_dir.mkdir(parents=True)
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_dir",
+            "sparkrun.tuning.vllm.get_vllm_tuning_dir",
             lambda: tuning_dir,
         )
         assert get_vllm_tuning_volumes() is None
@@ -413,7 +423,7 @@ class TestGetVllmTuningVolumes:
         tuning_dir.mkdir(parents=True)
         (tuning_dir / "config.json").write_text("{}")
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_dir",
+            "sparkrun.tuning.vllm.get_vllm_tuning_dir",
             lambda: tuning_dir,
         )
         result = get_vllm_tuning_volumes()
@@ -426,7 +436,7 @@ class TestGetVllmTuningVolumes:
         nested.mkdir(parents=True)
         (nested / "E=128_N=256.json").write_text("{}")
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_dir",
+            "sparkrun.tuning.vllm.get_vllm_tuning_dir",
             lambda: tuning_dir,
         )
         result = get_vllm_tuning_volumes()
@@ -436,14 +446,14 @@ class TestGetVllmTuningVolumes:
 class TestGetVllmTuningEnv:
     def test_returns_none_when_no_configs(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
         )
         assert get_vllm_tuning_env() is None
 
     def test_returns_env_when_configs_exist(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: {"/some/path": VLLM_TUNING_CONTAINER_PATH},
         )
         result = get_vllm_tuning_env()
@@ -473,6 +483,10 @@ class TestBuildVllmTuningCommand:
         cmd = build_vllm_tuning_command("test-model", 2)
         assert "VLLM_TUNED_CONFIG_FOLDER=" in cmd
         assert VLLM_TUNING_CONTAINER_OUTPUT_PATH in cmd
+
+    def test_creates_output_dir(self):
+        cmd = build_vllm_tuning_command("test-model", 2)
+        assert "mkdir -p %s" % VLLM_TUNING_CONTAINER_OUTPUT_PATH in cmd
 
     def test_runs_from_clone_dir(self):
         cmd = build_vllm_tuning_command("test-model", 1)
@@ -637,7 +651,7 @@ class TestVllmRayRuntimeAutoMount:
         """VllmRayRuntime.get_extra_volumes returns {} when no tuning configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
         )
         runtime = get_runtime("vllm-ray", v)
@@ -647,7 +661,7 @@ class TestVllmRayRuntimeAutoMount:
         """VllmRayRuntime.get_extra_env returns {} when no tuning configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_env",
+            "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
         )
         runtime = get_runtime("vllm-ray", v)
@@ -658,7 +672,7 @@ class TestVllmRayRuntimeAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: expected,
         )
         runtime = get_runtime("vllm-ray", v)
@@ -669,7 +683,7 @@ class TestVllmRayRuntimeAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_env",
+            "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: expected,
         )
         runtime = get_runtime("vllm-ray", v)
@@ -681,7 +695,7 @@ class TestVllmDistributedAutoMount:
         """VllmDistributedRuntime.get_extra_volumes returns {} when no configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
         )
         runtime = get_runtime("vllm-distributed", v)
@@ -691,7 +705,7 @@ class TestVllmDistributedAutoMount:
         """VllmDistributedRuntime.get_extra_env returns {} when no configs."""
         from sparkrun.bootstrap import get_runtime
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_env",
+            "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
         )
         runtime = get_runtime("vllm-distributed", v)
@@ -702,7 +716,7 @@ class TestVllmDistributedAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: expected,
         )
         runtime = get_runtime("vllm-distributed", v)
@@ -713,7 +727,7 @@ class TestVllmDistributedAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_env",
+            "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: expected,
         )
         runtime = get_runtime("vllm-distributed", v)
@@ -726,7 +740,7 @@ class TestEugrVllmAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_volumes",
+            "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: expected,
         )
         runtime = get_runtime("eugr-vllm", v)
@@ -737,7 +751,7 @@ class TestEugrVllmAutoMount:
         from sparkrun.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
-            "sparkrun.tuning.get_vllm_tuning_env",
+            "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: expected,
         )
         runtime = get_runtime("eugr-vllm", v)

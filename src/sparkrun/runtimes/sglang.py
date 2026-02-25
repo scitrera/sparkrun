@@ -186,12 +186,12 @@ class SglangRuntime(RuntimePlugin):
 
     def get_extra_volumes(self) -> dict[str, str]:
         """Mount SGLang tuning configs if available."""
-        from sparkrun.tuning import get_sglang_tuning_volumes
+        from sparkrun.tuning.sglang import get_sglang_tuning_volumes
         return get_sglang_tuning_volumes() or {}
 
     def get_extra_env(self) -> dict[str, str]:
         """Set SGLANG_MOE_CONFIG_DIR if tuning configs exist."""
-        from sparkrun.tuning import get_sglang_tuning_env
+        from sparkrun.tuning.sglang import get_sglang_tuning_env
         return get_sglang_tuning_env() or {}
 
     # --- Log following hooks ---

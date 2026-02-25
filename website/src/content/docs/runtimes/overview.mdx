@@ -15,9 +15,24 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 | `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
 | `eugr-vllm` | vLLM (eugr) | Yes (Ray) | Gold standard community vLLM — nightly builds, mods, battle-tested. Extends `vllm-ray`. |
 
+### Automatic runtime detection
+
+Explicitly setting `runtime` in recipes is recommended, but when it is omitted sparkrun can infer the runtime from the `command` field prefix:
+
+| Command prefix | Detected runtime |
+|---|---|
+| `vllm serve ...` | `vllm` |
+| `sglang serve ...` | `sglang` |
+| `python[3] -m sglang.launch_server ...` | `sglang` |
+| `llama-server ...` | `llama-cpp` |
+
+If the command doesn't match any known pattern (or there is no `command`), the recipe falls through to `vllm` behavior. An explicit `runtime` field always takes precedence over command-based detection.
+
+See the [recipe format docs](/recipes/format/#automatic-runtime-detection) for the full detection rules.
+
 ### The `vllm` alias
 
-You can write `runtime: vllm` in a recipe — sparkrun treats it as a virtual alias and resolves it to a concrete runtime:
+You can write `runtime: vllm` in a recipe (or let it be auto-detected from a `vllm serve` command) — sparkrun treats it as a virtual alias and resolves it to a concrete runtime:
 
 1. If the recipe has eugr signals (`build_args`, `mods`, or `recipe_version: "1"`) → **`eugr-vllm`**
 2. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**

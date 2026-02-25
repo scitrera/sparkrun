@@ -119,19 +119,24 @@ This affects:
 Use `model_revision` when you need reproducible deployments — without it, a model's `main` branch may change
 between downloads. Pinning to a commit hash guarantees byte-identical weights across all nodes.
 
-#### `runtime` (required)
+#### `runtime`
 
 Which inference engine to use. Determines how sparkrun launches and manages the workload.
 
 | Value | Engine | Clustering | Notes |
 |-------|--------|------------|-------|
-| `vllm` | vLLM | Ray | First-class. Solo and multi-node via Ray. |
+| `vllm` | vLLM | varies | Virtual alias — resolves to `vllm-distributed` (default) or `vllm-ray`. |
+| `vllm-distributed` | vLLM | Native | Default vLLM variant. Uses vLLM's built-in distributed backend. |
+| `vllm-ray` | vLLM | Ray | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Native | First-class. Solo and multi-node via SGLang's built-in distribution. |
 | `llama-cpp` | llama.cpp | N/A | Solo mode. GGUF quantized models via `llama-server`. |
 | `eugr-vllm` | vLLM (eugr) | Ray | Extends vLLM with eugr container builds and mod support. |
 
-If omitted, defaults to `vllm`. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`, `mods`)
-are automatically detected as `eugr-vllm`.
+Explicitly setting `runtime` is **recommended** for clarity and forward-compatibility. However, this field is
+technically optional — when omitted, sparkrun uses [automatic runtime detection](#automatic-runtime-detection)
+to infer the runtime from the `command` field. If neither `runtime` nor a recognizable command is present, the
+recipe defaults to `vllm` behavior. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`,
+`mods`) are automatically detected as `eugr-vllm`.
 
 #### `container` (required)
 
@@ -447,6 +452,53 @@ defaults:
   port: 8000
 ```
 
+## Automatic Runtime Detection
+
+While explicitly setting `runtime` is recommended, sparkrun can infer the runtime from the `command` field when
+it is omitted. This is useful for quick experimentation or when adapting command snippets from documentation
+without worrying about which runtime value to set.
+
+### Command-hint rules
+
+| Command prefix | Detected runtime |
+|----------------|------------------|
+| `vllm serve ...` | `vllm` (then resolved to `vllm-distributed` or `vllm-ray` via the usual heuristics) |
+| `sglang serve ...` | `sglang` |
+| `python -m sglang.launch_server ...` | `sglang` |
+| `python3 -m sglang.launch_server ...` | `sglang` |
+| `llama-server ...` | `llama-cpp` |
+
+If the command doesn't match any of these patterns (or there is no `command` field), the recipe falls through to
+`vllm` behavior by default.
+
+### Precedence
+
+An explicit `runtime` field **always wins** — command-hint detection only fires when `runtime` is omitted. This
+means existing recipes that set `runtime: vllm` (or any other value) continue to work identically.
+
+The full resolver chain is:
+
+1. **Command-hint detection** — infer runtime from `command` prefix (only when `runtime` is omitted).
+2. **v1 migration** — recipes with `recipe_version: "1"` are set to `eugr-vllm`.
+3. **eugr signal detection** — recipes with `build_args`, `mods`, or other eugr-specific fields are set to `eugr-vllm`.
+4. **vLLM variant resolution** — `runtime: vllm` is resolved to `vllm-distributed` (default) or `vllm-ray` (when Ray hints are present).
+
+### Example: minimal recipe without `runtime`
+
+```yaml
+model: Qwen/Qwen3-1.7B
+container: scitrera/dgx-spark-sglang:0.5.8-t5
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+
+command: |
+  sglang serve {model} --host {host} --port {port}
+```
+
+sparkrun detects `sglang serve` and automatically sets the runtime to `sglang` — no `runtime` field needed.
+
 ## Recipe Discovery
 
 sparkrun searches for recipes in this order:
@@ -463,7 +515,7 @@ Filenames are matched with or without `.yaml`/`.yml` extensions, so `sparkrun ru
 
 Run `sparkrun recipe validate <recipe>` to check a recipe for issues:
 
-- Missing required fields (`model`, `runtime`)
+- Missing required fields (`model`)
 - Invalid `mode` values
 - `min_nodes` / `max_nodes` consistency
 - `metadata.model_params` is a valid parameter count
@@ -475,11 +527,14 @@ Run `sparkrun recipe validate <recipe>` to check a recipe for issues:
 1. **Start from an existing recipe** that uses the same runtime. Copy it and modify.
 2. **Set `model`** to the HuggingFace model ID you want to serve.
 3. **Set `container`** to a known-good image for your runtime.
-4. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and `max_model_len` low, then
+4. **Set `runtime`** to the engine you're targeting (`vllm`, `sglang`, `llama-cpp`, etc.). While sparkrun can
+   [auto-detect the runtime](#automatic-runtime-detection) from the command prefix, explicitly setting it is
+   preferred for clarity and to avoid surprises if the heuristics evolve.
+5. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and `max_model_len` low, then
    increase after confirming the model loads.
-5. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works.
-6. **Validate**: `sparkrun recipe validate your-recipe.yaml`
-7. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run` to see what would be executed.
+6. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works.
+7. **Validate**: `sparkrun recipe validate your-recipe.yaml`
+8. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run` to see what would be executed.
 
 ### Tips
 

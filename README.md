@@ -229,7 +229,9 @@ runtimes (e.g. vLLM vs SGLang) without needing to worry about the underlying com
 [RECIPES](./RECIPES.md) specification file for more details.
 
 **Runtimes** are plugins that know how to launch a specific inference engine. sparkrun discovers them via Python entry
-points, so custom runtimes can be added by installing a package.
+points, so custom runtimes can be added by installing a package. When a recipe omits the `runtime` field, sparkrun
+auto-detects it from the `command` prefix — `vllm serve` → vLLM, `sglang serve` → SGLang, `llama-server` → llama.cpp.
+See [RECIPES.md](./RECIPES.md#automatic-runtime-detection) for the full detection rules.
 
 **Orchestration** is handled over SSH. sparkrun detects InfiniBand/RDMA interfaces on your hosts, distributes container
 images and models from local to remote (using the ethernet interfaces of the RDMA interfaces for fast transfers when

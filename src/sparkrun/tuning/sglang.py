@@ -227,6 +227,19 @@ class SglangTuner:
         t0 = time.monotonic()
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
 
+        # Ensure output directory exists on the remote host (as the SSH user, not root)
+        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % self.output_dir
+        mkdir_result = run_script_on_host(
+            self.host, mkdir_script,
+            ssh_kwargs=self.ssh_kwargs, timeout=30, dry_run=self.dry_run,
+        )
+        if not mkdir_result.success and not self.dry_run:
+            logger.error(
+                "Failed to create output directory %s: %s",
+                self.output_dir, mkdir_result.stderr,
+            )
+            return 1
+
         volumes = build_volumes(self.cache_dir)
         # Mount tuning output directory
         volumes[self.output_dir] = TUNING_CONTAINER_OUTPUT_PATH

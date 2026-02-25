@@ -420,4 +420,4 @@ def build_tuning_command(model: str, tp_size: int, triton_version: str | None = 
         "SGLANG_MOE_CONFIG_DIR=%s "
         "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
         "--model %s --tp-size %d --tune"
-    ) % (SGLANG_CLONE_DIR, config_dir, model, tp_size)
+    ) % (SGLANG_CLONE_DIR, config_dir, shlex.quote(model), tp_size)

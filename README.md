@@ -454,6 +454,9 @@ the local copy without re-downloading.
 Run Triton kernel autotuning for MoE models. Generates optimal tile configs per TP size and saves
 them for automatic use in future inference runs.
 
+> **Note:** Tuning is computationally intensive — each TP size can take hours depending on model
+> size. Use `--dry-run` to preview and `-j4` to parallelize across TP sizes.
+
 ```bash
 # Tune SGLang kernels on localhost
 sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1

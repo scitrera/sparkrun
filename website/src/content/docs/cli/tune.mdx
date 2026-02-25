@@ -7,6 +7,10 @@ description: Tune Triton fused MoE kernels for optimal inference performance.
 The `sparkrun tune` commands are experimental. The interface and behavior may change in future releases.
 :::
 
+:::note[Tuning takes a while]
+Triton autotuning is computationally intensive. Each TP size can take hours depending on the model size and architecture. Plan accordingly — use `--dry-run` to preview what will run, and consider using `-j4` to parallelize across TP sizes.
+:::
+
 ```bash
 sparkrun tune sglang <recipe> [options]
 sparkrun tune vllm <recipe> [options]
@@ -101,4 +105,4 @@ Once tuning configs exist on a host, every `sparkrun run` for the matching runti
 - Each TP size produces its own config. Tune for the TP sizes you actually plan to use.
 - Use `-j4` to run multiple TP sizes in parallel and reduce total tuning time.
 - Use `--dry-run` to preview the Docker and tuning commands before committing to a long run.
-- Tuning can take significant time per TP size (minutes to hours depending on the model).
+- Tuning can take hours per TP size depending on the model.

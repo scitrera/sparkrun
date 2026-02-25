@@ -141,48 +141,111 @@ def fetch_model_config(
         return None
 
 
-# TODO: improve parameters calc with extract_model_info; better VRAM calc; better KV calc
+def fetch_safetensors_size(
+        model_id: str,
+        revision: str | None = None,
+) -> int | None:
+    """Fetch total parameter storage size from safetensors index metadata.
+
+    Downloads only the small ``model.safetensors.index.json`` file, which
+    contains a ``metadata.total_size`` field giving the total bytes of all
+    parameter tensors on disk.
+
+    Args:
+        model_id: HuggingFace model identifier.
+        revision: Optional revision (branch, tag, or commit hash).
+
+    Returns:
+        Total size in bytes, or ``None`` if unavailable.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+        import json
+
+        kwargs: dict[str, Any] = {
+            "repo_id": model_id,
+            "filename": "model.safetensors.index.json",
+        }
+        if revision:
+            kwargs["revision"] = revision
+        index_path = hf_hub_download(**kwargs)
+        with open(index_path) as f:
+            index = json.load(f)
+        total_size = index.get("metadata", {}).get("total_size")
+        if total_size is not None:
+            return int(total_size)
+    except Exception as e:
+        logger.debug("Could not fetch safetensors index for %s: %s", model_id, e)
+    return None
+
+
+def _extract_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Extract architecture info from a single config dict (top-level or nested)."""
+    info: dict[str, Any] = {}
+
+    # dtype: check torch_dtype first, then dtype
+    for key in ("torch_dtype", "dtype"):
+        if key in cfg:
+            info["model_dtype"] = cfg[key]
+            break
+
+    # num_layers: varies by architecture
+    for key in ("num_hidden_layers", "n_layer", "num_layers", "n_layers"):
+        if key in cfg:
+            info["num_layers"] = cfg[key]
+            break
+
+    # num_kv_heads: GQA architectures first, then MHA fallback
+    for key in ("num_key_value_heads", "num_kv_heads"):
+        if key in cfg:
+            info["num_kv_heads"] = cfg[key]
+            break
+    if "num_kv_heads" not in info:
+        for key in ("num_attention_heads", "n_head"):
+            if key in cfg:
+                info["num_kv_heads"] = cfg[key]
+                break
+
+    # head_dim: explicit or derived from hidden_size / num_attention_heads
+    if "head_dim" in cfg:
+        info["head_dim"] = cfg["head_dim"]
+    elif "hidden_size" in cfg:
+        # Try all known attention head key names for derivation
+        for key in ("num_attention_heads", "n_head"):
+            if key in cfg and cfg[key] > 0:
+                info["head_dim"] = cfg["hidden_size"] // cfg[key]
+                break
+
+    return info
+
 
 def extract_model_info(hf_config: dict[str, Any]) -> dict[str, Any]:
     """Extract model architecture info from a HuggingFace config.json.
 
     Handles naming variants across architectures (Llama, Qwen, Mistral, GPT-NeoX, etc.).
+    For multimodal models that nest text architecture under ``text_config``,
+    ``llm_config``, or ``language_config``, those nested dicts are checked
+    as a fallback when top-level extraction yields incomplete results.
 
     Returns:
         Dict with keys: model_dtype, num_layers, num_kv_heads, head_dim (present only if found).
     """
-    info: dict[str, Any] = {}
+    info = _extract_from_config(hf_config)
 
-    # torch_dtype
-    if "torch_dtype" in hf_config:
-        info["model_dtype"] = hf_config["torch_dtype"]
-
-    # num_layers: varies by architecture
-    for key in ("num_hidden_layers", "n_layer", "num_layers", "n_layers"):
-        if key in hf_config:
-            info["num_layers"] = hf_config[key]
-            break
-
-    # num_kv_heads: GQA architectures first, then MHA fallback
-    for key in ("num_key_value_heads", "num_kv_heads"):
-        if key in hf_config:
-            info["num_kv_heads"] = hf_config[key]
-            break
-    if "num_kv_heads" not in info:
-        for key in ("num_attention_heads", "n_head"):
-            if key in hf_config:
-                info["num_kv_heads"] = hf_config[key]
-                break
-
-    # head_dim: explicit or derived from hidden_size / num_attention_heads
-    if "head_dim" in hf_config:
-        info["head_dim"] = hf_config["head_dim"]
-    elif "hidden_size" in hf_config:
-        # Try all known attention head key names for derivation
-        for key in ("num_attention_heads", "n_head"):
-            if key in hf_config and hf_config[key] > 0:
-                info["head_dim"] = hf_config["hidden_size"] // hf_config[key]
-                break
+    # For multimodal / composite models the text architecture lives in a
+    # nested sub-config.  Check common nesting keys when the top-level
+    # extraction is missing architecture fields.
+    _NEEDED = {"model_dtype", "num_layers", "num_kv_heads", "head_dim"}
+    if not _NEEDED.issubset(info.keys()):
+        for nested_key in ("text_config", "llm_config", "language_config"):
+            nested = hf_config.get(nested_key)
+            if isinstance(nested, dict):
+                nested_info = _extract_from_config(nested)
+                # Fill in only missing fields (top-level takes precedence)
+                for k, v in nested_info.items():
+                    if k not in info:
+                        info[k] = v
+                break  # only use the first matching nested config
 
     return info
 

@@ -8,6 +8,7 @@ and auto-mounted in future ``sparkrun run`` invocations.
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import TYPE_CHECKING
 
 from sparkrun.tuning import (
@@ -323,7 +324,7 @@ class SglangTuner:
             "SGLANG_MOE_CONFIG_DIR=%s "
             "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
             "--model %s --tp-size %d --tune"
-        ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, self.model, tp_size)
+        ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, shlex.quote(self.model), tp_size)
 
         exec_cmd = docker_exec_cmd(TUNE_CONTAINER_NAME, tune_cmd)
 
@@ -400,4 +401,4 @@ def build_tuning_command(model: str, tp_size: int) -> str:
         "SGLANG_MOE_CONFIG_DIR=%s "
         "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
         "--model %s --tp-size %d --tune"
-    ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, model, tp_size)
+    ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, shlex.quote(model), tp_size)

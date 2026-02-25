@@ -163,6 +163,18 @@ class TestBuildTuningCommand:
             cmd = build_tuning_command("model", tp)
             assert "--tp-size %d" % tp in cmd
 
+    def test_model_with_single_quote_is_shell_safe(self):
+        """Model names with single quotes must not break shell quoting."""
+        import shlex
+        cmd = build_tuning_command("org/model'name", 1)
+        assert shlex.quote("org/model'name") in cmd
+
+    def test_model_with_spaces_is_shell_safe(self):
+        """Model names with spaces must be shell-quoted."""
+        import shlex
+        cmd = build_tuning_command("org/model name", 1)
+        assert shlex.quote("org/model name") in cmd
+
 
 # ---------------------------------------------------------------------------
 # CLI smoke tests
@@ -466,6 +478,18 @@ class TestBuildVllmTuningCommand:
         for tp in VLLM_DEFAULT_TP_SIZES:
             cmd = build_vllm_tuning_command("model", tp)
             assert "--tp-size %d" % tp in cmd
+
+    def test_model_with_single_quote_is_shell_safe(self):
+        """Model names with single quotes must not break shell quoting."""
+        import shlex
+        cmd = build_vllm_tuning_command("org/model'name", 1)
+        assert shlex.quote("org/model'name") in cmd
+
+    def test_model_with_spaces_is_shell_safe(self):
+        """Model names with spaces must be shell-quoted."""
+        import shlex
+        cmd = build_vllm_tuning_command("org/model name", 1)
+        assert shlex.quote("org/model name") in cmd
 
 
 # ---------------------------------------------------------------------------

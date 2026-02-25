@@ -434,3 +434,82 @@ class TestExtractModelInfo:
         }
         info = extract_model_info(config)
         assert info["num_kv_heads"] == 32
+
+    def test_nested_text_config(self):
+        """Multimodal models nest text architecture under text_config."""
+        config = {
+            "architectures": ["SomeVLModel"],
+            "model_type": "some_vl",
+            "text_config": {
+                "dtype": "bfloat16",
+                "num_hidden_layers": 40,
+                "num_key_value_heads": 2,
+                "num_attention_heads": 16,
+                "head_dim": 256,
+                "hidden_size": 2048,
+            },
+            "vision_config": {
+                "hidden_size": 1280,
+            },
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "bfloat16"
+        assert info["num_layers"] == 40
+        assert info["num_kv_heads"] == 2
+        assert info["head_dim"] == 256
+
+    def test_nested_llm_config(self):
+        """Some models use llm_config instead of text_config."""
+        config = {
+            "llm_config": {
+                "torch_dtype": "float16",
+                "num_hidden_layers": 32,
+                "num_key_value_heads": 8,
+                "num_attention_heads": 32,
+                "hidden_size": 4096,
+            },
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "float16"
+        assert info["num_layers"] == 32
+        assert info["num_kv_heads"] == 8
+        assert info["head_dim"] == 128
+
+    def test_top_level_takes_precedence_over_nested(self):
+        """Top-level fields should win over nested text_config fields."""
+        config = {
+            "torch_dtype": "float16",
+            "num_hidden_layers": 32,
+            "text_config": {
+                "dtype": "bfloat16",
+                "num_hidden_layers": 40,
+                "num_key_value_heads": 2,
+                "head_dim": 256,
+            },
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "float16"  # top-level wins
+        assert info["num_layers"] == 32  # top-level wins
+        assert info["num_kv_heads"] == 2  # filled from nested
+        assert info["head_dim"] == 256  # filled from nested
+
+    def test_dtype_field_recognized(self):
+        """The 'dtype' field should be recognized as model_dtype."""
+        config = {
+            "dtype": "bfloat16",
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "hidden_size": 4096,
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "bfloat16"
+
+    def test_torch_dtype_preferred_over_dtype(self):
+        """torch_dtype should take precedence over dtype."""
+        config = {
+            "torch_dtype": "float16",
+            "dtype": "bfloat16",
+            "num_hidden_layers": 32,
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "float16"

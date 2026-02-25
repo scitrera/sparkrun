@@ -710,6 +710,105 @@ class TestRecipeMetadata:
         )
         assert est.gpu_memory_utilization == 0.5
 
+    @pytest.fixture()
+    def _mock_hf_config(self, monkeypatch):
+        """Mock fetch_model_config to return a nested multimodal config."""
+        def _fake_fetch(model_id, revision=None):
+            return {
+                "architectures": ["SomeVLModel"],
+                "text_config": {
+                    "dtype": "bfloat16",
+                    "num_hidden_layers": 64,
+                    "num_key_value_heads": 4,
+                    "num_attention_heads": 24,
+                    "head_dim": 128,
+                },
+            }
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+
+    @pytest.fixture()
+    def _mock_safetensors(self, monkeypatch):
+        """Mock fetch_safetensors_size to return a known total_size."""
+        # 35B params * 2 bytes (bfloat16) = 70_000_000_000 bytes
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: 70_000_000_000,
+        )
+
+    @pytest.mark.usefixtures("_mock_hf_config", "_mock_safetensors")
+    def test_estimate_vram_safetensors_fallback(self):
+        """model_params derived from safetensors index when metadata omits it."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {},
+            "defaults": {
+                "max_model_len": 4096,
+                "tensor_parallel": 1,
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        # 70B bytes / 2.0 bpe (bfloat16) = 35B params
+        # 35B * 2 bytes / 1024^3 ≈ 65.19 GiB
+        assert est.model_params == 35_000_000_000
+        assert est.model_weights_gb > 60
+        assert est.model_dtype == "bfloat16"
+        assert est.kv_cache_total_gb is not None
+        assert est.kv_cache_total_gb > 0
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_not_called_when_params_provided(self, monkeypatch):
+        """Safetensors fallback should NOT fire when metadata provides model_params."""
+        called = []
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {"model_params": "7B"},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert called == []  # safetensors never queried
+        assert est.model_params == 7_000_000_000
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_not_called_when_model_vram(self, monkeypatch):
+        """Safetensors fallback should NOT fire when model_vram override is set."""
+        called = []
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {"model_vram": 50.0},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert called == []
+        assert est.model_weights_gb == 50.0
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_returns_none(self, monkeypatch):
+        """When safetensors index unavailable, model_params stays None."""
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: None,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert est.model_params is None
+        assert est.model_weights_gb == 0.0
+
 
 class TestResolverChain:
     """Test the resolver chain and resolve_runtime() function."""

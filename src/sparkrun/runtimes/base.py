@@ -170,6 +170,30 @@ class RuntimePlugin(Plugin):
         """
         pass
 
+    def get_extra_volumes(self) -> dict[str, str]:
+        """Return additional volume mounts for this runtime.
+
+        Override in subclasses to inject runtime-specific volumes
+        (e.g. tuning config directories).  Called by ``_run_solo``
+        and cluster launch methods.
+
+        Returns:
+            Dict of host_path -> container_path (empty by default).
+        """
+        return {}
+
+    def get_extra_env(self) -> dict[str, str]:
+        """Return additional environment variables for this runtime.
+
+        Override in subclasses to inject runtime-specific env vars
+        (e.g. tuning config path env vars).  Called by ``_run_solo``
+        and cluster launch methods.
+
+        Returns:
+            Dict of env var name -> value (empty by default).
+        """
+        return {}
+
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Return list of warnings/errors for runtime-specific fields.
 
@@ -509,8 +533,8 @@ class RuntimePlugin(Plugin):
         is_local = is_local_host(host)
         container_name = generate_container_name(cluster_id, "solo")
         ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir)
-        all_env = merge_env(env)
+        volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
+        all_env = merge_env(env, self.get_extra_env())
 
         # Step 1: InfiniBand detection (skip if pre-detected nccl_env provided)
         t0 = time.monotonic()

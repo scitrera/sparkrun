@@ -47,19 +47,20 @@ Versions are tracked in `versions.yaml` at the repo root and synced to all packa
 
 ```
 src/sparkrun/
-├── cli.py              # Click CLI — all user-facing commands (~74KB, the largest file)
+├── cli.py              # Click CLI — all user-facing commands (the largest file)
 ├── bootstrap.py        # SAF plugin initialization, runtime discovery
 ├── config.py           # SparkrunConfig — reads ~/.config/sparkrun/config.yaml
 ├── cluster_manager.py  # Named cluster CRUD (YAML files in ~/.config/sparkrun/clusters/)
 ├── hosts.py            # Host resolution priority chain (CLI → file → cluster → default)
 ├── recipe.py           # Recipe loading, validation, v1→v2 migration, config chain
 ├── registry.py         # Git-based recipe registry system (sparse checkouts)
-├── vram.py             # VRAM estimation with HuggingFace model auto-detection
 ├── pending_ops.py      # PID-based lock files for in-progress operations
 ├── runtimes/           # Runtime plugins (see below)
 ├── orchestration/      # SSH, Docker, InfiniBand, script execution primitives
-├── models/             # HuggingFace model download and distribution
+├── models/             # HuggingFace model download, distribution, and VRAM estimation
 ├── containers/         # Container image distribution (docker save/load over SSH)
+├── tuning/             # Triton fused MoE kernel tuning for SGLang and vLLM
+├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
 └── scripts/            # Embedded bash scripts (IB detection, container launch, etc.)
 ```
 
@@ -73,12 +74,13 @@ Key bootstrap flow: `cli.py` → `bootstrap.init_sparkrun()` → SAF `init_frame
 
 All runtimes extend `RuntimePlugin` (in `runtimes/base.py`), which itself extends SAF's `Plugin` class. The base class provides solo-mode orchestration; runtimes override `run()`/`stop()`/`follow_logs()` for multi-node support.
 
-| Runtime | File | Clustering | Strategy |
-|---------|------|-----------|----------|
-| **vllm** | `runtimes/vllm.py` | Ray head/worker | `"ray"` — starts Ray cluster, exec serve on head |
-| **sglang** | `runtimes/sglang.py` | Native distributed | `"native"` — each node runs serve with `--node-rank` |
-| **llama-cpp** | `runtimes/llama_cpp.py` | Experimental RPC | `"rpc"` — workers run `rpc-server`, head connects via `--rpc` |
-| **eugr-vllm** | `runtimes/eugr_vllm.py` | Ray (inherited) | Extends VllmRuntime with eugr container builds and mods |
+| Runtime | File | Entry Point | Clustering | Strategy |
+|---------|------|-------------|-----------|----------|
+| **vllm-ray** | `runtimes/vllm_ray.py` | `VllmRayRuntime` | Ray head/worker | `"ray"` — starts Ray cluster, exec serve on head |
+| **vllm-distributed** | `runtimes/vllm_distributed.py` | `VllmDistributedRuntime` | Native distributed | `"native"` — each node runs serve independently (no Ray) |
+| **sglang** | `runtimes/sglang.py` | `SglangRuntime` | Native distributed | `"native"` — each node runs serve with `--node-rank` |
+| **llama-cpp** | `runtimes/llama_cpp.py` | `LlamaCppRuntime` | Experimental RPC | `"rpc"` — workers run `rpc-server`, head connects via `--rpc` |
+| **eugr-vllm** | `runtimes/eugr_vllm_ray.py` | `EugrVllmRayRuntime` | Ray (inherited) | Extends VllmRayRuntime with eugr container builds and mods (v1 recipe support) |
 
 Runtimes must implement `generate_command()` and `resolve_container()`. The `cluster_strategy()` return value determines which orchestration path the base class uses.
 
@@ -86,7 +88,8 @@ Runtimes must implement `generate_command()` and `resolve_container()`. The `clu
 
 All remote operations use **SSH stdin piping** — scripts are generated as Python strings and piped to `ssh <host> bash -s`. No files are ever copied to remote hosts.
 
-- **`ssh.py`** — `run_remote_script()`, `run_remote_scripts_parallel()`, `run_remote_sudo_script()`, `run_rsync_parallel()`, `detect_sudo_on_hosts()`, `stream_remote_logs()`
+- **`ssh.py`** — `RemoteResult` dataclass, `build_ssh_cmd()`, `run_remote_script()`, `run_remote_scripts_parallel()`, `run_rsync_parallel()`, `stream_remote_logs()`
+- **`sudo.py`** — `run_with_sudo_fallback()` — tries non-interactive sudo in parallel, then falls back to password-based sudo for failures
 - **`docker.py`** — Pure command-string generators (`docker_run_cmd`, `docker_exec_cmd`, etc.), cluster ID generation
 - **`distribution.py`** — High-level resource distribution: IB detection, container image and model syncing to target hosts (orchestrates `models/`, `containers/`, and IB detection)
 - **`infiniband.py`** — IB detection script generation, NCCL env var computation, IB IP mapping for fast transfers
@@ -101,14 +104,29 @@ Recipes are YAML files with fields: `model`, `runtime`, `container`, `command`, 
 
 Recipe resolution: `cli.py` → `RegistryManager.find_recipe()` → searches bundled recipes, local `./recipes/`, user config recipes, and git-cloned registries.
 
-Two recipe format versions exist: v1 (eugr-style, auto-detected by `recipe_version: "1"` or presence of `build_args`/`mods`) and v2 (sparkrun native). See `RECIPES.md` for the full specification.
+Two recipe format versions exist: v1 (eugr-style, auto-detected by `recipe_version: "1"` or presence of `build_args`/`mods`) and v2 (sparkrun native). vLLM recipes are resolved to either `vllm-ray` (if Ray hints are present) or `vllm-distributed` (default). See `RECIPES.md` for the full specification.
 
 ### Model & Container Distribution
 
 Before launching, sparkrun can pre-sync models and container images from the control machine to target hosts:
 
-- **Models** (`models/`): Downloads from HuggingFace Hub locally via `snapshot_download`, then rsyncs to targets. GGUF models use colon syntax (`repo:quant`) for selective quant-file download.
-- **Containers** (`containers/`): Pulls image locally, then streams via `docker save | ssh docker load`. Checks image IDs to skip hosts that already have the correct image.
+- **Models** (`models/`): Downloads from HuggingFace Hub locally via `snapshot_download` (`models/download.py`), then rsyncs to targets (`models/distribute.py`, `models/sync.py`). GGUF models use colon syntax (`repo:quant`) for selective quant-file download.
+- **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts that already have the correct image.
+- **VRAM estimation** (`models/vram.py`): Estimates VRAM usage based on model parameter count, dtype, and quantization. Supports HuggingFace model auto-detection to resolve parameter counts.
+
+### Kernel Tuning (`tuning/`)
+
+Provides utilities for running Triton fused MoE kernel tuning on DGX Spark and auto-mounting the resulting configs in inference runs. Common tuning internals live in `tuning/_common.py`; runtime-specific helpers are in `tuning/sglang.py` and `tuning/vllm.py`.
+
+### Utilities (`utils/`)
+
+Shared helpers used across multiple modules to avoid circular imports:
+
+- `coerce_value()` — type coercion for CLI string inputs (to int, float, bool)
+- `suppress_noisy_loggers()` — silences verbose HTTP/transport loggers
+- `resolve_ssh_user()` — SSH user resolution (cluster → config → env → fallback)
+- `is_valid_ip()`, `parse_kv_output()`, `load_yaml()` — parsing helpers
+- `cli_formatters.py` — Presentation-layer formatting for recipe tables and CLI output
 
 ### Config & State Paths
 
@@ -128,9 +146,11 @@ Tests use pytest with `pytest-asyncio`. The `conftest.py` provides an `isolate_s
 
 All SSH/Docker operations in tests are mocked — no real hosts are needed. Common fixtures: `tmp_recipe_dir` (creates sample v1/v2 recipes), `cluster_dir`, `hosts_file`, `v` (initialized SAF Variables instance).
 
+Test files cover: bootstrap, CLI commands, CLI recipe integration, cluster manager, config, distribution, Docker command generation, GGUF handling, host resolution, InfiniBand, networking, orchestration primitives, recipes, registry, runtimes, embedded scripts, SSH execution, kernel tuning, and VRAM estimation.
+
 ### Companion Packages
 
-- **`sparkrun-cc-plugin/`** — Claude Code plugin providing slash commands (`/sparkrun:run`, `/sparkrun:stop`, `/sparkrun:status`, `/sparkrun:list`, `/sparkrun:setup`) and automatic skills for AI-assisted inference management.
+- **`sparkrun-cc-plugin/`** — Claude Code plugin providing slash commands (`/sparkrun:run`, `/sparkrun:stop`, `/sparkrun:status`, `/sparkrun:list`, `/sparkrun:setup`) and skills for AI-assisted inference management (`run`, `setup`, `registry`).
 - **`website/`** — Documentation site built with Astro (Starlight theme), deployed to Cloudflare Pages.
 
 ## Key Dependencies

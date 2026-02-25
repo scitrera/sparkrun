@@ -467,6 +467,17 @@ class TestBuildVllmTuningCommand:
             cmd = build_vllm_tuning_command("model", tp)
             assert "--tp-size %d" % tp in cmd
 
+    def test_model_with_spaces_is_quoted(self):
+        import shlex
+        cmd = build_vllm_tuning_command("model with spaces", 1)
+        assert shlex.quote("model with spaces") in cmd
+
+    def test_model_with_single_quote_is_escaped(self):
+        import shlex
+        cmd = build_vllm_tuning_command("model'injection", 1)
+        assert shlex.quote("model'injection") in cmd
+        assert "&&" not in cmd.split("--model")[1]
+
 
 # ---------------------------------------------------------------------------
 # vLLM CLI smoke tests

@@ -6,8 +6,6 @@ container: scitrera/dgx-spark-sglang:0.5.9-t5
 metadata:
   description: Qwen3.5 35B A3B (upstream, no quant) SGLang
   maintainer: scitrera.ai <open-source-team@scitrera.com>
-  model_params: 35B
-  model_dtype: bf16
 
 defaults:
   port: 8000

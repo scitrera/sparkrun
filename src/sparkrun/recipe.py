@@ -115,10 +115,22 @@ def resolve_runtime(data: dict[str, Any]) -> str:
             return "llama-cpp"
         # vllm serve or unrecognised → fall through to vllm variant resolution
 
+    # v1 migration and eugr detection (mirror _resolve_v1_migration and _resolve_eugr_signals)
     version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
     if runtime in ("vllm", "") and version == "1":
         return "eugr-vllm"
-    if runtime in ("vllm", "") and (data.get("build_args") or data.get("mods")):
+
+    # In Recipe.__init__, unknown keys are swept into runtime_config, and
+    # _resolve_eugr_signals inspects recipe.runtime_config for build_args/mods.
+    runtime_config = data.get("runtime_config") or {}
+    if runtime_config is not None and not isinstance(runtime_config, dict):
+        raise RecipeError("Recipe 'runtime_config' field must be a mapping, got %s" % type(runtime_config).__name__)
+    if runtime in ("vllm", "") and (
+        data.get("build_args")
+        or data.get("mods")
+        or runtime_config.get("build_args")
+        or runtime_config.get("mods")
+    ):
         return "eugr-vllm"
     if runtime in ("vllm", ""):
         defaults = data.get("defaults")

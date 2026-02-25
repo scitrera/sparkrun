@@ -8,6 +8,7 @@ and auto-mounted in future ``sparkrun run`` invocations.
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import TYPE_CHECKING
 
 from sparkrun.tuning import (

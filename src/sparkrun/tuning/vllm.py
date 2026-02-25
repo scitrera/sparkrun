@@ -8,6 +8,7 @@ and auto-mounted in future ``sparkrun run`` invocations.
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import TYPE_CHECKING
 
 from sparkrun.tuning import (
@@ -396,4 +397,4 @@ def build_vllm_tuning_command(model: str, tp_size: int) -> str:
         "VLLM_TUNED_CONFIG_FOLDER=%s "
         "python3 benchmarks/kernels/benchmark_moe.py "
         "--model %s --tp-size %d --tune"
-    ) % (VLLM_CLONE_DIR, VLLM_TUNING_CONTAINER_OUTPUT_PATH, model, tp_size)
+    ) % (VLLM_CLONE_DIR, VLLM_TUNING_CONTAINER_OUTPUT_PATH, shlex.quote(model), tp_size)

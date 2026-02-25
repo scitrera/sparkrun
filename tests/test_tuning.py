@@ -154,6 +154,14 @@ class TestBuildTuningCommand:
         assert "SGLANG_MOE_CONFIG_DIR=" in cmd
         assert TUNING_CONTAINER_OUTPUT_PATH in cmd
 
+    def test_versioned_output_dir(self):
+        cmd = build_tuning_command("test-model", 2, triton_version="3.6.0")
+        assert "SGLANG_MOE_CONFIG_DIR=%s/triton_3_6_0" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+
+    def test_no_version_uses_base_output_dir(self):
+        cmd = build_tuning_command("test-model", 2)
+        assert "SGLANG_MOE_CONFIG_DIR=%s " % TUNING_CONTAINER_OUTPUT_PATH in cmd
+
     def test_runs_from_clone_dir(self):
         cmd = build_tuning_command("test-model", 1)
         assert cmd.startswith("cd %s" % SGLANG_CLONE_DIR)

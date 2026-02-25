@@ -319,12 +319,7 @@ class SglangTuner:
 
         t0 = time.monotonic()
 
-        tune_cmd = (
-            "cd %s && "
-            "SGLANG_MOE_CONFIG_DIR=%s "
-            "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
-            "--model %s --tp-size %d --tune"
-        ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, shlex.quote(self.model), tp_size)
+        tune_cmd = build_tuning_command(self.model, tp_size, triton_version=triton_version)
 
         exec_cmd = docker_exec_cmd(TUNE_CONTAINER_NAME, tune_cmd)
 
@@ -386,19 +381,30 @@ class SglangTuner:
         )
 
 
-def build_tuning_command(model: str, tp_size: int) -> str:
+def build_tuning_command(model: str, tp_size: int, triton_version: str | None = None) -> str:
     """Build the tuning command string for display/testing.
 
     Args:
         model: Model name.
         tp_size: Tensor parallel size.
+        triton_version: Triton version string (e.g. ``"3.6.0"``).  When
+            provided the output directory is versioned as
+            ``<base>/triton_<version>`` (dots replaced with underscores) so
+            configs from different Triton releases don't collide.
 
     Returns:
         The tuning command string.
     """
+    if triton_version:
+        config_dir = "%s/triton_%s" % (
+            TUNING_CONTAINER_OUTPUT_PATH,
+            triton_version.replace(".", "_"),
+        )
+    else:
+        config_dir = TUNING_CONTAINER_OUTPUT_PATH
     return (
         "cd %s && "
         "SGLANG_MOE_CONFIG_DIR=%s "
         "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
         "--model %s --tp-size %d --tune"
-    ) % (SGLANG_CLONE_DIR, TUNING_CONTAINER_OUTPUT_PATH, shlex.quote(model), tp_size)
+    ) % (SGLANG_CLONE_DIR, config_dir, model, tp_size)

@@ -244,6 +244,12 @@ class Recipe:
         base.setdefault("model", self.model)
         return vpd_chain(cli_overrides or {}, user_config or {}, base)
 
+    # Matches a backslash followed by trailing whitespace before a newline.
+    # In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
+    # an escaped space — a common YAML editing mistake that silently breaks
+    # multi-line commands.
+    _TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
+
     def render_command(self, config_chain: VirtualPathDictChain) -> str | None:
         """Render the command template with values from the config chain.
 
@@ -260,6 +266,10 @@ class Recipe:
         while last != rendered:
             last = rendered
             rendered = arg_substitute(rendered, config_chain)
+
+        # Fix trailing spaces after backslash line-continuations.
+        # ``\<space><newline>`` → ``\<newline>``
+        rendered = self._TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
 
         return rendered
 

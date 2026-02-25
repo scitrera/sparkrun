@@ -293,6 +293,52 @@ def test_recipe_render_command_no_template():
     assert rendered is None
 
 
+def test_render_command_fixes_trailing_space_continuations():
+    """Trailing spaces after backslash line-continuations are stripped.
+
+    In bash ``\\<space><newline>`` is an escaped space, not a continuation.
+    YAML editors often introduce these accidentally; render_command should
+    silently clean them up.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "defaults": {"port": 8000, "host": "0.0.0.0"},
+        "command": (
+            "vllm serve {model} \\\n"
+            "    --host {host} \\ \n"       # trailing space after backslash
+            "    --port {port} \\  \n"      # two trailing spaces
+            "    --trust-remote-code"
+        ),
+    })
+    config = recipe.build_config_chain()
+    rendered = recipe.render_command(config)
+
+    assert rendered is not None
+    # Every backslash-newline should be a clean continuation (no trailing spaces)
+    assert "\\ \n" not in rendered
+    # The args should all be present (nothing dropped by broken continuation)
+    assert "--host 0.0.0.0" in rendered
+    assert "--port 8000" in rendered
+    assert "--trust-remote-code" in rendered
+
+
+def test_render_command_preserves_escaped_spaces_mid_line():
+    """Backslash-space in the middle of a line is NOT a continuation — preserve it."""
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "command": "echo hello\\ world",
+    })
+    config = recipe.build_config_chain()
+    rendered = recipe.render_command(config)
+
+    assert rendered is not None
+    assert "hello\\ world" in rendered
+
+
 def test_find_recipe_direct_path(tmp_recipe_dir: Path):
     """Find a recipe by direct file path and verify it's located correctly.
 

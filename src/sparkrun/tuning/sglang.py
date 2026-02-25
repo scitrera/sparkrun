@@ -12,8 +12,8 @@ from pathlib import Path
 
 from sparkrun.tuning._common import (
     BaseTuner,
-    DEFAULT_TP_SIZES,
-    _format_duration,
+    DEFAULT_TP_SIZES,  # noqa: F401 — re-exported for public API
+    _format_duration,  # noqa: F401 — re-exported for public API
     _get_tuning_dir,
     _get_tuning_env,
     _get_tuning_volumes,

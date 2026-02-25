@@ -47,7 +47,7 @@ Versions are tracked in `versions.yaml` at the repo root and synced to all packa
 
 ```
 src/sparkrun/
-├── cli.py              # Click CLI — all user-facing commands (the largest file)
+├── cli/                # Click CLI package (see CLI Architecture below)
 ├── bootstrap.py        # SAF plugin initialization, runtime discovery
 ├── config.py           # SparkrunConfig — reads ~/.config/sparkrun/config.yaml
 ├── cluster_manager.py  # Named cluster CRUD (YAML files in ~/.config/sparkrun/clusters/)
@@ -63,6 +63,21 @@ src/sparkrun/
 ├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
 └── scripts/            # Embedded bash scripts (IB detection, container launch, etc.)
 ```
+
+### CLI Architecture (`cli/`)
+
+The CLI was split from a single `cli.py` into a package for maintainability. The `__init__.py` defines the top-level `main` Click group, registers all subcommands, and provides top-level aliases (`list`, `show`, `search`, `status`).
+
+| Module | Purpose |
+|--------|---------|
+| `__init__.py` | `main` Click group, command registration, top-level aliases |
+| `_common.py` | Shared infrastructure: logging setup, Click parameter types (`RECIPE_NAME`, `REGISTRY_NAME`, `RUNTIME_NAME`, `CLUSTER_NAME`), decorators (`host_options`, `dry_run_option`), and reusable helpers (host resolution, recipe loading, VRAM display) |
+| `_run.py` | `run` command — launch inference workloads |
+| `_stop_logs.py` | `stop` and `logs` commands — stop workloads and stream container logs |
+| `_setup.py` | `setup` command group — shell completion, SSH mesh, model/container sync, permissions, cache, networking |
+| `_cluster.py` | `cluster` command group — create/list/show/delete/update saved cluster definitions, cluster status |
+| `_recipe.py` | `recipe` command group — list/show/search recipes across registries |
+| `_tune.py` | `tune` command group — run Triton fused MoE kernel tuning (SGLang and vLLM) |
 
 ### Plugin System (SAF)
 

@@ -19,14 +19,15 @@ sparkrun show qwen3-1.7b-vllm
 
 1. **Set `model`** to the HuggingFace model ID you want to serve
 2. **Set `container`** — see [Runtimes Overview](/runtimes/overview/) for maintained images and latest tags.
-3. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and a low `max_model_len`, then increase after confirming the model loads
-4. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works
-5. **Validate**: `sparkrun recipe validate your-recipe.yaml`
-6. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run`
+3. **Set `runtime`** to the engine you're targeting (`vllm`, `sglang`, `llama-cpp`, etc.). While sparkrun can [auto-detect the runtime](/recipes/format/#automatic-runtime-detection) from the command prefix, explicitly setting it is preferred for clarity and to avoid surprises if the heuristics evolve.
+4. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and a low `max_model_len`, then increase after confirming the model loads
+5. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works
+6. **Validate**: `sparkrun recipe validate your-recipe.yaml`
+7. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run`
 
 ## Example: vLLM recipe
 
-Using `runtime: vllm` here resolves to `vllm-distributed` by default (see [vLLM runtime](/runtimes/vllm/) for details on the two variants).
+Using `runtime: vllm` here resolves to `vllm-distributed` by default (see [vLLM runtime](/runtimes/vllm/) for details on the two variants). While `runtime` could be omitted since sparkrun would [auto-detect](/recipes/format/#automatic-runtime-detection) it from the `vllm serve` command, explicitly setting it is recommended.
 
 ```yaml
 model: my-org/my-model

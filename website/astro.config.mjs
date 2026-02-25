@@ -50,6 +50,7 @@ export default defineConfig({
                         {label: 'Recipe Commands', slug: 'cli/recipe-commands'},
                         {label: 'Cluster Commands', slug: 'cli/cluster-commands'},
                         {label: 'Setup Commands', slug: 'cli/setup-commands'},
+                        {label: 'tune (experimental)', slug: 'cli/tune'},
                     ],
                 },
                 {

@@ -120,6 +120,18 @@ class VllmDistributedRuntime(RuntimePlugin):
 
         return base
 
+    # --- Tuning config auto-mount ---
+
+    def get_extra_volumes(self) -> dict[str, str]:
+        """Mount vLLM tuning configs if available."""
+        from sparkrun.tuning import get_vllm_tuning_volumes
+        return get_vllm_tuning_volumes() or {}
+
+    def get_extra_env(self) -> dict[str, str]:
+        """Set VLLM_TUNED_CONFIG_FOLDER if tuning configs exist."""
+        from sparkrun.tuning import get_vllm_tuning_env
+        return get_vllm_tuning_env() or {}
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return vLLM distributed-specific cluster environment variables.
 
@@ -209,10 +221,10 @@ class VllmDistributedRuntime(RuntimePlugin):
         head_host = hosts[0]
         worker_hosts = hosts[1:]
         ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir)
+        volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
         # Runtime defaults first, recipe env overrides (power users can tweak)
-        all_env = merge_env(runtime_env, env)
+        all_env = merge_env(runtime_env, self.get_extra_env(), env)
 
         self._print_cluster_banner(
             "vLLM Distributed Cluster Launcher", hosts, image, cluster_id,

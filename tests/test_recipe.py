@@ -293,6 +293,52 @@ def test_recipe_render_command_no_template():
     assert rendered is None
 
 
+def test_render_command_fixes_trailing_space_continuations():
+    """Trailing spaces after backslash line-continuations are stripped.
+
+    In bash ``\\<space><newline>`` is an escaped space, not a continuation.
+    YAML editors often introduce these accidentally; render_command should
+    silently clean them up.
+    """
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "defaults": {"port": 8000, "host": "0.0.0.0"},
+        "command": (
+            "vllm serve {model} \\\n"
+            "    --host {host} \\ \n"       # trailing space after backslash
+            "    --port {port} \\  \n"      # two trailing spaces
+            "    --trust-remote-code"
+        ),
+    })
+    config = recipe.build_config_chain()
+    rendered = recipe.render_command(config)
+
+    assert rendered is not None
+    # Every backslash-newline should be a clean continuation (no trailing spaces)
+    assert "\\ \n" not in rendered
+    # The args should all be present (nothing dropped by broken continuation)
+    assert "--host 0.0.0.0" in rendered
+    assert "--port 8000" in rendered
+    assert "--trust-remote-code" in rendered
+
+
+def test_render_command_preserves_escaped_spaces_mid_line():
+    """Backslash-space in the middle of a line is NOT a continuation — preserve it."""
+    recipe = Recipe.from_dict({
+        "name": "Test",
+        "model": "test-model",
+        "runtime": "vllm",
+        "command": "echo hello\\ world",
+    })
+    config = recipe.build_config_chain()
+    rendered = recipe.render_command(config)
+
+    assert rendered is not None
+    assert "hello\\ world" in rendered
+
+
 def test_find_recipe_direct_path(tmp_recipe_dir: Path):
     """Find a recipe by direct file path and verify it's located correctly.
 
@@ -710,6 +756,105 @@ class TestRecipeMetadata:
         )
         assert est.gpu_memory_utilization == 0.5
 
+    @pytest.fixture()
+    def _mock_hf_config(self, monkeypatch):
+        """Mock fetch_model_config to return a nested multimodal config."""
+        def _fake_fetch(model_id, revision=None):
+            return {
+                "architectures": ["SomeVLModel"],
+                "text_config": {
+                    "dtype": "bfloat16",
+                    "num_hidden_layers": 64,
+                    "num_key_value_heads": 4,
+                    "num_attention_heads": 24,
+                    "head_dim": 128,
+                },
+            }
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+
+    @pytest.fixture()
+    def _mock_safetensors(self, monkeypatch):
+        """Mock fetch_safetensors_size to return a known total_size."""
+        # 35B params * 2 bytes (bfloat16) = 70_000_000_000 bytes
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: 70_000_000_000,
+        )
+
+    @pytest.mark.usefixtures("_mock_hf_config", "_mock_safetensors")
+    def test_estimate_vram_safetensors_fallback(self):
+        """model_params derived from safetensors index when metadata omits it."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {},
+            "defaults": {
+                "max_model_len": 4096,
+                "tensor_parallel": 1,
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        # 70B bytes / 2.0 bpe (bfloat16) = 35B params
+        # 35B * 2 bytes / 1024^3 ≈ 65.19 GiB
+        assert est.model_params == 35_000_000_000
+        assert est.model_weights_gb > 60
+        assert est.model_dtype == "bfloat16"
+        assert est.kv_cache_total_gb is not None
+        assert est.kv_cache_total_gb > 0
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_not_called_when_params_provided(self, monkeypatch):
+        """Safetensors fallback should NOT fire when metadata provides model_params."""
+        called = []
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {"model_params": "7B"},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert called == []  # safetensors never queried
+        assert est.model_params == 7_000_000_000
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_not_called_when_model_vram(self, monkeypatch):
+        """Safetensors fallback should NOT fire when model_vram override is set."""
+        called = []
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {"model_vram": 50.0},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert called == []
+        assert est.model_weights_gb == 50.0
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_returns_none(self, monkeypatch):
+        """When safetensors index unavailable, model_params stays None."""
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None: None,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b",
+            "metadata": {},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert est.model_params is None
+        assert est.model_weights_gb == 0.0
+
 
 class TestResolverChain:
     """Test the resolver chain and resolve_runtime() function."""
@@ -849,3 +994,64 @@ class TestResolverChain:
         """Non-mapping 'defaults' field is treated as a malformed recipe."""
         with pytest.raises(RecipeError, match="defaults.*mapping"):
             resolve_runtime({"runtime": "vllm", "defaults": bad_defaults})
+
+    # --- Command-hint resolver tests ---
+
+    @pytest.mark.parametrize("cmd,expected", [
+        ("vllm serve {model} -tp 4", "vllm-distributed"),
+        ("vllm serve {model} --distributed-executor-backend ray", "vllm-ray"),
+        ("sglang serve {model} --tp-size 4", "sglang"),
+        ("sglang serve --model {model}", "sglang"),
+        ("python -m sglang.launch_server --model {model}", "sglang"),
+        ("python3 -m sglang.launch_server --model {model}", "sglang"),
+        ("llama-server --model {model} -ngl 999", "llama-cpp"),
+    ])
+    def test_resolve_command_hint(self, cmd: str, expected: str):
+        """Command prefix infers runtime when no explicit runtime is set."""
+        data = {"name": "Test", "model": "test-model", "command": cmd}
+        assert Recipe.from_dict(data).runtime == expected
+        assert resolve_runtime(data) == expected
+
+    def test_resolve_command_hint_no_runtime_field(self):
+        """Command hint works even when runtime field is entirely absent."""
+        data = {"name": "Test", "model": "m", "command": "sglang serve m"}
+        assert Recipe.from_dict(data).runtime == "sglang"
+        assert resolve_runtime(data) == "sglang"
+
+    def test_resolve_command_hint_empty_runtime(self):
+        """Command hint works when runtime is explicitly empty string."""
+        data = {"name": "T", "model": "m", "runtime": "", "command": "llama-server --model m"}
+        assert Recipe.from_dict(data).runtime == "llama-cpp"
+        assert resolve_runtime(data) == "llama-cpp"
+
+    def test_resolve_command_hint_explicit_runtime_wins(self):
+        """Explicit non-default runtime is not overridden by command hint."""
+        data = {
+            "name": "T", "model": "m",
+            "runtime": "sglang",
+            "command": "vllm serve {model}",
+        }
+        assert Recipe.from_dict(data).runtime == "sglang"
+
+    def test_resolve_command_hint_vllm_serve_stays_vllm(self):
+        """vllm serve command leaves runtime as vllm for variant resolution."""
+        data = {"name": "T", "model": "m", "command": "vllm serve {model}"}
+        assert Recipe.from_dict(data).runtime == "vllm-distributed"
+        assert resolve_runtime(data) == "vllm-distributed"
+
+    def test_resolve_command_hint_no_command(self):
+        """No command field → normal fallback to vllm-distributed."""
+        data = {"name": "T", "model": "m"}
+        assert Recipe.from_dict(data).runtime == "vllm-distributed"
+
+    def test_resolve_command_hint_does_not_override_v1(self):
+        """v1 migration still wins for v1 recipes with a command."""
+        data = {
+            "recipe_version": "1",
+            "name": "T", "model": "m",
+            "command": "sglang serve {model}",
+        }
+        # v1 with default runtime → eugr-vllm takes priority
+        # (command hint sets sglang, but v1 migration doesn't touch non-vllm)
+        recipe = Recipe.from_dict(data)
+        assert recipe.runtime == "sglang"

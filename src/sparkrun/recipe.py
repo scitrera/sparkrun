@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
+_CMD_VLLM_RE = re.compile(r"^vllm\s+serve\b")
+_CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_server)\b")
+_CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
 
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
@@ -28,6 +31,32 @@ _KNOWN_KEYS = {
     "cluster_only", "solo_only",
     "metadata",
 }
+
+
+def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
+    """Infer runtime from command prefix when no explicit runtime is set.
+
+    Only fires when runtime is the default ``""`` (empty) and the
+    recipe has a ``command`` field.  Recognises:
+
+    - ``vllm serve ...`` → ``"vllm"`` (vllm flavor left for downstream resolvers)
+    - ``sglang serve ...`` or ``python -m sglang.launch_server ...`` → ``"sglang"``
+    - ``llama-server ...`` → ``"llama-cpp"``
+    """
+    if recipe.runtime:  # if runtime defined, then we do nothing
+        return
+    cmd = (recipe.command or "").strip()
+    if not cmd:
+        return
+    # vllm serve → keep as "vllm" for _resolve_vllm_variant to pick the variant
+    if _CMD_VLLM_RE.match(cmd):
+        recipe.runtime = "vllm"
+    elif _CMD_SGLANG_RE.match(cmd):
+        recipe.runtime = "sglang"
+    elif _CMD_LLAMA_CPP_RE.match(cmd):
+        recipe.runtime = "llama-cpp"
+
+    return
 
 
 def _resolve_v1_migration(recipe: Recipe) -> None:
@@ -61,6 +90,7 @@ def _resolve_vllm_variant(recipe: Recipe) -> None:
 
 
 _RECIPE_RESOLVERS = [
+    _resolve_runtime_from_command_hint,
     _resolve_v1_migration,
     _resolve_eugr_signals,
     _resolve_vllm_variant,
@@ -73,20 +103,43 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     Mirrors the runtime-affecting resolvers in :data:`_RECIPE_RESOLVERS`
     without constructing a full Recipe.
     """
-    runtime = data.get("runtime", "vllm") or "vllm"
+    runtime = data.get("runtime") or ""
+
+    # Command-hint resolver (mirrors _resolve_runtime_from_command_hint)
+    # Only fires when runtime is not explicitly set
+    cmd = (data.get("command") or "").strip()
+    if not runtime and cmd:
+        if _CMD_SGLANG_RE.match(cmd):
+            return "sglang"
+        if _CMD_LLAMA_CPP_RE.match(cmd):
+            return "llama-cpp"
+        # vllm serve or unrecognised → fall through to vllm variant resolution
+
+    # v1 migration and eugr detection (mirror _resolve_v1_migration and _resolve_eugr_signals)
     version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
     if runtime in ("vllm", "") and version == "1":
         return "eugr-vllm"
-    if runtime in ("vllm", "") and (data.get("build_args") or data.get("mods")):
+
+    # In Recipe.__init__, unknown keys are swept into runtime_config, and
+    # _resolve_eugr_signals inspects recipe.runtime_config for build_args/mods.
+    runtime_config = data.get("runtime_config") or {}
+    if runtime_config is not None and not isinstance(runtime_config, dict):
+        raise RecipeError("Recipe 'runtime_config' field must be a mapping, got %s" % type(runtime_config).__name__)
+    if runtime in ("vllm", "") and (
+        data.get("build_args")
+        or data.get("mods")
+        or runtime_config.get("build_args")
+        or runtime_config.get("mods")
+    ):
         return "eugr-vllm"
-    if runtime == "vllm":
+    if runtime in ("vllm", ""):
         defaults = data.get("defaults")
         if defaults is not None and not isinstance(defaults, dict):
             raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
         if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
             return "vllm-ray"
-        if _RAY_BACKEND_RE.search(data.get("command") or ""):
+        if _RAY_BACKEND_RE.search(cmd):
             return "vllm-ray"
         return "vllm-distributed"
     return runtime
@@ -112,7 +165,7 @@ class Recipe:
         self.description: str = data.get("description", "")
         self.model: str = data.get("model", "")
         self.model_revision: str | None = data.get("model_revision")
-        self.runtime: str = data.get("runtime", "vllm")
+        self.runtime: str = data.get("runtime", "")  # init to empty string if not provided
         self.runtime_version: str = data.get("runtime_version", "")
 
         # Topology
@@ -191,6 +244,12 @@ class Recipe:
         base.setdefault("model", self.model)
         return vpd_chain(cli_overrides or {}, user_config or {}, base)
 
+    # Matches a backslash followed by trailing whitespace before a newline.
+    # In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
+    # an escaped space — a common YAML editing mistake that silently breaks
+    # multi-line commands.
+    _TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
+
     def render_command(self, config_chain: VirtualPathDictChain) -> str | None:
         """Render the command template with values from the config chain.
 
@@ -207,6 +266,10 @@ class Recipe:
         while last != rendered:
             last = rendered
             rendered = arg_substitute(rendered, config_chain)
+
+        # Fix trailing spaces after backslash line-continuations.
+        # ``\<space><newline>`` → ``\<newline>``
+        rendered = self._TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
 
         return rendered
 
@@ -276,10 +339,11 @@ class Recipe:
             VRAMEstimate dataclass with estimation results.
         """
         from sparkrun.models.vram import (
-            VRAMEstimate,
+            bytes_per_element,
             estimate_vram as _estimate_vram,
             extract_model_info,
             fetch_model_config,
+            fetch_safetensors_size,
             parse_param_count,
         )
 
@@ -320,6 +384,16 @@ class Recipe:
 
         # Parse model_params
         model_params = parse_param_count(model_params_raw) if model_params_raw is not None else None
+
+        # Fallback: derive model_params from safetensors index when metadata
+        # doesn't provide it.  The index file records total_size in bytes;
+        # dividing by bytes-per-element gives an approximate parameter count.
+        if model_params is None and model_vram is None and auto_detect and self.model and model_dtype:
+            bpe = bytes_per_element(str(model_dtype))
+            if bpe is not None and bpe > 0:
+                total_size = fetch_safetensors_size(self.model, revision=self.model_revision)
+                if total_size is not None:
+                    model_params = int(total_size / bpe)
 
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")

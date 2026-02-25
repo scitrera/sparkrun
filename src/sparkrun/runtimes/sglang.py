@@ -182,6 +182,18 @@ class SglangRuntime(RuntimePlugin):
 
         return issues
 
+    # --- Tuning config auto-mount ---
+
+    def get_extra_volumes(self) -> dict[str, str]:
+        """Mount SGLang tuning configs if available."""
+        from sparkrun.tuning import get_sglang_tuning_volumes
+        return get_sglang_tuning_volumes() or {}
+
+    def get_extra_env(self) -> dict[str, str]:
+        """Set SGLANG_MOE_CONFIG_DIR if tuning configs exist."""
+        from sparkrun.tuning import get_sglang_tuning_env
+        return get_sglang_tuning_env() or {}
+
     # --- Log following hooks ---
 
     def _head_container_name(self, cluster_id: str) -> str:
@@ -254,10 +266,10 @@ class SglangRuntime(RuntimePlugin):
         head_host = hosts[0]
         worker_hosts = hosts[1:]
         ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir)
+        volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
         # Runtime defaults first, recipe env overrides (power users can tweak)
-        all_env = merge_env(runtime_env, env)
+        all_env = merge_env(runtime_env, self.get_extra_env(), env)
 
         self._print_cluster_banner(
             "SGLang Cluster Launcher", hosts, image, cluster_id,

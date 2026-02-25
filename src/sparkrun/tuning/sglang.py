@@ -217,6 +217,31 @@ class SglangTuner:
             return failed[0][1]
         return 0
 
+    def _ensure_output_dir(self) -> int:
+        """Create and validate the output directory on the target host."""
+        from sparkrun.orchestration.primitives import run_script_on_host
+
+        script = (
+            "#!/bin/bash\nset -euo pipefail\n"
+            "mkdir -p %(d)s\n"
+            "if [ ! -w %(d)s ]; then\n"
+            "  echo \"ERROR: tuning output directory is not writable: %(d)s\" >&2\n"
+            "  exit 1\n"
+            "fi\n"
+        ) % {"d": self.output_dir}
+
+        result = run_script_on_host(
+            self.host, script,
+            ssh_kwargs=self.ssh_kwargs, timeout=30, dry_run=self.dry_run,
+        )
+        if not result.success and not self.dry_run:
+            logger.error(
+                "Failed to create/validate tuning output directory %s: %s",
+                self.output_dir, result.stderr,
+            )
+            return 1
+        return 0
+
     def _launch_container(self) -> int:
         """Step 1: Launch a tuning container with sleep infinity."""
         import time
@@ -225,6 +250,10 @@ class SglangTuner:
 
         t0 = time.monotonic()
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
+
+        rc = self._ensure_output_dir()
+        if rc != 0:
+            return rc
 
         volumes = build_volumes(self.cache_dir)
         # Mount tuning output directory

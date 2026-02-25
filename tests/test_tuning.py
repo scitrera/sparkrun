@@ -284,6 +284,36 @@ class TestSglangTunerDryRun:
     def test_container_name_constant(self):
         assert TUNE_CONTAINER_NAME == "sparkrun_tune"
 
+    def test_ensure_output_dir_dry_run(self, tmp_path):
+        """_ensure_output_dir returns 0 in dry-run mode without touching the host."""
+        custom_dir = str(tmp_path / "out")
+        tuner = SglangTuner(
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            output_dir=custom_dir,
+            dry_run=True,
+        )
+        assert tuner._ensure_output_dir() == 0
+
+    def test_ensure_output_dir_failure_returns_nonzero(self, tmp_path, monkeypatch):
+        """_ensure_output_dir returns non-zero when remote script fails."""
+        from sparkrun.orchestration.primitives import RemoteResult
+
+        custom_dir = str(tmp_path / "out")
+        tuner = SglangTuner(
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            output_dir=custom_dir,
+            dry_run=False,
+        )
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.run_remote_script",
+            lambda *a, **kw: RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="not writable"),
+        )
+        assert tuner._ensure_output_dir() != 0
+
 
 # ---------------------------------------------------------------------------
 # Auto-mount integration
@@ -594,6 +624,36 @@ class TestVllmTunerDryRun:
 
     def test_container_name_constant(self):
         assert TUNE_VLLM_CONTAINER_NAME == "sparkrun_tune_vllm"
+
+    def test_ensure_output_dir_dry_run(self, tmp_path):
+        """_ensure_output_dir returns 0 in dry-run mode without touching the host."""
+        custom_dir = str(tmp_path / "out")
+        tuner = VllmTuner(
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            output_dir=custom_dir,
+            dry_run=True,
+        )
+        assert tuner._ensure_output_dir() == 0
+
+    def test_ensure_output_dir_failure_returns_nonzero(self, tmp_path, monkeypatch):
+        """_ensure_output_dir returns non-zero when remote script fails."""
+        from sparkrun.orchestration.primitives import RemoteResult
+
+        custom_dir = str(tmp_path / "out")
+        tuner = VllmTuner(
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            output_dir=custom_dir,
+            dry_run=False,
+        )
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.run_remote_script",
+            lambda *a, **kw: RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="not writable"),
+        )
+        assert tuner._ensure_output_dir() != 0
 
 
 # ---------------------------------------------------------------------------

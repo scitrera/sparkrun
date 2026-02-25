@@ -161,9 +161,16 @@ sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
 
 ### vLLM
 
-First-class support for [vLLM](https://github.com/vllm-project/vllm). Solo and multi-node clustering via Ray. Works with
-ready-built images (e.g. `scitrera/dgx-spark-vllm`). Also works with other images including those built from eugr's repo
-and/or NVIDIA images.
+First-class support for [vLLM](https://github.com/vllm-project/vllm) with two multi-node variants:
+
+- **`vllm-distributed`** (default) — uses vLLM's built-in distributed backend. Each node runs the full serve command with
+  node-rank arguments.
+- **`vllm-ray`** — uses Ray head/worker orchestration. A Ray cluster is formed first, then the serve command runs on the
+  head node.
+
+Write `runtime: vllm` in a recipe and sparkrun resolves it automatically: `vllm-distributed` by default, or `vllm-ray`
+when Ray hints are present (e.g. `distributed_executor_backend: ray` in defaults). Works with ready-built images
+(e.g. `scitrera/dgx-spark-vllm`). Also works with other images including those built from eugr's repo and/or NVIDIA images.
 
 ### SGLang
 
@@ -189,7 +196,7 @@ llama.cpp RPC mechanism involves a lot more overhead.
 
 ### eugr-vllm
 
-Extends the native `vllm` runtime with [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container
+Extends `vllm-ray` with [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container
 builds and mod support. All sparkrun orchestration features work natively — multi-node Ray clustering, container
 distribution, InfiniBand detection, log following, and cluster stop — while eugr-specific features (local container
 builds via `build-and-copy.sh`, mod application) are integrated into the launch pipeline.
@@ -410,9 +417,9 @@ the local copy without re-downloading.
 | `--foreground`               | Run in foreground (don't detach)                         |
 | `--no-follow`                | Don't follow container logs after launch                 |
 | `--skip-ib`                  | Skip InfiniBand detection     (not recommended)          |
-| `--ray-port`                 | Ray GCS port (default: 46379)  (vllm)                    |
+| `--ray-port`                 | Ray GCS port (default: 46379) (`vllm-ray`/`eugr-vllm`)  |
 | `--init-port`                | SGLang distributed init port (default: 25000)            |
-| `--dashboard`                | Enable Ray dashboard on head node (vllm)                 |
+| `--dashboard`                | Enable Ray dashboard on head node (`vllm-ray`/`eugr-vllm`) |
 | `--dashboard-port`           | Ray dashboard port (default: 8265)                       |
 
 **`sparkrun stop` options:**
@@ -434,6 +441,39 @@ the local copy without re-downloading.
 | `--cluster`                  | Use a saved cluster by name                         |
 | `--tp` / `--tensor-parallel` | Match host trimming from run                        |
 | `--tail`                     | Number of existing log lines to show (default: 100) |
+
+### Tune commands (experimental)
+
+| Command                            | Description                                       |
+|------------------------------------|---------------------------------------------------|
+| `sparkrun tune sglang <recipe>`    | Tune SGLang fused MoE Triton kernels              |
+| `sparkrun tune vllm <recipe>`      | Tune vLLM fused MoE Triton kernels                |
+
+Run Triton kernel autotuning for MoE models. Generates optimal tile configs per TP size and saves
+them for automatic use in future inference runs.
+
+```bash
+# Tune SGLang kernels on localhost
+sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1
+
+# Tune vLLM kernels with 4 parallel jobs
+sparkrun tune vllm qwen3-moe-vllm -H 127.0.0.1 -j4
+
+# Tune specific TP sizes only
+sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1 --tp 1 --tp 2
+```
+
+**Options:**
+
+| Option                       | Description                                              |
+|------------------------------|----------------------------------------------------------|
+| `--hosts` / `-H`             | Target host (only the first host is used)                |
+| `--cluster`                  | Use a saved cluster by name                              |
+| `--tp`                       | TP size(s) to tune (repeatable; default: 1,2,4,8)        |
+| `--parallel` / `-j`          | Run N tuning jobs concurrently (default: 1 = sequential) |
+| `--image`                    | Override container image                                 |
+| `--skip-clone`               | Skip cloning benchmark scripts (if already in image)     |
+| `--dry-run` / `-n`           | Show what would be done without executing                |
 
 ### Recipe commands
 

@@ -224,7 +224,7 @@ class VllmDistributedRuntime(RuntimePlugin):
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
         # Runtime defaults first, recipe env overrides (power users can tweak)
-        all_env = merge_env(runtime_env, env, self.get_extra_env())
+        all_env = merge_env(runtime_env, self.get_extra_env(), env)
 
         self._print_cluster_banner(
             "vLLM Distributed Cluster Launcher", hosts, image, cluster_id,

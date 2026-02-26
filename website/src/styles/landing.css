@@ -329,6 +329,11 @@
 }
 
 /* Coming Soon banner */
+@keyframes border-glow {
+  0%, 100% { border-color: rgba(118, 185, 0, 0.3); box-shadow: 0 0 8px rgba(118, 185, 0, 0.05); }
+  50% { border-color: rgba(118, 185, 0, 0.7); box-shadow: 0 0 16px rgba(118, 185, 0, 0.12); }
+}
+
 .coming-soon-banner {
   max-width: 72rem;
   margin: 3rem auto;
@@ -336,20 +341,20 @@
   padding-inline: 1.5rem;
   text-align: center;
   background: #f2f0f4;
-  border: 1px solid #e2e2e6;
+  border: 2px solid rgba(118, 185, 0, 0.4);
   border-radius: 1.5rem;
+  animation: border-glow 3s ease-in-out infinite;
 }
 
 @media (prefers-color-scheme: dark) {
   .coming-soon-banner {
     background: #1e1e21;
-    border-color: #303033;
   }
 }
 
 .coming-soon-badge {
   display: inline-block;
-  background: #435e91;
+  background: #76b900;
   color: #ffffff;
   font-size: 0.75rem;
   font-weight: 700;
@@ -362,8 +367,8 @@
 
 @media (prefers-color-scheme: dark) {
   .coming-soon-badge {
-    background: #b0c6ff;
-    color: #001a41;
+    background: #76b900;
+    color: #ffffff;
   }
 }
 

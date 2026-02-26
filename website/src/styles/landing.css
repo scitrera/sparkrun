@@ -328,6 +328,92 @@
   padding: 0 !important;
 }
 
+/* Coming Soon banner */
+@keyframes border-glow {
+  0%, 100% { border-color: rgba(118, 185, 0, 0.3); box-shadow: 0 0 8px rgba(118, 185, 0, 0.05); }
+  50% { border-color: rgba(118, 185, 0, 0.7); box-shadow: 0 0 16px rgba(118, 185, 0, 0.12); }
+}
+
+.coming-soon-banner {
+  max-width: 72rem;
+  margin: 3rem auto;
+  padding: 2rem 2.5rem;
+  padding-inline: 1.5rem;
+  text-align: center;
+  background: #f2f0f4;
+  border: 2px solid rgba(118, 185, 0, 0.4);
+  border-radius: 1.5rem;
+  animation: border-glow 3s ease-in-out infinite;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coming-soon-banner {
+    background: #1e1e21;
+  }
+}
+
+.coming-soon-badge {
+  display: inline-block;
+  background: #76b900;
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.3rem 0.75rem;
+  border-radius: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coming-soon-badge {
+    background: #76b900;
+    color: #ffffff;
+  }
+}
+
+.coming-soon-banner h3 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem;
+  color: #1b1b1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coming-soon-banner h3 {
+    color: #e2e2e6;
+  }
+}
+
+.coming-soon-banner p {
+  font-size: 1rem;
+  color: #46464a;
+  margin: 0;
+  line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coming-soon-banner p {
+    color: #abaab0;
+  }
+}
+
+.coming-soon-banner a {
+  color: #435e91;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.coming-soon-banner a:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+  .coming-soon-banner a {
+    color: #b0c6ff;
+  }
+}
+
 /* Footer */
 .landing-footer {
   margin-top: 6rem;

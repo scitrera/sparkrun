@@ -83,6 +83,21 @@ def save_job_metadata(
     logger.debug("Saved job metadata to %s", meta_path)
 
 
+def remove_job_metadata(cluster_id: str, cache_dir: str | None = None) -> None:
+    """Delete the cached job metadata file for a cluster_id.
+
+    No-op if the file does not exist.
+    """
+    if cache_dir is None:
+        from sparkrun.config import DEFAULT_CACHE_DIR
+        cache_dir = str(DEFAULT_CACHE_DIR)
+
+    digest = cluster_id.removeprefix("sparkrun_")
+    meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
+    meta_path.unlink(missing_ok=True)
+    logger.debug("Removed job metadata %s", meta_path)
+
+
 def load_job_metadata(cluster_id: str, cache_dir: str | None = None) -> dict | None:
     """Load job metadata for a cluster_id.  Returns ``None`` if not found."""
     if cache_dir is None:

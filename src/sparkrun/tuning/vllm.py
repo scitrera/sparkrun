@@ -140,6 +140,12 @@ def build_vllm_tuning_command(model: str, tp_size: int) -> str:
 
     Returns:
         The tuning command string.
+
+    Note:
+        vLLM's ``benchmark_moe.py`` accepts ``--save-dir`` to control
+        where tuning JSON files are written (defaults to ``"./"``).
+        We point it at the mounted output directory so configs survive
+        container cleanup.
     """
     config_dir = VLLM_TUNING_CONTAINER_OUTPUT_PATH
     return (
@@ -147,5 +153,5 @@ def build_vllm_tuning_command(model: str, tp_size: int) -> str:
         "mkdir -p %s && "
         "VLLM_TUNED_CONFIG_FOLDER=%s "
         "python3 benchmarks/kernels/benchmark_moe.py "
-        "--model %s --tp-size %d --tune"
-    ) % (VLLM_CLONE_DIR, config_dir, config_dir, shlex.quote(model), tp_size)
+        "--model %s --tp-size %d --tune --save-dir %s"
+    ) % (VLLM_CLONE_DIR, config_dir, config_dir, shlex.quote(model), tp_size, config_dir)

@@ -146,23 +146,28 @@ def build_tuning_command(model: str, tp_size: int, triton_version: str | None = 
         The tuning command string.
 
     Note:
-        ``SGLANG_MOE_CONFIG_DIR`` is set to the *base* output path — SGLang
-        internally appends ``configs/triton_<version>/`` when constructing
-        file names via ``get_config_file_name()``.
+        SGLang's ``get_config_file_name()`` returns only the basename
+        (e.g. ``E=64,N=2560,...json``).  The benchmark ``save_configs()``
+        writes to that basename via ``open(filename, "w")``, which
+        resolves relative to the working directory.  We therefore ``cd``
+        into the versioned output subdirectory so the JSON files land in
+        the mounted volume rather than being lost inside the container.
+
+        ``SGLANG_MOE_CONFIG_DIR`` is still set for any runtime code that
+        reads configs via the standard loader.
     """
     config_dir = TUNING_CONTAINER_OUTPUT_PATH
-    # Pre-create the directory structure that SGLang's get_config_file_name()
-    # expects to write into — save_configs() just calls open() and won't
-    # create parent directories.
+    # Build the versioned output subdirectory path.  save_configs() writes
+    # to CWD, so we cd into this directory before running the script.
     if triton_version and triton_version != "unknown":
         versioned = "triton_%s" % triton_version.replace(".", "_")
-        mkdir_cmd = "mkdir -p %s/configs/%s && " % (config_dir, versioned)
+        output_subdir = "%s/configs/%s" % (config_dir, versioned)
     else:
-        mkdir_cmd = "mkdir -p %s/configs && " % config_dir
+        output_subdir = "%s/configs" % config_dir
     return (
+        "mkdir -p %s && "
         "cd %s && "
-        "%s"
         "SGLANG_MOE_CONFIG_DIR=%s "
-        "python3 benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
+        "python3 %s/benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
         "--model %s --tp-size %d --tune"
-    ) % (SGLANG_CLONE_DIR, mkdir_cmd, config_dir, shlex.quote(model), tp_size)
+    ) % (output_subdir, output_subdir, config_dir, SGLANG_CLONE_DIR, shlex.quote(model), tp_size)

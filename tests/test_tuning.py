@@ -172,9 +172,15 @@ class TestBuildTuningCommand:
         assert "mkdir -p %s/configs " % TUNING_CONTAINER_OUTPUT_PATH in cmd
         assert "triton_unknown" not in cmd
 
-    def test_runs_from_clone_dir(self):
+    def test_cwd_is_output_dir(self):
+        """CWD must be the output subdir so save_configs() writes there."""
         cmd = build_tuning_command("test-model", 1)
-        assert cmd.startswith("cd %s" % SGLANG_CLONE_DIR)
+        assert "cd %s/configs" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+
+    def test_script_uses_full_clone_path(self):
+        """Script must be invoked via full path since CWD is the output dir."""
+        cmd = build_tuning_command("test-model", 1)
+        assert "%s/benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py" % SGLANG_CLONE_DIR in cmd
 
     def test_various_tp_sizes(self):
         for tp in DEFAULT_TP_SIZES:

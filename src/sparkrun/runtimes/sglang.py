@@ -153,7 +153,7 @@ class SglangRuntime(RuntimePlugin):
         """Return SGLang-specific cluster environment variables."""
         return {
             "NCCL_CUMEM_ENABLE": "0",
-            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",  # confirmed for v0.5.9 on 20260205 by DB
         }
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:

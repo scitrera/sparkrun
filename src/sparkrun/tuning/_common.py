@@ -220,6 +220,12 @@ class BaseTuner:
         """Run tuning for each TP size sequentially."""
         import time
         for i, tp in enumerate(tp_sizes):
+            if self._pre_check_tp(tp, triton_version):
+                logger.info(
+                    "Step 4/5: TP=%d configs already exist, skipping (%d/%d)",
+                    tp, i + 1, len(tp_sizes),
+                )
+                continue
             logger.info(
                 "Step 4/5: Tuning TP=%d (%d/%d)...",
                 tp, i + 1, len(tp_sizes),
@@ -249,6 +255,18 @@ class BaseTuner:
             len(tp_sizes), effective_workers,
         )
 
+        # Filter out TP sizes that already have configs
+        needed_tp = []
+        for tp in tp_sizes:
+            if self._pre_check_tp(tp, triton_version):
+                logger.info("  TP=%d configs already exist, skipping", tp)
+            else:
+                needed_tp.append(tp)
+
+        if not needed_tp:
+            logger.info("  All TP sizes already tuned, nothing to do")
+            return 0
+
         failed: list[tuple[int, int]] = []  # (tp_size, exit_code)
 
         def _tune_one(tp: int) -> tuple[int, int, float]:
@@ -259,7 +277,7 @@ class BaseTuner:
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             futures = {
                 executor.submit(_tune_one, tp): tp
-                for tp in tp_sizes
+                for tp in needed_tp
             }
             for future in as_completed(futures):
                 tp, rc, elapsed = future.result()
@@ -386,6 +404,18 @@ class BaseTuner:
             )
 
         return version
+
+    def _pre_check_tp(self, tp_size: int, triton_version: str) -> bool:
+        """Check if tuning configs already exist for this TP size.
+
+        Runs a lightweight check inside the container to determine if
+        the expected output files already exist.  Subclasses override
+        to implement runtime-specific checks.
+
+        Returns:
+            ``True`` if configs exist (skip tuning), ``False`` if needed.
+        """
+        return False  # default: always tune
 
     def _run_tune_for_tp(self, tp_size: int, triton_version: str) -> int:
         """Step 4 (per-TP): Run the tuning script for a given TP size.

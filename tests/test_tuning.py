@@ -18,6 +18,7 @@ from sparkrun.tuning.sglang import (
     TUNE_CONTAINER_NAME,
     TUNING_CONTAINER_OUTPUT_PATH,
     TUNING_CONTAINER_PATH,
+    TUNING_ENV_PATH,
     DEFAULT_TP_SIZES,
     _format_duration,
 )
@@ -108,7 +109,7 @@ class TestGetSglangTuningEnv:
         result = get_sglang_tuning_env()
         assert result is not None
         assert "SGLANG_MOE_CONFIG_DIR" in result
-        assert result["SGLANG_MOE_CONFIG_DIR"] == TUNING_CONTAINER_PATH
+        assert result["SGLANG_MOE_CONFIG_DIR"] == TUNING_ENV_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -161,21 +162,22 @@ class TestBuildTuningCommand:
     def test_versioned_mkdir(self):
         """When triton_version is provided, pre-create the versioned subdir."""
         cmd = build_tuning_command("test-model", 2, triton_version="3.6.0")
-        assert "mkdir -p %s/configs/triton_3_6_0" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        assert "mkdir -p %s/triton_3_6_0" % TUNING_CONTAINER_OUTPUT_PATH in cmd
 
-    def test_no_version_creates_base_configs_dir(self):
+    def test_no_version_uses_base_dir(self):
+        """Without triton_version, output_subdir is the base path itself."""
         cmd = build_tuning_command("test-model", 2)
-        assert "mkdir -p %s/configs" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        assert "mkdir -p %s " % TUNING_CONTAINER_OUTPUT_PATH in cmd
 
-    def test_unknown_version_creates_base_configs_dir(self):
+    def test_unknown_version_uses_base_dir(self):
         cmd = build_tuning_command("test-model", 2, triton_version="unknown")
-        assert "mkdir -p %s/configs " % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        assert "mkdir -p %s " % TUNING_CONTAINER_OUTPUT_PATH in cmd
         assert "triton_unknown" not in cmd
 
     def test_cwd_is_output_dir(self):
         """CWD must be the output subdir so save_configs() writes there."""
         cmd = build_tuning_command("test-model", 1)
-        assert "cd %s/configs" % TUNING_CONTAINER_OUTPUT_PATH in cmd
+        assert "cd %s " % TUNING_CONTAINER_OUTPUT_PATH in cmd
 
     def test_script_uses_full_clone_path(self):
         """Script must be invoked via full path since CWD is the output dir."""
@@ -360,7 +362,7 @@ class TestSglangRuntimeAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.bootstrap import get_runtime
-        expected = {"SGLANG_MOE_CONFIG_DIR": TUNING_CONTAINER_PATH}
+        expected = {"SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
             lambda: expected,
@@ -762,3 +764,150 @@ class TestEugrVllmAutoMount:
         )
         runtime = get_runtime("eugr-vllm", v)
         assert runtime.get_extra_env() == expected
+
+
+# ===========================================================================
+# Pre-check tests
+# ===========================================================================
+
+class TestPreCheckTp:
+    """Test that _pre_check_tp is called and can skip tuning."""
+
+    def test_base_pre_check_returns_false(self):
+        """BaseTuner._pre_check_tp always returns False (tune anyway)."""
+        from sparkrun.tuning._common import BaseTuner
+        tuner = BaseTuner.__new__(BaseTuner)
+        assert tuner._pre_check_tp(1, "3.6.0") is False
+
+    def test_sglang_pre_check_returns_false_in_dry_run(self):
+        """SglangTuner._pre_check_tp returns False in dry-run mode."""
+        tuner = SglangTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=True,
+        )
+        assert tuner._pre_check_tp(1, "3.6.0") is False
+
+    def test_vllm_pre_check_returns_false_in_dry_run(self):
+        """VllmTuner._pre_check_tp returns False in dry-run mode."""
+        tuner = VllmTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=True,
+        )
+        assert tuner._pre_check_tp(1, "3.6.0") is False
+
+    def test_sglang_pre_check_returns_false_on_error(self):
+        """SglangTuner._pre_check_tp returns False on any exception."""
+        from unittest.mock import patch
+        tuner = SglangTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=False,
+        )
+        with patch("sparkrun.orchestration.primitives.run_command_on_host",
+                    side_effect=RuntimeError("connection refused")):
+            assert tuner._pre_check_tp(1, "3.6.0") is False
+
+    def test_vllm_pre_check_returns_false_on_error(self):
+        """VllmTuner._pre_check_tp returns False on any exception."""
+        from unittest.mock import patch
+        tuner = VllmTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=False,
+        )
+        with patch("sparkrun.orchestration.primitives.run_command_on_host",
+                    side_effect=RuntimeError("connection refused")):
+            assert tuner._pre_check_tp(1, "3.6.0") is False
+
+    def test_sglang_pre_check_returns_true_on_success(self):
+        """SglangTuner._pre_check_tp returns True when command succeeds."""
+        from unittest.mock import patch
+        from sparkrun.orchestration.ssh import RemoteResult
+        tuner = SglangTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=False,
+        )
+        mock_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
+        with patch("sparkrun.orchestration.primitives.run_command_on_host",
+                    return_value=mock_result):
+            assert tuner._pre_check_tp(1, "3.6.0") is True
+
+    def test_vllm_pre_check_returns_true_on_success(self):
+        """VllmTuner._pre_check_tp returns True when command succeeds."""
+        from unittest.mock import patch
+        from sparkrun.orchestration.ssh import RemoteResult
+        tuner = VllmTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=False,
+        )
+        mock_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
+        with patch("sparkrun.orchestration.primitives.run_command_on_host",
+                    return_value=mock_result):
+            assert tuner._pre_check_tp(1, "3.6.0") is True
+
+    def test_sglang_pre_check_returns_false_on_failure(self):
+        """SglangTuner._pre_check_tp returns False when command fails."""
+        from unittest.mock import patch
+        from sparkrun.orchestration.ssh import RemoteResult
+        tuner = SglangTuner(
+            host="10.0.0.1", image="test:latest",
+            model="test-model", dry_run=False,
+        )
+        mock_result = RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="")
+        with patch("sparkrun.orchestration.primitives.run_command_on_host",
+                    return_value=mock_result):
+            assert tuner._pre_check_tp(1, "3.6.0") is False
+
+
+# ===========================================================================
+# Sync path tests
+# ===========================================================================
+
+class TestSyncGetLocalTuningDir:
+    """Test that _get_local_tuning_dir returns correct paths."""
+
+    def test_sglang_path(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("sglang")
+        assert str(d).endswith("sparkrun/tuning/sglang")
+
+    def test_vllm_path(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("vllm")
+        assert str(d).endswith("sparkrun/tuning/vllm")
+
+    def test_vllm_ray_maps_to_vllm(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("vllm-ray")
+        assert str(d).endswith("sparkrun/tuning/vllm")
+
+    def test_vllm_distributed_maps_to_vllm(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("vllm-distributed")
+        assert str(d).endswith("sparkrun/tuning/vllm")
+
+    def test_eugr_vllm_maps_to_vllm(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("eugr-vllm")
+        assert str(d).endswith("sparkrun/tuning/vllm")
+
+    def test_other_runtime_uses_tuning_prefix(self):
+        from sparkrun.tuning.sync import _get_local_tuning_dir
+        d = _get_local_tuning_dir("llama-cpp")
+        assert str(d).endswith("sparkrun/tuning/llama-cpp")
+
+
+# ===========================================================================
+# Mount-point constant tests
+# ===========================================================================
+
+class TestMountPointConstants:
+    """Verify mount-point layout is correct for SGLang config lookup."""
+
+    def test_sglang_container_path_ends_with_configs(self):
+        """TUNING_CONTAINER_PATH must end with /configs so SGLang's internal
+        $SGLANG_MOE_CONFIG_DIR/configs/triton_X_Y_Z/ resolves correctly."""
+        assert TUNING_CONTAINER_PATH.endswith("/configs")
+
+    def test_sglang_env_path_is_parent_of_container_path(self):
+        """TUNING_ENV_PATH must be the parent of TUNING_CONTAINER_PATH."""
+        assert TUNING_CONTAINER_PATH.startswith(TUNING_ENV_PATH)
+        assert TUNING_CONTAINER_PATH == TUNING_ENV_PATH + "/configs"

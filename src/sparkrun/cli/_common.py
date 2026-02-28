@@ -4,10 +4,97 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 import click
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Remote recipe helpers (spark-arena URL support)
+# ---------------------------------------------------------------------------
+
+SPARK_ARENA_PREFIX = "@spark-arena/"
+SPARK_ARENA_API_URL = "https://spark-arena.com/api/recipes/%s/raw"
+
+
+def _expand_recipe_shortcut(name: str) -> str:
+    """Expand known recipe shortcuts to full URLs.
+
+    Currently supports:
+        @spark-arena/UUID  ->  https://spark-arena.com/api/recipes/UUID/raw
+    """
+    if name.startswith(SPARK_ARENA_PREFIX):
+        recipe_id = name[len(SPARK_ARENA_PREFIX):]
+        return SPARK_ARENA_API_URL % recipe_id
+    return name
+
+
+def _simplify_recipe_ref(url: str) -> str:
+    """Simplify a recipe URL to a shortcut if possible (inverse of expand).
+
+    Currently supports:
+        https://spark-arena.com/api/recipes/UUID/raw  ->  @spark-arena/UUID
+
+    Returns the original string unchanged if no simplification applies.
+    """
+    import re
+
+    m = re.match(r"https?://spark-arena\.com/api/recipes/([^/]+)/raw$", url)
+    if m:
+        return "%s%s" % (SPARK_ARENA_PREFIX, m.group(1))
+    return url
+
+
+def _is_recipe_url(name: str) -> bool:
+    """Check if recipe_name looks like an HTTP(S) URL."""
+    return name.startswith(("http://", "https://"))
+
+
+def _url_cache_path(url: str) -> Path:
+    """Return the local cache path for a remote recipe URL."""
+    import hashlib
+
+    from sparkrun.config import DEFAULT_CACHE_DIR
+
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return DEFAULT_CACHE_DIR / "remote-recipes" / ("%s.yaml" % url_hash)
+
+
+def _fetch_and_cache_recipe(url: str) -> Path:
+    """Fetch a recipe from URL and cache it locally.
+
+    On success, writes/updates the cache file and returns its path.
+    On network failure, falls back to cached copy if available.
+    Raises click.ClickException if fetch fails and no cache exists.
+    """
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    cache_path = _url_cache_path(url)
+
+    try:
+        req = Request(url, headers={"User-Agent": "sparkrun"})
+        with urlopen(req, timeout=30) as resp:
+            content = resp.read()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(content)
+        return cache_path
+    except (HTTPError, URLError, OSError) as e:
+        if cache_path.exists():
+            reason = e.code if isinstance(e, HTTPError) else e.reason
+            logger.warning(
+                "Failed to fetch recipe (using cached copy): %s", reason,
+            )
+            return cache_path
+        if isinstance(e, HTTPError):
+            raise click.ClickException(
+                "Failed to fetch recipe from %s: HTTP %d" % (url, e.code)
+            )
+        raise click.ClickException(
+            "Failed to fetch recipe from %s: %s"
+            % (url, e.reason if isinstance(e, URLError) else e)
+        )
 
 
 # TODO: converge logging with SAF logging
@@ -151,20 +238,62 @@ def _get_cluster_manager(v=None):
 def _load_recipe(config, recipe_name):
     """Find, load, and return a recipe.
 
+    Handles disambiguation when a recipe name matches multiple registries.
+    Supports remote URLs and @spark-arena/ shortcuts.
     Exits with an error message on failure.
 
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
     """
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+    from sparkrun.recipe import Recipe, find_recipe, discover_cwd_recipes, RecipeError, RecipeAmbiguousError
+
+    # Expand shortcuts (e.g. @spark-arena/UUID -> full URL)
+    recipe_name = _expand_recipe_shortcut(recipe_name)
+
+    # Handle remote URLs (e.g. spark-arena recipe links)
+    if _is_recipe_url(recipe_name):
+        logger.debug("Loading recipe from URL: %s", recipe_name)
+        cached_path = _fetch_and_cache_recipe(recipe_name)
+        try:
+            recipe = Recipe.load(cached_path)
+        except RecipeError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
+        # Store URL as source for display/debugging
+        recipe.source_path = recipe_name
+        # Registry manager still needed by callers (e.g. tuning sync)
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        return recipe, cached_path, registry_mgr
+
     try:
         registry_mgr = config.get_registry_manager()
         registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr,
+                                  local_files=discover_cwd_recipes())
         recipe = Recipe.load(recipe_path)
+    except RecipeAmbiguousError as e:
+        # Interactive disambiguation
+        if sys.stdin.isatty():
+            click.echo("Recipe '%s' found in multiple registries:" % e.name)
+            for i, (reg, path) in enumerate(e.matches, 1):
+                click.echo("  %d. @%s/%s" % (i, reg, e.name))
+            click.echo()
+            choice = click.prompt(
+                "Select registry",
+                type=click.IntRange(1, len(e.matches)),
+                default=1,
+            )
+            _reg_name, recipe_path = e.matches[choice - 1]
+            recipe = Recipe.load(recipe_path)
+        else:
+            raise click.ClickException(str(e))
     except RecipeError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
+
+    # Tag recipe with its source registry (None for local/CWD recipes)
+    recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
     return recipe, recipe_path, registry_mgr
 
 
@@ -261,18 +390,112 @@ def _require_uv() -> str:
     return uv
 
 
+def _complete_yaml_files(incomplete):
+    """Return CompletionItems for YAML files matching an incomplete path."""
+    from pathlib import Path
+
+    items = []
+    # Determine the directory to search and the prefix to match
+    p = Path(incomplete)
+    if incomplete.endswith("/"):
+        search_dir = p
+        prefix = ""
+    else:
+        search_dir = p.parent
+        prefix = p.name
+
+    if not search_dir.is_dir():
+        return items
+
+    try:
+        for entry in sorted(search_dir.iterdir()):
+            if not entry.name.startswith(prefix):
+                continue
+            rel = str(entry.relative_to(".")) if not incomplete.startswith("/") else str(entry)
+            # Preserve leading ./ if the user typed it
+            if incomplete.startswith("./") and not rel.startswith("./"):
+                rel = "./" + rel
+            if entry.is_dir():
+                items.append(click.shell_completion.CompletionItem(
+                    rel + "/", type="dir",
+                ))
+            elif entry.suffix in (".yaml", ".yml"):
+                items.append(click.shell_completion.CompletionItem(
+                    rel, type="file",
+                ))
+    except OSError:
+        pass
+    return items
+
+
 class RecipeNameType(click.ParamType):
     """Click parameter type with shell completion for recipe names."""
 
     name = "recipe"
 
     def shell_complete(self, ctx, param, incomplete):
-        """Return completion items for recipe names."""
+        """Return completion items for recipe names and file paths.
+
+        Supports @registry/name syntax:
+        - @ prefix: lists registry names (all enabled, regardless of visibility)
+        - @registry/: lists recipes from that registry (include hidden)
+
+        Also completes local YAML file paths when the incomplete value
+        looks like a path (starts with '.', '/', '~', or contains '/').
+
+        Default (no @ prefix): only shows recipes from visible registries.
+        """
         try:
-            from sparkrun.recipe import list_recipes
+            # Handle @registry/ prefix completion first (before file-path check,
+            # since @registry/name contains '/' but is not a filesystem path)
+            if incomplete.startswith("@"):
+                config, registry_mgr = _get_config_and_registry()
+                from sparkrun.recipe import list_recipes
+
+                if "/" not in incomplete:
+                    # No slash yet — expand directly to @registry/recipe items
+                    # so the user gets full completions in one tab press.
+                    registries = registry_mgr.list_registries()
+                    prefix = incomplete[1:]  # strip @
+                    items = []
+                    for reg in registries:
+                        if not reg.enabled or not reg.name.startswith(prefix):
+                            continue
+                        recipe_path = registry_mgr.cache_root / reg.name / reg.subpath
+                        recipes = list_recipes(search_paths=[recipe_path],
+                                               registry_manager=registry_mgr)
+                        for r in recipes:
+                            items.append(click.shell_completion.CompletionItem(
+                                "@%s/%s" % (reg.name, r["file"])))
+                    return items
+                else:
+                    # Completing recipe after @registry/
+                    prefix, recipe_prefix = incomplete.split("/", 1)
+                    registry_name = prefix[1:]  # strip @
+                    # Only load recipes from the target registry
+                    try:
+                        entry = registry_mgr.get_registry(registry_name)
+                    except Exception:
+                        return []
+                    recipe_path = registry_mgr.cache_root / entry.name / entry.subpath
+                    recipes = list_recipes(search_paths=[recipe_path],
+                                           registry_manager=registry_mgr)
+                    return [
+                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, r["file"]))
+                        for r in recipes
+                        if r["file"].startswith(recipe_prefix)
+                    ]
+
+            # File-path completion when input looks like a path
+            if incomplete and (incomplete[0] in (".", "/", "~") or "/" in incomplete):
+                return _complete_yaml_files(incomplete)
+
+            # Default: list recipe names from visible registries only
+            from sparkrun.recipe import list_recipes, discover_cwd_recipes
             config, registry_mgr = _get_config_and_registry()
-            # Only read from already-cached registries — no git operations
-            recipes = list_recipes(config.get_recipe_search_paths(), registry_mgr)
+            recipes = list_recipes(registry_manager=registry_mgr,
+                                   include_hidden=False,
+                                   local_files=discover_cwd_recipes())
             return [
                 click.shell_completion.CompletionItem(r["file"])
                 for r in recipes
@@ -283,6 +506,73 @@ class RecipeNameType(click.ParamType):
 
 
 RECIPE_NAME = RecipeNameType()
+
+
+class ProfileNameType(click.ParamType):
+    """Click parameter type with shell completion for benchmark profile names."""
+
+    name = "profile"
+
+    def shell_complete(self, ctx, param, incomplete):
+        """Return completion items for profile names and file paths.
+
+        Supports @registry/name syntax:
+        - @ prefix: lists registry names (all enabled with benchmark_subpath)
+        - @registry/: lists profiles from that registry
+
+        Also completes local YAML file paths when the incomplete value
+        looks like a path (starts with '.', '/', '~', or contains '/').
+
+        Default (no @ prefix): only shows profiles from visible registries.
+        """
+        try:
+            # Handle @registry/ prefix completion first (before file-path check,
+            # since @registry/name contains '/' but is not a filesystem path)
+            if incomplete.startswith("@"):
+                config, registry_mgr = _get_config_and_registry()
+                if "/" not in incomplete:
+                    # No slash yet — expand directly to @registry/profile items
+                    registries = registry_mgr.list_registries()
+                    prefix = incomplete[1:]  # strip @
+                    items = []
+                    for reg in registries:
+                        if not reg.enabled or not reg.benchmark_subpath or not reg.name.startswith(prefix):
+                            continue
+                        profiles = registry_mgr.list_benchmark_profiles(
+                            registry_name=reg.name, include_hidden=True)
+                        for p in profiles:
+                            items.append(click.shell_completion.CompletionItem(
+                                "@%s/%s" % (reg.name, p["file"])))
+                    return items
+                else:
+                    # Completing profile name after @registry/
+                    prefix, profile_prefix = incomplete.split("/", 1)
+                    registry_name = prefix[1:]  # strip @
+                    profiles = registry_mgr.list_benchmark_profiles(
+                        registry_name=registry_name, include_hidden=True)
+                    return [
+                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, p["file"]))
+                        for p in profiles
+                        if p["file"].startswith(profile_prefix)
+                    ]
+
+            # File-path completion when input looks like a path
+            if incomplete and (incomplete[0] in (".", "/", "~") or "/" in incomplete):
+                return _complete_yaml_files(incomplete)
+
+            # Default: list profile names from visible registries only
+            config, registry_mgr = _get_config_and_registry()
+            profiles = registry_mgr.list_benchmark_profiles()
+            return [
+                click.shell_completion.CompletionItem(p["file"])
+                for p in profiles
+                if p["file"].startswith(incomplete)
+            ]
+        except Exception:
+            return []
+
+
+PROFILE_NAME = ProfileNameType()
 
 
 class ClusterNameType(click.ParamType):
@@ -319,7 +609,7 @@ class RegistryNameType(click.ParamType):
             return [
                 click.shell_completion.CompletionItem(reg.name)
                 for reg in registry_mgr.list_registries()
-                if reg.enabled and reg.name.startswith(incomplete)
+                if reg.name.startswith(incomplete)
             ]
         except Exception:
             return []

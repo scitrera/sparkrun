@@ -43,6 +43,7 @@ def save_job_metadata(
     cache_dir: str | None = None,
     ib_ip_map: dict[str, str] | None = None,
     mgmt_ip_map: dict[str, str] | None = None,
+    recipe_ref: str | None = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
@@ -70,6 +71,8 @@ def save_job_metadata(
         "runtime": recipe.runtime,
         "hosts": hosts,
     }
+    if recipe_ref:
+        meta["recipe_ref"] = recipe_ref
     if tp is not None:
         meta["tensor_parallel"] = int(tp)
     if ib_ip_map:

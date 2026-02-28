@@ -203,7 +203,6 @@ class LlamaCppRuntime(RuntimePlugin):
             config=None,
             dry_run: bool = False,
             detached: bool = True,
-            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
             rpc_port: int = _DEFAULT_RPC_PORT,
@@ -272,7 +271,7 @@ class LlamaCppRuntime(RuntimePlugin):
             logger.info("Step 2/5: Using pre-detected NCCL env (%d vars)", len(nccl_env))
             if ib_ip_map:
                 logger.info("  Pre-detected IB IPs for %d host(s)", len(ib_ip_map))
-        elif not skip_ib_detect:
+        else:
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             ib_result = detect_ib_for_hosts(
                 hosts, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
@@ -280,9 +279,6 @@ class LlamaCppRuntime(RuntimePlugin):
             nccl_env = ib_result.nccl_env
             ib_ip_map = ib_result.ib_ip_map
             logger.info("Step 2/5: IB detection done (%.1fs)", time.monotonic() - t0)
-        else:
-            nccl_env = {}
-            logger.info("Step 2/5: Skipping InfiniBand detection")
 
         # Resolve worker RPC addresses: prefer IB IPs for high-speed fabric
         rpc_hosts = []

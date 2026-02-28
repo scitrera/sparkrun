@@ -184,7 +184,6 @@ class VllmDistributedRuntime(RuntimePlugin):
             config=None,
             dry_run: bool = False,
             detached: bool = True,
-            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
             init_port: int = 25000,
             **kwargs,
@@ -246,7 +245,7 @@ class VllmDistributedRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 2/6: InfiniBand detection...")
         nccl_env = resolve_nccl_env(
-            nccl_env, skip_ib_detect, hosts,
+            nccl_env, hosts,
             head_host=head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
         logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)

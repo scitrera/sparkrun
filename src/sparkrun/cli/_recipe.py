@@ -27,10 +27,11 @@ def recipe(ctx):
 @recipe.command("list")
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
 @click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
+@click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registry recipes")
 @click.argument("query", required=False)
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_list(ctx, registry, runtime, query, config_path=None):
+def recipe_list(ctx, registry, runtime, show_all, query, config_path=None):
     """List available recipes from all registries."""
     from sparkrun.recipe import list_recipes, filter_recipes
     from sparkrun.utils.cli_formatters import format_recipe_table
@@ -39,9 +40,11 @@ def recipe_list(ctx, registry, runtime, query, config_path=None):
     registry_mgr.ensure_initialized()
 
     if query:
-        recipes = registry_mgr.search_recipes(query)
+        recipes = registry_mgr.search_recipes(query, include_hidden=show_all)
     else:
-        recipes = list_recipes(config.get_recipe_search_paths(), registry_mgr)
+        from sparkrun.recipe import discover_cwd_recipes
+        recipes = list_recipes(registry_manager=registry_mgr, include_hidden=show_all,
+                               local_files=discover_cwd_recipes())
 
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
     click.echo(format_recipe_table(recipes, show_file=True))
@@ -50,10 +53,11 @@ def recipe_list(ctx, registry, runtime, query, config_path=None):
 @recipe.command("search")
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
 @click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
+@click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registry recipes")
 @click.argument("query")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_search(ctx, registry, runtime, query, config_path=None):
+def recipe_search(ctx, registry, runtime, show_all, query, config_path=None):
     """Search for recipes by name, model, or description."""
     from sparkrun.recipe import filter_recipes
     from sparkrun.utils.cli_formatters import format_recipe_table
@@ -61,7 +65,7 @@ def recipe_search(ctx, registry, runtime, query, config_path=None):
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
 
-    recipes = registry_mgr.search_recipes(query)
+    recipes = registry_mgr.search_recipes(query, include_hidden=show_all)
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
 
     if not recipes:
@@ -76,10 +80,14 @@ def recipe_search(ctx, registry, runtime, query, config_path=None):
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--save", "save_path", default=None, type=click.Path(),
+              help="Save a copy of the recipe YAML to a file")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
+def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, save_path=None, config_path=None):
     """Show detailed recipe information."""
+    import shutil
+
     config, _ = _get_config_and_registry(config_path)
     recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
@@ -90,6 +98,12 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
     reg_name = registry_mgr.registry_for_path(recipe_path) if registry_mgr else None
     _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name,
                            cli_overrides=cli_overrides or None)
+
+    if save_path:
+        from pathlib import Path
+        dest = Path(save_path)
+        shutil.copy2(recipe_path, dest)
+        click.echo("\nRecipe saved to %s" % dest)
 
 
 @recipe.command("validate")
@@ -169,6 +183,7 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 @click.pass_context
 def recipe_update(ctx, registry, config_path=None, ):
     """Update recipe registries from git."""
+    click.echo("Warning: 'sparkrun recipe update' is deprecated. Use 'sparkrun registry update' instead.", err=True)
     from sparkrun.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
@@ -206,74 +221,6 @@ def recipe_update(ctx, registry, config_path=None, ):
             click.echo(f"{succeeded} of {count} registries updated ({failed} failed).")
         else:
             click.echo(f"{succeeded} registr{'y' if succeeded == 1 else 'ies'} updated.")
-    except RegistryError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-
-@recipe.command("registries")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.pass_context
-def recipe_registries(ctx, config_path=None, ):
-    """List configured recipe registries."""
-    config, registry_mgr = _get_config_and_registry(config_path)
-
-    registries = registry_mgr.list_registries()
-
-    if not registries:
-        click.echo("No registries configured.")
-        return
-
-    # Table header
-    click.echo(f"{'Name':<20} {'URL':<40} {'Subpath':<20} {'Enabled':<8}")
-    click.echo("-" * 88)
-    for reg in registries:
-        url = reg.url[:38] + ".." if len(reg.url) > 40 else reg.url
-        enabled = "yes" if reg.enabled else "no"
-        click.echo(f"{reg.name:<20} {url:<40} {reg.subpath:<20} {enabled:<8}")
-
-
-@recipe.command("add-registry")
-@click.argument("name")
-@click.option("--url", required=True, help="Git repository URL")
-@click.option("--subpath", required=True, help="Path to recipes within repo")
-@click.option("-d", "--description", default="", help="Registry description")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.pass_context
-def recipe_add_registry(ctx, name, url, subpath, description, config_path=None, ):
-    """Add a new recipe registry."""
-    from sparkrun.registry import RegistryEntry, RegistryError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-
-    try:
-        entry = RegistryEntry(
-            name=name,
-            url=url,
-            subpath=subpath,
-            description=description,
-            enabled=True,
-        )
-        registry_mgr.add_registry(entry)
-        click.echo(f"Registry '{name}' added successfully.")
-    except RegistryError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-
-@recipe.command("remove-registry")
-@click.argument("name")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.pass_context
-def recipe_remove_registry(ctx, name, config_path=None, ):
-    """Remove a recipe registry."""
-    from sparkrun.registry import RegistryError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-
-    try:
-        registry_mgr.remove_registry(name)
-        click.echo(f"Registry '{name}' removed successfully.")
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

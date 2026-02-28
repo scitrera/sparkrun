@@ -359,7 +359,6 @@ class RuntimePlugin(Plugin):
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
             detached: bool = True,
-            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
             **kwargs,
@@ -378,7 +377,6 @@ class RuntimePlugin(Plugin):
             config: SparkrunConfig instance for SSH settings.
             dry_run: Show what would be done without executing.
             detached: Run serve command in background.
-            skip_ib_detect: Skip InfiniBand detection.
             nccl_env: Pre-detected NCCL environment variables.  When
                 provided (not ``None``), skips runtime IB detection and
                 uses this env directly.
@@ -386,7 +384,7 @@ class RuntimePlugin(Plugin):
                 (management host -> IB IP).  Used by runtimes that need
                 IB addresses for inter-node communication (e.g. llama.cpp
                 RPC).  When ``None``, the runtime may detect IB IPs
-                itself if ``skip_ib_detect`` is ``False``.
+                itself if ``nccl_env`` is also ``None``.
             **kwargs: Runtime-specific keyword arguments (e.g. ray_port,
                 dashboard_port, init_port, rpc_port).
 
@@ -404,7 +402,6 @@ class RuntimePlugin(Plugin):
                 config=config,
                 dry_run=dry_run,
                 detached=detached,
-                skip_ib_detect=skip_ib_detect,
                 nccl_env=nccl_env,
             )
         return self._run_cluster(
@@ -419,7 +416,6 @@ class RuntimePlugin(Plugin):
             config=config,
             dry_run=dry_run,
             detached=detached,
-            skip_ib_detect=skip_ib_detect,
             nccl_env=nccl_env,
             ib_ip_map=ib_ip_map,
             **kwargs,
@@ -504,7 +500,6 @@ class RuntimePlugin(Plugin):
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
             detached: bool = True,
-            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
     ) -> int:
         """Launch a single-node inference workload.
@@ -540,8 +535,7 @@ class RuntimePlugin(Plugin):
         t0 = time.monotonic()
         if nccl_env is not None:
             logger.info("Step 1/3: Using pre-detected NCCL env (%d vars)", len(nccl_env))
-        elif not skip_ib_detect:
-            nccl_env = {}
+        else:
             logger.info("Step 1/3: Detecting InfiniBand on %s...", host)
             if is_local:
                 nccl_env = detect_infiniband_local(dry_run=dry_run)
@@ -550,9 +544,6 @@ class RuntimePlugin(Plugin):
                     [host], ssh_kwargs=ssh_kwargs, dry_run=dry_run,
                 )
             logger.info("Step 1/3: IB detection done (%.1fs)", time.monotonic() - t0)
-        else:
-            nccl_env = {}
-            logger.info("Step 1/3: Skipping InfiniBand detection")
 
         # Step 2: Launch container
         t0 = time.monotonic()

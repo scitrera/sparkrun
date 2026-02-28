@@ -145,8 +145,69 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     return runtime
 
 
+def is_recipe_file(path: Path) -> bool:
+    """Check if a YAML file is a valid sparkrun recipe.
+
+    Requires: parseable YAML dict, resolvable runtime, model, and container fields.
+    """
+    try:
+        data = read_yaml(str(path))
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if not data.get("model") or not data.get("container"):
+        return False
+    try:
+        rt = resolve_runtime(data)
+    except Exception:
+        return False
+    return rt != "unknown"
+
+
+def discover_cwd_recipes(directory: Path | None = None) -> list[Path]:
+    """Scan a directory (default CWD) for flat .yaml/.yml files that are valid recipes."""
+    if directory is None:
+        directory = Path.cwd()
+    if not directory.is_dir():
+        return []
+    candidates: list[Path] = []
+    for pattern in ("*.yaml", "*.yml"):
+        candidates.extend(directory.glob(pattern))
+    return sorted(p for p in candidates if is_recipe_file(p))
+
+
 class RecipeError(Exception):
     """Raised when a recipe is invalid or cannot be loaded."""
+
+
+class RecipeAmbiguousError(RecipeError):
+    """Raised when a recipe name matches multiple registries."""
+
+    def __init__(self, name: str, matches: list[tuple[str, Path]]):
+        self.name = name
+        self.matches = matches
+        registries = ", ".join(reg for reg, _ in matches)
+        super().__init__(
+            "Recipe '%s' found in multiple registries: %s. "
+            "Use @registry/%s to specify." % (name, registries, name)
+        )
+
+
+class ProfileError(Exception):
+    """Raised when a benchmark profile cannot be found."""
+
+
+class ProfileAmbiguousError(ProfileError):
+    """Raised when a profile name matches multiple registries."""
+    def __init__(self, name: str, matches: list[tuple[str, Path]]):
+        self.name = name
+        self.matches = matches
+        reg_names = [reg for reg, _ in matches]
+        super().__init__(
+            "Benchmark profile '%s' found in multiple registries: %s. "
+            "Use @registry/%s to disambiguate." % (name, ", ".join(reg_names), name)
+        )
 
 
 class Recipe:
@@ -155,6 +216,7 @@ class Recipe:
     def __init__(self, data: dict[str, Any], source_path: str | None = None):
         self._raw = data
         self.source_path = source_path
+        self.source_registry: str | None = None  # set by _load_recipe after resolution
 
         # Detect version
         self.sparkrun_version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
@@ -432,77 +494,234 @@ class Recipe:
 
 
 def find_recipe(name: str, search_paths: list[Path] | None = None,
-                registry_manager: RegistryManager | None = None) -> Path:
+                registry_manager: RegistryManager | None = None,
+                local_files: list[Path] | None = None) -> Path:
     """Find a recipe by name across search paths.
 
+    Supports @registry/recipe-name syntax for scoped lookups.
+
     Search order:
-    1. Exact/relative file path (if exists)
-    2. Given search paths
-    3. Registry paths (if registry_manager provided)
-    4. Registry file-stem matching (if registry_manager provided)
+    1. @registry/name scoped lookup (if @ prefix present)
+    2. Exact/relative file path (if exists)
+    3. Given search paths
+    4. Registry paths (if registry_manager provided)
+    5. Registry file-stem matching (if registry_manager provided)
+
+    Raises:
+        RecipeAmbiguousError: If name matches multiple registries without @scope.
+        RecipeError: If recipe not found.
     """
+    # Parse @registry/name prefix
+    scoped_registry = None
+    lookup_name = name
+    if name.startswith("@") and "/" in name:
+        prefix, lookup_name = name.split("/", 1)
+        scoped_registry = prefix[1:]  # strip leading @
+
+    # Scoped lookup: search only the specified registry
+    if scoped_registry and registry_manager:
+        matches = registry_manager.find_recipe_in_registries(
+            lookup_name, include_hidden=True,
+        )
+        scoped_matches = [(reg, path) for reg, path in matches if reg == scoped_registry]
+        if scoped_matches:
+            return scoped_matches[0][1]
+        raise RecipeError(
+            "Recipe '%s' not found in registry '%s'" % (lookup_name, scoped_registry)
+        )
+
     # 1. Check if it's a direct path
-    direct = Path(name)
+    direct = Path(lookup_name)
     if direct.exists():
         return direct
     # Also try with .yaml extension
-    if not name.endswith((".yaml", ".yml")):
+    if not lookup_name.endswith((".yaml", ".yml")):
         for ext in (".yaml", ".yml"):
-            candidate = Path(name + ext)
+            candidate = Path(lookup_name + ext)
             if candidate.exists():
                 return candidate
 
-    # 2. Search user-provided paths (flat first, then recursive by stem)
+    # 2. Check local_files (CWD-discovered recipes) by stem match
+    if local_files:
+        for lf in local_files:
+            if lf.stem == lookup_name:
+                return lf
+        # Also try with extension stripped if user passed name.yaml
+        if lookup_name.endswith((".yaml", ".yml")):
+            bare = Path(lookup_name).stem
+            for lf in local_files:
+                if lf.stem == bare:
+                    return lf
+
+    # 3. Search user-provided paths (flat first, then recursive by stem)
     for search_dir in (search_paths or []):
         for ext in ("", ".yaml", ".yml"):
-            candidate = search_dir / (name + ext)
+            candidate = search_dir / (lookup_name + ext)
             if candidate.exists():
                 return candidate
     for search_dir in (search_paths or []):
         for ext in (".yaml", ".yml"):
-            for m in search_dir.rglob(f"**/{name}{ext}"):
+            for m in search_dir.rglob(f"**/{lookup_name}{ext}"):
                 return m
 
-    # 3. Search registry paths (flat first, then recursive by stem)
+    # 4. Search registry paths with ambiguity detection.
+    # Use find_recipe_in_registries() which tracks per-registry matches
+    # so that identical recipe names across registries raise an error.
     if registry_manager:
-        for search_dir in registry_manager.get_recipe_paths():
-            for ext in ("", ".yaml", ".yml"):
-                candidate = search_dir / (name + ext)
-                if candidate.exists():
-                    return candidate
-        for search_dir in registry_manager.get_recipe_paths():
-            for ext in (".yaml", ".yml"):
-                for m in search_dir.rglob(f"**/{name}{ext}"):
-                    return m
-
-    # 4. Try registry file-stem matching
-    if registry_manager:
-        matches = registry_manager.find_recipe_in_registries(name)
-        if matches:
-            # Return first match (user search paths already checked above)
+        matches = registry_manager.find_recipe_in_registries(lookup_name)
+        if len(matches) == 1:
             _registry_name, recipe_path = matches[0]
             return recipe_path
+        elif len(matches) > 1:
+            raise RecipeAmbiguousError(lookup_name, matches)
 
     search_desc = [str(p) for p in (search_paths or [])]
     if registry_manager:
         search_desc.append("registry paths")
     raise RecipeError(
         "Recipe '%s' not found. Searched: %s"
-        % (name, search_desc)
+        % (lookup_name, search_desc)
     )
 
 
+def find_recipe_in_registry(name: str, registry_name: str,
+                            registry_manager: RegistryManager) -> Path:
+    """Find a recipe in a specific registry by name.
+
+    Args:
+        name: Recipe file stem.
+        registry_name: Registry to search.
+        registry_manager: Registry manager instance.
+
+    Returns:
+        Path to the recipe file.
+
+    Raises:
+        RecipeError: If recipe not found in that registry.
+    """
+    matches = registry_manager.find_recipe_in_registries(name, include_hidden=True)
+    for reg, path in matches:
+        if reg == registry_name:
+            return path
+    raise RecipeError("Recipe '%s' not found in registry '%s'" % (name, registry_name))
+
+
+def find_benchmark_profile(
+    name: str,
+    config,
+    registry_manager=None,
+    include_hidden: bool = False,
+) -> Path:
+    """Find a benchmark profile by name.
+
+    Resolution chain:
+    1. Direct file path (contains / or .yaml/.yml extension)
+    2. @registry/name scoped lookup
+    3. Local benchmarking directory (~/.config/sparkrun/benchmarking/)
+    4. Registry search with ambiguity detection
+
+    Args:
+        name: Profile name, path, or @registry/name
+        config: SparkrunConfig instance
+        registry_manager: Optional RegistryManager for registry search
+        include_hidden: If True, include hidden registries
+
+    Returns:
+        Path to the profile YAML file.
+
+    Raises:
+        ProfileError: If profile not found.
+        ProfileAmbiguousError: If bare name matches multiple registries.
+    """
+    # Parse @registry/ prefix
+    scoped_registry = None
+    lookup_name = name
+    if name.startswith("@") and "/" in name:
+        prefix, lookup_name = name.split("/", 1)
+        scoped_registry = prefix[1:]  # strip @
+
+    # 1. Direct file path
+    if "/" in name and not name.startswith("@"):
+        direct = Path(name)
+        if direct.exists():
+            return direct
+        # Try with extension
+        for ext in (".yaml", ".yml"):
+            candidate = Path(name + ext)
+            if candidate.exists():
+                return candidate
+        raise ProfileError("Benchmark profile file not found: %s" % name)
+
+    # 2. Scoped registry lookup
+    if scoped_registry and registry_manager:
+        matches = registry_manager.find_benchmark_profile_in_registries(
+            lookup_name, include_hidden=True,
+        )
+        scoped_matches = [(reg, path) for reg, path in matches if reg == scoped_registry]
+        if scoped_matches:
+            return scoped_matches[0][1]
+        raise ProfileError(
+            "Benchmark profile '%s' not found in registry '%s'" % (lookup_name, scoped_registry)
+        )
+
+    # 3. Local benchmarking directory
+    local_dir = config.config_path.parent / "benchmarking"
+    if local_dir.is_dir():
+        for ext in (".yaml", ".yml"):
+            candidate = local_dir / (lookup_name + ext)
+            if candidate.exists():
+                return candidate
+
+    # 4. Registry search with ambiguity detection
+    if registry_manager:
+        matches = registry_manager.find_benchmark_profile_in_registries(
+            lookup_name, include_hidden=include_hidden,
+        )
+        if len(matches) == 1:
+            return matches[0][1]
+        elif len(matches) > 1:
+            raise ProfileAmbiguousError(lookup_name, matches)
+
+    raise ProfileError("Benchmark profile '%s' not found" % lookup_name)
+
+
 def list_recipes(search_paths: list[Path] | None = None,
-                 registry_manager: RegistryManager | None = None) -> list[dict[str, str]]:
+                 registry_manager: RegistryManager | None = None,
+                 include_hidden: bool = False,
+                 local_files: list[Path] | None = None) -> list[dict[str, str]]:
     """List all available recipes with name and path."""
     recipes = []
     seen_names: set[str] = set()
+
+    # Process CWD-discovered local files first (no registry label)
+    for f in (local_files or []):
+        stem = f.stem
+        if stem in seen_names:
+            continue
+        seen_names.add(stem)
+        try:
+            data = read_yaml(str(f))
+            entry = {
+                "name": data.get("name", stem) if isinstance(data, dict) else stem,
+                "file": stem,
+                "path": str(f),
+                "runtime": resolve_runtime(data) if isinstance(data, dict) else "unknown",
+            }
+            if isinstance(data, dict):
+                entry["min_nodes"] = data.get("min_nodes", '1')
+                defaults = data.get("defaults", {})
+                if isinstance(defaults, dict):
+                    entry["tp"] = defaults.get("tensor_parallel", "")
+                    entry["gpu_mem"] = defaults.get("gpu_memory_utilization", "")
+            recipes.append(entry)
+        except Exception:
+            logger.debug("Skipping invalid local recipe file: %s", f)
 
     all_paths = list(search_paths or [])
 
     # Add registry paths if available
     if registry_manager:
-        all_paths.extend(registry_manager.get_recipe_paths())
+        all_paths.extend(registry_manager.get_recipe_paths(include_hidden=include_hidden))
 
     for search_dir in all_paths:
         if not search_dir.is_dir():

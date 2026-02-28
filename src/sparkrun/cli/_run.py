@@ -11,10 +11,13 @@ from ._common import (
     RECIPE_NAME,
     _apply_tp_trimming,
     _display_vram_estimate,
+    _expand_recipe_shortcut,
+    _is_recipe_url,
     _load_recipe,
     _parse_options,
     _resolve_hosts_or_exit,
     _setup_logging,
+    _simplify_recipe_ref,
     dry_run_option,
     host_options,
 )
@@ -32,14 +35,14 @@ logger = logging.getLogger(__name__)
 @click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--ray-port", type=int, default=46379, help="Ray GCS port (vLLM)")
-@click.option("--init-port", type=int, default=25000, help="SGLang distributed init port")
+@click.option("--init-port", type=int, default=25000, help="vllm/SGLang distributed init port")
 @click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node")
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port")
 # @click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
 @dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
-@click.option("--skip-ib", is_flag=True, help="Skip InfiniBand detection")
+@click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
@@ -47,7 +50,7 @@ logger = logging.getLogger(__name__)
 def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         gpu_mem, image, cache_dir, ray_port, init_port, dashboard, dashboard_port,
-        dry_run, foreground, no_follow, skip_ib, options, extra_args, config_path=None, setup=True,
+        dry_run, foreground, no_follow, no_sync_tuning, options, extra_args, config_path=None, setup=True,
 ):
     """Run an inference recipe.
 
@@ -75,6 +78,10 @@ def run(
 
     # Find and load recipe
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
+
+    # If recipe was loaded from a URL, simplify for display
+    _resolved_name = _expand_recipe_shortcut(recipe_name)
+    recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
 
     # Validate recipe
     issues = recipe.validate()
@@ -174,7 +181,8 @@ def run(
     if not dry_run:
         try:
             save_job_metadata(cluster_id, recipe, host_list,
-                              overrides=overrides, cache_dir=str(config.cache_dir))
+                              overrides=overrides, cache_dir=str(config.cache_dir),
+                              recipe_ref=recipe_ref)
         except Exception:
             logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
 
@@ -196,7 +204,7 @@ def run(
         nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
             container_image, recipe.model, host_list,
             effective_cache_dir,
-            config, dry_run, skip_ib,
+            config, dry_run,
             model_revision=recipe.model_revision,
             recipe_name=recipe.name,
         )
@@ -205,9 +213,23 @@ def run(
             try:
                 save_job_metadata(cluster_id, recipe, host_list,
                                   overrides=overrides, cache_dir=str(config.cache_dir),
-                                  ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map)
+                                  ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map,
+                                  recipe_ref=recipe_ref)
             except Exception:
                 logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
+
+    # Sync registry tuning configs (after distribution, before launch)
+    if not no_sync_tuning and not dry_run:
+        from sparkrun.tuning.sync import sync_registry_tuning
+        try:
+            synced = sync_registry_tuning(
+                _registry_mgr, recipe.runtime, dry_run=dry_run,
+                registry_name=recipe.source_registry,
+            )
+            if synced:
+                click.echo("Synced %d tuning config(s) from registries." % synced)
+        except Exception:
+            logger.debug("Failed to sync tuning configs", exc_info=True)
 
     # For GGUF models that were pre-synced, resolve the container-internal
     # cache path and inject it as the ``model`` override so the recipe
@@ -280,7 +302,6 @@ def run(
         config=config,
         dry_run=dry_run,
         detached=not foreground,
-        skip_ib_detect=nccl_env is not None or skip_ib,
         nccl_env=nccl_env,
         ib_ip_map=ib_ip_map,
         ray_port=ray_port,

@@ -13,8 +13,10 @@ from ._common import (
     dry_run_option,
     host_options,
 )
+from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
+from ._registry import registry, registry_list
 from ._run import run
 from ._setup import setup
 from ._stop_logs import logs_cmd, stop
@@ -40,6 +42,8 @@ main.add_command(setup)
 main.add_command(tune)
 main.add_command(cluster)
 main.add_command(recipe)
+main.add_command(registry)
+main.add_command(benchmark)
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +65,13 @@ def list_cmd(ctx, registry, runtime, query):
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--save", "save_path", default=None, type=click.Path(),
+              help="Save a copy of the recipe YAML to a file")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, tensor_parallel):
+def show(ctx, recipe_name, no_vram, tensor_parallel, save_path):
     """Show detailed recipe information (alias for 'recipe show')."""
-    ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram, tensor_parallel=tensor_parallel)
+    ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram,
+               tensor_parallel=tensor_parallel, save_path=save_path)
 
 
 @main.command("search")
@@ -85,3 +92,10 @@ def status(ctx, hosts, hosts_file, cluster_name, dry_run):
     """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
     ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file,
                cluster_name=cluster_name, dry_run=dry_run)
+
+# @main.command("registries")
+# @click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registries")
+# @click.pass_context
+# def registries_cmd(ctx, show_all):
+#     """List configured recipe registries (alias for 'registry list')."""
+#     ctx.invoke(registry_list, show_all=show_all)

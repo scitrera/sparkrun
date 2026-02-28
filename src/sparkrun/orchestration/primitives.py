@@ -218,39 +218,33 @@ def detect_infiniband_local(
 
 def resolve_nccl_env(
         nccl_env: dict[str, str] | None,
-        skip_ib_detect: bool,
         hosts: list[str],
         head_host: str | None = None,
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
 ) -> dict[str, str]:
-    """Resolve NCCL environment: reuse pre-detected, detect, or skip.
+    """Resolve NCCL environment: reuse pre-detected or detect.
 
-    Encapsulates the common 3-branch IB detection pattern used by
-    cluster launch methods.
+    Encapsulates the common IB detection pattern used by cluster launch methods.
 
     Args:
         nccl_env: Pre-detected NCCL env, or ``None`` to trigger detection.
-        skip_ib_detect: If True and *nccl_env* is None, skip detection.
         hosts: Hosts to probe for InfiniBand.
         head_host: Which host's IB config to use (defaults to hosts[0]).
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
 
     Returns:
-        Dict of NCCL environment variables (empty if no IB found or skipped).
+        Dict of NCCL environment variables (empty if no IB found).
     """
     if nccl_env is not None:
         logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
         return nccl_env
-    if not skip_ib_detect:
-        logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
-        return detect_infiniband(
-            hosts, head_host=head_host,
-            ssh_kwargs=ssh_kwargs, dry_run=dry_run,
-        )
-    logger.info("Skipping InfiniBand detection")
-    return {}
+    logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
+    return detect_infiniband(
+        hosts, head_host=head_host,
+        ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,8 @@ from sparkrun.tuning._common import (
 # ---------------------------------------------------------------------------
 
 TUNING_CACHE_SUBDIR = "tuning/sglang"
-TUNING_CONTAINER_PATH = "/root/sglang_tuning_configs"
+TUNING_CONTAINER_PATH = "/root/sglang_tuning_configs/configs"
+TUNING_ENV_PATH = "/root/sglang_tuning_configs"
 TUNING_CONTAINER_OUTPUT_PATH = "/tuning_output"
 
 TUNE_CONTAINER_NAME = "sparkrun_tune"
@@ -57,12 +58,16 @@ def get_sglang_tuning_volumes() -> dict[str, str] | None:
 def get_sglang_tuning_env() -> dict[str, str] | None:
     """Return env vars for tuning configs if they exist.
 
+    The env var points to the *parent* of the mount target so that
+    SGLang's internal ``$SGLANG_MOE_CONFIG_DIR/configs/triton_X_Y_Z/``
+    lookup resolves correctly.
+
     Returns:
         Dict with ``SGLANG_MOE_CONFIG_DIR`` set, or ``None`` if no
         tuning configs are available.
     """
     return _get_tuning_env(
-        get_sglang_tuning_volumes, "SGLANG_MOE_CONFIG_DIR", TUNING_CONTAINER_PATH,
+        get_sglang_tuning_volumes, "SGLANG_MOE_CONFIG_DIR", TUNING_ENV_PATH,
     )
 
 
@@ -92,6 +97,58 @@ class SglangTuner(BaseTuner):
 
     def _default_output_dir(self) -> Path:
         return get_sglang_tuning_dir()
+
+    def _pre_check_tp(self, tp_size: int, triton_version: str) -> bool:
+        """Check if SGLang tuning configs already exist for this TP size.
+
+        Runs a lightweight script inside the container that loads the model
+        config to determine MoE shape params (E, N), then checks whether
+        matching config files already exist in the output directory.
+
+        Returns ``True`` if configs exist (skip tuning), ``False`` otherwise.
+        On any error, returns ``False`` (safe default — tune anyway).
+        """
+        import logging
+        from sparkrun.orchestration.primitives import run_command_on_host
+        from sparkrun.orchestration.docker import docker_exec_cmd
+
+        logger = logging.getLogger(__name__)
+
+        if self.dry_run:
+            return False
+
+        # Build the versioned output directory path (same logic as build_tuning_command)
+        config_dir = TUNING_CONTAINER_OUTPUT_PATH
+        if triton_version and triton_version != "unknown":
+            versioned = "triton_%s" % triton_version.replace(".", "_")
+            output_dir = "%s/%s" % (config_dir, versioned)
+        else:
+            output_dir = config_dir
+
+        check_script = (
+            "python3 -c \""
+            "import sys, os, glob; "
+            "from transformers import AutoConfig; "
+            "c = AutoConfig.from_pretrained('%s', trust_remote_code=True); "
+            "E = getattr(c, 'num_local_experts', getattr(c, 'num_experts', 0)); "
+            "I = getattr(c, 'intermediate_size', getattr(c, 'moe_intermediate_size', 0)); "
+            "N = (I * 2) // %d; "
+            "pattern = os.path.join('%s', 'E=%%d,N=%%d,*' %% (E, N)); "
+            "matches = glob.glob(pattern); "
+            "sys.exit(0 if matches else 1)"
+            "\""
+        ) % (self.model, tp_size, output_dir)
+
+        exec_cmd = docker_exec_cmd(self.container_name, check_script)
+        try:
+            result = run_command_on_host(
+                self.host, exec_cmd,
+                ssh_kwargs=self.ssh_kwargs, timeout=60, dry_run=False,
+            )
+            return result.success
+        except Exception:
+            logger.debug("Pre-check failed for TP=%d, will proceed with tuning", tp_size)
+            return False
 
     def _run_tune_for_tp(self, tp_size: int, triton_version: str) -> int:
         """Step 4 (per-TP): Run the tuning script for a given TP size."""
@@ -161,9 +218,9 @@ def build_tuning_command(model: str, tp_size: int, triton_version: str | None = 
     # to CWD, so we cd into this directory before running the script.
     if triton_version and triton_version != "unknown":
         versioned = "triton_%s" % triton_version.replace(".", "_")
-        output_subdir = "%s/configs/%s" % (config_dir, versioned)
+        output_subdir = "%s/%s" % (config_dir, versioned)
     else:
-        output_subdir = "%s/configs" % config_dir
+        output_subdir = config_dir
     return (
         "mkdir -p %s && "
         "cd %s && "

@@ -113,6 +113,39 @@ class TestShowCommand:
         assert result.exit_code != 0
         assert "Error" in result.output
 
+    def test_show_save_copies_recipe(self, runner, tmp_path):
+        """Test that --save copies the recipe YAML to the given path."""
+        dest = tmp_path / "saved-recipe.yaml"
+        result = runner.invoke(main, [
+            "show", "qwen3-coder-next-fp8-sglang-cluster",
+            "--save", str(dest),
+        ])
+        assert result.exit_code == 0
+        assert "Recipe saved to" in result.output
+        assert dest.exists()
+        # Verify it's valid YAML with expected fields
+        import yaml
+        data = yaml.safe_load(dest.read_text())
+        assert "model" in data
+        assert "runtime" in data
+
+    def test_show_save_via_recipe_subcommand(self, runner, tmp_path):
+        """Test that recipe show --save also works."""
+        dest = tmp_path / "saved.yaml"
+        result = runner.invoke(main, [
+            "recipe", "show", "qwen3-coder-next-fp8-sglang-cluster",
+            "--save", str(dest),
+        ])
+        assert result.exit_code == 0
+        assert "Recipe saved to" in result.output
+        assert dest.exists()
+
+    def test_show_help_includes_save(self, runner):
+        """Test that sparkrun show --help shows --save option."""
+        result = runner.invoke(main, ["show", "--help"])
+        assert result.exit_code == 0
+        assert "--save" in result.output
+
 
 class TestVramCommand:
     """Test the vram command."""
@@ -1589,3 +1622,177 @@ class TestLogCommand:
 
         assert result.exit_code != 0
         assert "Error" in result.output
+
+
+class TestUrlRecipe:
+    """Test URL recipe detection and loading."""
+
+    def test_is_recipe_url_https(self):
+        from sparkrun.cli._common import _is_recipe_url
+
+        assert _is_recipe_url("https://spark-arena.com/api/recipes/abc/raw")
+
+    def test_is_recipe_url_http(self):
+        from sparkrun.cli._common import _is_recipe_url
+
+        assert _is_recipe_url("http://example.com/recipe.yaml")
+
+    def test_is_recipe_url_not_url(self):
+        from sparkrun.cli._common import _is_recipe_url
+
+        assert not _is_recipe_url("qwen3-1.7b-vllm")
+        assert not _is_recipe_url("./my-recipe.yaml")
+        assert not _is_recipe_url("@registry/recipe-name")
+
+    def test_expand_spark_arena_shortcut(self):
+        from sparkrun.cli._common import _expand_recipe_shortcut
+
+        result = _expand_recipe_shortcut(
+            "@spark-arena/076136cd-260a-4e77-b6e2-309d8f64619b"
+        )
+        assert result == (
+            "https://spark-arena.com/api/recipes/"
+            "076136cd-260a-4e77-b6e2-309d8f64619b/raw"
+        )
+
+    def test_expand_non_shortcut_unchanged(self):
+        from sparkrun.cli._common import _expand_recipe_shortcut
+
+        assert _expand_recipe_shortcut("qwen3-1.7b-vllm") == "qwen3-1.7b-vllm"
+        assert _expand_recipe_shortcut("@other-registry/foo") == "@other-registry/foo"
+        assert (
+            _expand_recipe_shortcut("https://example.com/r.yaml")
+            == "https://example.com/r.yaml"
+        )
+
+    def test_simplify_spark_arena_url(self):
+        from sparkrun.cli._common import _simplify_recipe_ref
+
+        url = (
+            "https://spark-arena.com/api/recipes/"
+            "076136cd-260a-4e77-b6e2-309d8f64619b/raw"
+        )
+        assert _simplify_recipe_ref(url) == (
+            "@spark-arena/076136cd-260a-4e77-b6e2-309d8f64619b"
+        )
+
+    def test_simplify_non_spark_arena_unchanged(self):
+        from sparkrun.cli._common import _simplify_recipe_ref
+
+        url = "https://example.com/recipe.yaml"
+        assert _simplify_recipe_ref(url) == url
+
+    def test_simplify_roundtrip(self):
+        """expand then simplify gives back the original shortcut."""
+        from sparkrun.cli._common import _expand_recipe_shortcut, _simplify_recipe_ref
+
+        shortcut = "@spark-arena/abc-123"
+        url = _expand_recipe_shortcut(shortcut)
+        assert _simplify_recipe_ref(url) == shortcut
+
+    def test_format_job_commands_uses_recipe_ref(self):
+        """format_job_commands prefers recipe_ref over recipe name."""
+        from sparkrun.utils.cli_formatters import format_job_commands
+
+        meta = {
+            "recipe": "my-model-sglang",
+            "recipe_ref": "@spark-arena/abc-123",
+            "hosts": ["10.0.0.1"],
+        }
+        logs_cmd, stop_cmd = format_job_commands(meta)
+        assert "@spark-arena/abc-123" in logs_cmd
+        assert "@spark-arena/abc-123" in stop_cmd
+
+    def test_format_job_commands_falls_back_to_recipe(self):
+        """format_job_commands uses recipe name when no recipe_ref."""
+        from sparkrun.utils.cli_formatters import format_job_commands
+
+        meta = {"recipe": "my-model-sglang", "hosts": ["10.0.0.1"]}
+        logs_cmd, stop_cmd = format_job_commands(meta)
+        assert "my-model-sglang" in logs_cmd
+
+    def test_url_cache_path_deterministic(self):
+        from sparkrun.cli._common import _url_cache_path
+
+        url = "https://spark-arena.com/api/recipes/abc/raw"
+        p1 = _url_cache_path(url)
+        p2 = _url_cache_path(url)
+        assert p1 == p2
+        assert p1.suffix == ".yaml"
+        assert "remote-recipes" in str(p1)
+
+    def test_url_cache_path_different_urls(self):
+        from sparkrun.cli._common import _url_cache_path
+
+        p1 = _url_cache_path("https://example.com/a")
+        p2 = _url_cache_path("https://example.com/b")
+        assert p1 != p2
+
+    def test_fetch_and_cache_recipe_success(self, tmp_path, monkeypatch):
+        """Successful fetch writes cache file."""
+        from sparkrun.cli._common import _fetch_and_cache_recipe
+
+        import sparkrun.config
+
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        recipe_yaml = b"model: test-model\nruntime: sglang\ncontainer: test:latest\n"
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = recipe_yaml
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            path = _fetch_and_cache_recipe("https://example.com/recipe")
+
+        assert path.exists()
+        assert path.read_bytes() == recipe_yaml
+
+    def test_fetch_and_cache_recipe_network_error_with_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """Network failure with existing cache returns cached copy."""
+        from sparkrun.cli._common import _fetch_and_cache_recipe, _url_cache_path
+
+        import sparkrun.config
+
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        url = "https://example.com/recipe"
+        cache_path = _url_cache_path(url)
+        cache_path.parent.mkdir(parents=True)
+        cache_path.write_text("model: cached\nruntime: sglang\n")
+
+        from unittest.mock import patch
+
+        from urllib.error import URLError
+
+        with patch(
+            "urllib.request.urlopen", side_effect=URLError("offline")
+        ):
+            path = _fetch_and_cache_recipe(url)
+        assert path == cache_path
+
+    def test_fetch_and_cache_recipe_network_error_no_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """Network failure with no cache raises ClickException."""
+        from sparkrun.cli._common import _fetch_and_cache_recipe
+
+        import sparkrun.config
+
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        from unittest.mock import patch
+
+        from urllib.error import URLError
+
+        import click
+
+        with patch(
+            "urllib.request.urlopen", side_effect=URLError("offline")
+        ):
+            with pytest.raises(click.ClickException, match="Failed to fetch"):
+                _fetch_and_cache_recipe("https://example.com/recipe")

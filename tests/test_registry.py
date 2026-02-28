@@ -9,10 +9,13 @@ import pytest
 import yaml
 
 from sparkrun.registry import (
-    DEFAULT_REGISTRIES,
+    FALLBACK_DEFAULT_REGISTRIES,
+    RESERVED_NAME_PREFIXES,
+    RESERVED_PREFIX_ALLOWED_ORGS,
     RegistryEntry,
     RegistryError,
     RegistryManager,
+    validate_registry_name,
 )
 
 
@@ -28,9 +31,14 @@ def reg_dirs(tmp_path: Path):
 
 @pytest.fixture
 def mgr(reg_dirs):
-    """Create a RegistryManager with temp dirs."""
+    """Create a RegistryManager with temp dirs.
+
+    Manifest discovery is disabled to avoid real git clones during tests.
+    """
     config, cache = reg_dirs
-    return RegistryManager(config, cache)
+    m = RegistryManager(config, cache)
+    m._manifest_discovery_attempted = True  # skip network calls in tests
+    return m
 
 
 @pytest.fixture
@@ -49,6 +57,7 @@ def populated_cache(reg_dirs, sample_entry) -> tuple[RegistryManager, Path]:
     """Create a RegistryManager with a fake cached registry containing recipe files."""
     config, cache = reg_dirs
     mgr = RegistryManager(config, cache)
+    mgr._manifest_discovery_attempted = True  # skip network calls in tests
 
     # Save the sample registry to config
     mgr._save_registries([sample_entry])
@@ -110,32 +119,44 @@ class TestRegistryEntry:
 
 
 class TestDefaultRegistries:
-    """Test DEFAULT_REGISTRIES."""
+    """Test FALLBACK_DEFAULT_REGISTRIES."""
+
+    def test_has_testing_registry(self):
+        """Test that FALLBACK_DEFAULT_REGISTRIES includes the sparkrun-testing registry."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 1
+        testing = FALLBACK_DEFAULT_REGISTRIES[0]
+        assert testing.name == "sparkrun-testing"
+        assert "github.com/dbotwinick/sparkrun-recipe-registry" in testing.url
+        assert testing.enabled is True
 
     def test_has_official_registry(self):
-        """Test that DEFAULT_REGISTRIES includes the sparkrun-official registry."""
-        assert len(DEFAULT_REGISTRIES) >= 1
-        official = DEFAULT_REGISTRIES[0]
-        assert official.name == "sparkrun-official"
-        assert "github.com/scitrera/oss-spark-run" in official.url
+        """Test that FALLBACK_DEFAULT_REGISTRIES includes the official registry."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 2
+        official = FALLBACK_DEFAULT_REGISTRIES[1]
+        assert official.name == "official"
+        assert "github.com/spark-arena/recipe-registry" in official.url
+        assert official.subpath == "official-recipes"
         assert official.enabled is True
+        assert official.visible is True
 
-    def test_has_eugr_vllm_registry(self):
-        """Test that DEFAULT_REGISTRIES includes the eugr-vllm registry."""
-        assert len(DEFAULT_REGISTRIES) >= 2
-        eugr = DEFAULT_REGISTRIES[1]
-        assert eugr.name == "eugr-vllm"
-        assert "github.com/eugr/spark-vllm-docker" in eugr.url
-        assert eugr.enabled is True
+    def test_has_experimental_registry(self):
+        """Test that FALLBACK_DEFAULT_REGISTRIES includes the experimental registry."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 3
+        experimental = FALLBACK_DEFAULT_REGISTRIES[2]
+        assert experimental.name == "experimental"
+        assert "github.com/spark-arena/recipe-registry" in experimental.url
+        assert experimental.subpath == "experimental-recipes"
+        assert experimental.enabled is True
+        assert experimental.visible is False
 
-    def test_only_two_default_registries(self):
-        """Test that there are exactly two default registries."""
-        assert len(DEFAULT_REGISTRIES) == 2
+    def test_three_default_registries(self):
+        """Test that there are exactly three default registries."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) == 3
 
-    def test_official_registry_subpath(self):
-        """Test the sparkrun-official registry subpath."""
-        official = DEFAULT_REGISTRIES[0]
-        assert official.subpath == "recipes"
+    def test_testing_registry_subpath(self):
+        """Test the sparkrun-testing registry subpath."""
+        testing = FALLBACK_DEFAULT_REGISTRIES[0]
+        assert testing.subpath == "testing/recipes"
 
 
 class TestRegistryManagerInit:
@@ -165,8 +186,8 @@ class TestRegistryCRUD:
     def test_list_defaults_when_no_config(self, mgr):
         """Test that list_registries returns defaults when no config file exists."""
         registries = mgr.list_registries()
-        assert len(registries) == len(DEFAULT_REGISTRIES)
-        assert registries[0].name == "sparkrun-official"
+        assert len(registries) == len(FALLBACK_DEFAULT_REGISTRIES)
+        assert registries[0].name == FALLBACK_DEFAULT_REGISTRIES[0].name
 
     def test_add_registry(self, mgr, sample_entry):
         """Test adding a new registry."""
@@ -499,3 +520,579 @@ class TestRecipeDiscovery:
         assert registry_name == "nested-registry"
         assert path.name == "qwen3-1.7b-vllm.yaml"
         assert "qwen3" in str(path)  # Verify it's in the subdirectory
+
+
+class TestRegistryEntryNewFields:
+    """Test new RegistryEntry fields."""
+
+    def test_visible_default_true(self):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="recipes")
+        assert entry.visible is True
+
+    def test_visible_can_be_false(self):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="recipes", visible=False)
+        assert entry.visible is False
+
+    def test_tuning_subpath_default_empty(self):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="recipes")
+        assert entry.tuning_subpath == ""
+
+    def test_benchmark_subpath_default_empty(self):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="recipes")
+        assert entry.benchmark_subpath == ""
+
+    def test_all_new_fields(self):
+        entry = RegistryEntry(
+            name="test", url="https://example.com", subpath="recipes",
+            visible=False, tuning_subpath="tuning", benchmark_subpath="benchmarks",
+        )
+        assert entry.visible is False
+        assert entry.tuning_subpath == "tuning"
+        assert entry.benchmark_subpath == "benchmarks"
+
+
+class TestRegistrySaveLoadNewFields:
+    """Test serialization of new fields."""
+
+    def test_save_omits_default_visible(self, mgr):
+        """visible=True should be omitted from YAML."""
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="r")
+        mgr._save_registries([entry])
+        import yaml
+        data = yaml.safe_load(mgr._registries_path.read_text())
+        assert "visible" not in data["registries"][0]
+
+    def test_save_includes_visible_false(self, mgr):
+        """visible=False should be saved."""
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="r", visible=False)
+        mgr._save_registries([entry])
+        import yaml
+        data = yaml.safe_load(mgr._registries_path.read_text())
+        assert data["registries"][0]["visible"] is False
+
+    def test_save_omits_empty_tuning_subpath(self, mgr):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="r")
+        mgr._save_registries([entry])
+        import yaml
+        data = yaml.safe_load(mgr._registries_path.read_text())
+        assert "tuning_subpath" not in data["registries"][0]
+
+    def test_save_includes_tuning_subpath(self, mgr):
+        entry = RegistryEntry(name="test", url="https://example.com", subpath="r", tuning_subpath="tuning")
+        mgr._save_registries([entry])
+        import yaml
+        data = yaml.safe_load(mgr._registries_path.read_text())
+        assert data["registries"][0]["tuning_subpath"] == "tuning"
+
+    def test_roundtrip_new_fields(self, mgr):
+        entry = RegistryEntry(
+            name="test", url="https://example.com", subpath="r",
+            visible=False, tuning_subpath="t", benchmark_subpath="b",
+        )
+        mgr._save_registries([entry])
+        loaded = mgr._load_registries()
+        assert loaded[0].visible is False
+        assert loaded[0].tuning_subpath == "t"
+        assert loaded[0].benchmark_subpath == "b"
+
+    def test_load_missing_visible_defaults_true(self, mgr):
+        """Old YAML without visible field should default to True."""
+        import yaml
+        data = {"registries": [{"name": "old", "url": "https://example.com", "subpath": "r"}]}
+        mgr._registries_path.write_text(yaml.dump(data))
+        loaded = mgr._load_registries()
+        assert loaded[0].visible is True
+
+
+class TestEnableDisableRegistry:
+    """Test enable/disable methods."""
+
+    def test_disable_registry(self, mgr, sample_entry):
+        mgr.add_registry(sample_entry)
+        mgr.disable_registry(sample_entry.name)
+        reg = mgr.get_registry(sample_entry.name)
+        assert reg.enabled is False
+
+    def test_enable_registry(self, mgr, sample_entry):
+        mgr.add_registry(sample_entry)
+        mgr.disable_registry(sample_entry.name)
+        mgr.enable_registry(sample_entry.name)
+        reg = mgr.get_registry(sample_entry.name)
+        assert reg.enabled is True
+
+    def test_enable_nonexistent_raises(self, mgr):
+        with pytest.raises(RegistryError, match="not found"):
+            mgr.enable_registry("nonexistent")
+
+    def test_disable_nonexistent_raises(self, mgr):
+        with pytest.raises(RegistryError, match="not found"):
+            mgr.disable_registry("nonexistent")
+
+
+class TestVisibilityFiltering:
+    """Test visibility filtering in recipe discovery."""
+
+    def test_get_recipe_paths_excludes_hidden(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden", url="https://example.com", subpath="recipes", visible=False,
+        )
+        visible = RegistryEntry(
+            name="visible", url="https://example.com/2", subpath="recipes", visible=True,
+        )
+        mgr._save_registries([hidden, visible])
+
+        # Create cache dirs for both
+        for entry in [hidden, visible]:
+            recipe_dir = cache / entry.name / entry.subpath
+            recipe_dir.mkdir(parents=True)
+            (cache / entry.name / ".git").mkdir(exist_ok=True)
+
+        paths = mgr.get_recipe_paths(include_hidden=False)
+        path_strs = [str(p) for p in paths]
+        assert any("visible" in s for s in path_strs)
+        assert not any("hidden" in s and "visible" not in s for s in path_strs)
+
+    def test_get_recipe_paths_includes_hidden_when_requested(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden-reg", url="https://example.com", subpath="recipes", visible=False,
+        )
+        mgr._save_registries([hidden])
+        recipe_dir = cache / "hidden-reg" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "hidden-reg" / ".git").mkdir(exist_ok=True)
+
+        paths = mgr.get_recipe_paths(include_hidden=True)
+        assert len(paths) == 1
+
+    def test_search_recipes_excludes_hidden(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden-search", url="https://example.com", subpath="recipes", visible=False,
+        )
+        mgr._save_registries([hidden])
+
+        recipe_dir = cache / "hidden-search" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "hidden-search" / ".git").mkdir(exist_ok=True)
+        import yaml
+        with open(recipe_dir / "my-recipe.yaml", "w") as f:
+            yaml.dump({"name": "Hidden Recipe", "model": "test-model", "runtime": "vllm"}, f)
+
+        results = mgr.search_recipes("test-model", include_hidden=False)
+        assert len(results) == 0
+
+    def test_search_recipes_includes_hidden_when_requested(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden-search2", url="https://example.com", subpath="recipes", visible=False,
+        )
+        mgr._save_registries([hidden])
+
+        recipe_dir = cache / "hidden-search2" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "hidden-search2" / ".git").mkdir(exist_ok=True)
+        import yaml
+        with open(recipe_dir / "my-recipe2.yaml", "w") as f:
+            yaml.dump({"name": "Hidden Recipe 2", "model": "test-model-2", "runtime": "vllm"}, f)
+
+        results = mgr.search_recipes("test-model-2", include_hidden=True)
+        assert len(results) == 1
+
+    def test_find_recipe_excludes_hidden(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden-find", url="https://example.com", subpath="recipes", visible=False,
+        )
+        mgr._save_registries([hidden])
+
+        recipe_dir = cache / "hidden-find" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "hidden-find" / ".git").mkdir(exist_ok=True)
+        import yaml
+        with open(recipe_dir / "find-me.yaml", "w") as f:
+            yaml.dump({"name": "Find Me", "model": "test"}, f)
+
+        matches = mgr.find_recipe_in_registries("find-me", include_hidden=False)
+        assert len(matches) == 0
+
+    def test_find_recipe_includes_hidden_when_requested(self, reg_dirs):
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        hidden = RegistryEntry(
+            name="hidden-find2", url="https://example.com", subpath="recipes", visible=False,
+        )
+        mgr._save_registries([hidden])
+
+        recipe_dir = cache / "hidden-find2" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "hidden-find2" / ".git").mkdir(exist_ok=True)
+        import yaml
+        with open(recipe_dir / "find-me2.yaml", "w") as f:
+            yaml.dump({"name": "Find Me 2", "model": "test"}, f)
+
+        matches = mgr.find_recipe_in_registries("find-me2", include_hidden=True)
+        assert len(matches) == 1
+
+
+class TestDefaultRegistriesNewFields:
+    """Test new fields on FALLBACK_DEFAULT_REGISTRIES."""
+
+    def test_testing_has_tuning_subpath(self):
+        testing = FALLBACK_DEFAULT_REGISTRIES[0]
+        assert testing.tuning_subpath == "testing/tuning"
+
+    def test_testing_has_benchmark_subpath(self):
+        testing = FALLBACK_DEFAULT_REGISTRIES[0]
+        assert testing.benchmark_subpath == "testing/benchmarking"
+
+    def test_official_is_visible(self):
+        official = FALLBACK_DEFAULT_REGISTRIES[1]
+        assert official.visible is True
+
+    def test_official_name(self):
+        official = FALLBACK_DEFAULT_REGISTRIES[1]
+        assert official.name == "official"
+
+    def test_experimental_is_hidden(self):
+        experimental = FALLBACK_DEFAULT_REGISTRIES[2]
+        assert experimental.visible is False
+
+
+class TestSharedClone:
+    """Test shared clone optimization."""
+
+    def test_clone_dir_for_url_deterministic(self, mgr):
+        url = "https://github.com/example/repo"
+        d1 = mgr._clone_dir_for_url(url)
+        d2 = mgr._clone_dir_for_url(url)
+        assert d1 == d2
+
+    def test_clone_dir_for_url_different_urls(self, mgr):
+        d1 = mgr._clone_dir_for_url("https://github.com/a/b")
+        d2 = mgr._clone_dir_for_url("https://github.com/c/d")
+        assert d1 != d2
+
+    def test_sparse_checkout_paths_for_url(self, mgr):
+        entries = [
+            RegistryEntry(name="r1", url="https://example.com", subpath="recipes", tuning_subpath="tuning"),
+            RegistryEntry(name="r2", url="https://example.com", subpath="experimental", benchmark_subpath="bench"),
+        ]
+        mgr._save_registries(entries)
+        paths = mgr._sparse_checkout_paths_for_url("https://example.com")
+        assert ".sparkrun" in paths
+        assert "recipes" in paths
+        assert "experimental" in paths
+        assert "tuning" in paths
+        assert "bench" in paths
+
+    def test_sparse_checkout_paths_ignores_other_urls(self, mgr):
+        entries = [
+            RegistryEntry(name="r1", url="https://example.com", subpath="recipes"),
+            RegistryEntry(name="r2", url="https://other.com", subpath="other"),
+        ]
+        mgr._save_registries(entries)
+        paths = mgr._sparse_checkout_paths_for_url("https://example.com")
+        assert "recipes" in paths
+        assert "other" not in paths
+
+    def test_link_registry_to_shared(self, mgr, sample_entry):
+        """Test that _link_registry_to_shared creates a symlink."""
+        # Create the shared dir
+        shared = mgr._clone_dir_for_url(sample_entry.url)
+        shared.mkdir(parents=True)
+        (shared / sample_entry.subpath).mkdir(parents=True)
+
+        mgr._link_registry_to_shared(sample_entry)
+
+        per_reg = mgr._cache_dir(sample_entry.name)
+        assert per_reg.is_symlink()
+        assert per_reg.resolve() == shared.resolve()
+
+
+class TestManifestParsing:
+    """Test add_registry_from_url manifest discovery."""
+
+    def test_add_from_url_no_manifest_raises(self, mgr):
+        """Test that missing manifest raises RegistryError."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stderr="")
+            # The temp dir won't have a manifest
+            with pytest.raises(RegistryError, match="No .sparkrun/registry.yaml"):
+                mgr.add_registry_from_url("https://example.com/repo")
+
+    def test_add_from_url_clone_failure_raises(self, mgr):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=1, stderr="fatal: error")
+            with pytest.raises(RegistryError, match="Failed to clone"):
+                mgr.add_registry_from_url("https://example.com/repo")
+
+
+class TestDeprecatedRegistries:
+    """Test deprecated registry cleanup."""
+
+    def test_cleanup_no_deprecated(self, mgr, sample_entry):
+        # Save only the sample entry (no defaults whose URL might match DEPRECATED_REGISTRIES)
+        mgr._save_registries([sample_entry])
+        cleaned = mgr.cleanup_deprecated()
+        assert cleaned == []
+        # Entry should still exist
+        assert mgr.get_registry(sample_entry.name)
+
+    def test_cleanup_with_deprecated(self, mgr):
+        """Test cleanup matches on URL, not name."""
+        entry = RegistryEntry(name="old-reg", url="https://example.com/old/repo", subpath="r")
+        mgr.add_registry(entry)
+
+        # Temporarily patch DEPRECATED_REGISTRIES with a URL
+        from sparkrun import registry as reg_module
+        original = reg_module.DEPRECATED_REGISTRIES
+        try:
+            reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
+            cleaned = mgr.cleanup_deprecated()
+            assert "old-reg" in cleaned
+            with pytest.raises(RegistryError):
+                mgr.get_registry("old-reg")
+        finally:
+            reg_module.DEPRECATED_REGISTRIES = original
+
+    def test_cleanup_matches_url_with_git_suffix(self, mgr):
+        """Test that cleanup matches URLs regardless of .git suffix."""
+        entry = RegistryEntry(name="dotgit-reg", url="https://example.com/org/repo.git", subpath="r")
+        mgr.add_registry(entry)
+
+        from sparkrun import registry as reg_module
+        original = reg_module.DEPRECATED_REGISTRIES
+        try:
+            # Deprecated list has URL without .git, entry has .git
+            reg_module.DEPRECATED_REGISTRIES = ["https://example.com/org/repo"]
+            cleaned = mgr.cleanup_deprecated()
+            assert "dotgit-reg" in cleaned
+        finally:
+            reg_module.DEPRECATED_REGISTRIES = original
+
+    def test_cleanup_does_not_match_by_name(self, mgr):
+        """Test that cleanup does NOT match by registry name."""
+        entry = RegistryEntry(name="some-name", url="https://example.com/safe/repo", subpath="r")
+        mgr.add_registry(entry)
+
+        from sparkrun import registry as reg_module
+        original = reg_module.DEPRECATED_REGISTRIES
+        try:
+            # Put the name in DEPRECATED_REGISTRIES — should NOT match
+            reg_module.DEPRECATED_REGISTRIES = ["some-name"]
+            cleaned = mgr.cleanup_deprecated()
+            assert cleaned == []
+            # Entry should still exist
+            assert mgr.get_registry("some-name")
+        finally:
+            reg_module.DEPRECATED_REGISTRIES = original
+
+
+class TestReservedNamePrefixes:
+    """Test reserved registry name prefix enforcement."""
+
+    def test_non_reserved_name_allowed_from_any_url(self):
+        """Non-reserved names should pass regardless of URL."""
+        validate_registry_name("my-custom-recipes", "https://github.com/random-user/repo")
+
+    def test_reserved_prefix_allowed_org_scitrera(self):
+        """Reserved prefix from allowed org (scitrera) should pass."""
+        validate_registry_name("sparkrun-foo", "https://github.com/scitrera/some-repo")
+
+    def test_reserved_prefix_allowed_org_eugr(self):
+        """Reserved prefix from allowed org (eugr) should pass."""
+        validate_registry_name("sparkrun-custom", "https://github.com/eugr/some-repo")
+
+    def test_reserved_prefix_allowed_org_spark_arena(self):
+        """Reserved prefix from allowed org (spark-arena) should pass."""
+        validate_registry_name("arena-benchmarks", "https://github.com/spark-arena/bench")
+
+    def test_reserved_prefix_disallowed_org_raises(self):
+        """Reserved prefix from a non-allowed org should raise RegistryError."""
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            validate_registry_name("sparkrun-custom", "https://github.com/random-user/repo")
+
+    @pytest.mark.parametrize("prefix", RESERVED_NAME_PREFIXES)
+    def test_each_reserved_prefix_blocked(self, prefix):
+        """Each reserved prefix should be blocked for non-allowed orgs."""
+        name = prefix + "-something"
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            validate_registry_name(name, "https://github.com/random-user/repo")
+
+    @pytest.mark.parametrize("prefix", RESERVED_NAME_PREFIXES)
+    def test_each_reserved_prefix_allowed_for_scitrera(self, prefix):
+        """Each reserved prefix should be allowed for scitrera org."""
+        name = prefix + "-something"
+        validate_registry_name(name, "https://github.com/scitrera/repo")
+
+    def test_case_insensitive(self):
+        """Name matching should be case-insensitive."""
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            validate_registry_name("SparkRun-foo", "https://github.com/random-user/repo")
+
+    def test_case_insensitive_mixed(self):
+        """Mixed case names should still be caught."""
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            validate_registry_name("ARENA-benchmarks", "https://github.com/random-user/repo")
+
+    def test_non_github_url_with_reserved_prefix_rejected(self):
+        """Non-GitHub URLs with reserved prefixes should be rejected."""
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            validate_registry_name("sparkrun-evil", "https://gitlab.com/evil/repo")
+
+    def test_non_github_url_with_non_reserved_name_allowed(self):
+        """Non-GitHub URLs with non-reserved names should pass."""
+        validate_registry_name("my-recipes", "https://gitlab.com/someone/repo")
+
+    def test_github_url_with_git_suffix(self):
+        """GitHub URLs with .git suffix should still extract the org correctly."""
+        validate_registry_name("sparkrun-official", "https://github.com/scitrera/repo.git")
+
+    def test_exact_prefix_match_not_substring(self):
+        """Names that don't start with a prefix should not be blocked."""
+        # "my-sparkrun" does not start with "sparkrun"
+        validate_registry_name("my-sparkrun-recipes", "https://github.com/random-user/repo")
+
+    def test_add_registry_enforces_reserved_names(self, mgr):
+        """add_registry() should reject reserved names from non-allowed orgs."""
+        entry = RegistryEntry(
+            name="sparkrun-impersonator",
+            url="https://github.com/malicious-user/repo",
+            subpath="recipes",
+        )
+        with pytest.raises(RegistryError, match="reserved prefix"):
+            mgr.add_registry(entry)
+
+    def test_add_registry_allows_reserved_names_from_allowed_org(self, mgr):
+        """add_registry() should allow reserved names from allowed orgs."""
+        entry = RegistryEntry(
+            name="sparkrun-contrib",
+            url="https://github.com/scitrera/contrib-recipes",
+            subpath="recipes",
+        )
+        mgr.add_registry(entry)
+        assert mgr.get_registry("sparkrun-contrib").name == "sparkrun-contrib"
+
+
+class TestReservedNamePrefixesIntegrity:
+    """Regression tests for RESERVED_NAME_PREFIXES tuple integrity."""
+
+    def test_sparkrun_is_separate_entry(self):
+        """Guard against implicit string concatenation merging 'sparkrun' with the next entry."""
+        assert 'sparkrun' in RESERVED_NAME_PREFIXES
+
+    def test_official_is_separate_entry(self):
+        """Guard against implicit string concatenation merging 'official' with the previous entry."""
+        assert 'official' in RESERVED_NAME_PREFIXES
+
+    def test_no_concatenated_entries(self):
+        """No entry should contain a comma (sign of implicit string concatenation bug)."""
+        for prefix in RESERVED_NAME_PREFIXES:
+            assert ',' not in prefix, "Found comma in prefix %r — likely implicit string concatenation" % prefix
+
+
+class TestLoadRegistriesFiltersDeprecated:
+    """Test that _load_registries filters deprecated entries from config."""
+
+    def test_deprecated_entries_filtered_from_config(self, mgr):
+        """Entries whose URL matches DEPRECATED_REGISTRIES should be filtered out."""
+        entries = [
+            RegistryEntry(name="good-reg", url="https://example.com/good/repo", subpath="r"),
+            RegistryEntry(name="deprecated-reg", url="https://example.com/old/repo", subpath="r"),
+        ]
+        mgr._save_registries(entries)
+
+        from sparkrun import registry as reg_module
+        original = reg_module.DEPRECATED_REGISTRIES
+        try:
+            reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
+            loaded = mgr._load_registries()
+            names = [e.name for e in loaded]
+            assert "good-reg" in names
+            assert "deprecated-reg" not in names
+        finally:
+            reg_module.DEPRECATED_REGISTRIES = original
+
+    def test_non_deprecated_entries_preserved(self, mgr):
+        """Entries not in DEPRECATED_REGISTRIES should be loaded normally."""
+        entries = [
+            RegistryEntry(name="safe-reg", url="https://example.com/safe/repo", subpath="r"),
+        ]
+        mgr._save_registries(entries)
+
+        from sparkrun import registry as reg_module
+        original = reg_module.DEPRECATED_REGISTRIES
+        try:
+            reg_module.DEPRECATED_REGISTRIES = ["https://example.com/other/repo"]
+            loaded = mgr._load_registries()
+            assert len(loaded) == 1
+            assert loaded[0].name == "safe-reg"
+        finally:
+            reg_module.DEPRECATED_REGISTRIES = original
+
+
+class TestDefaultRegistriesFallback:
+    """Test _default_registries fallback behavior."""
+
+    def test_falls_back_to_hardcoded_on_manifest_failure(self, mgr):
+        """When manifest discovery fails, _default_registries returns hardcoded defaults."""
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=[]):
+            result = mgr._default_registries()
+        assert len(result) == len(FALLBACK_DEFAULT_REGISTRIES)
+        assert result[0].name == FALLBACK_DEFAULT_REGISTRIES[0].name
+
+    def test_returns_manifest_entries_on_success(self, mgr):
+        """When manifest discovery succeeds, _default_registries returns those entries."""
+        manifest_entries = [
+            RegistryEntry(name="from-manifest", url="https://example.com/m", subpath="r"),
+        ]
+        mgr._manifest_discovery_attempted = False  # allow discovery for this test
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=manifest_entries):
+            result = mgr._default_registries()
+        assert len(result) == 1
+        assert result[0].name == "from-manifest"
+
+    def test_init_manifests_returns_empty_on_clone_failure(self, mgr):
+        """_init_defaults_from_manifests returns [] when git clone fails."""
+        with mock.patch.object(mgr, "add_registry_from_url", side_effect=RegistryError("clone fail")):
+            result = mgr._init_defaults_from_manifests()
+        assert result == []
+
+
+class TestResetToDefaults:
+    """Test reset_to_defaults method."""
+
+    def test_deletes_config_and_returns_defaults(self, mgr, sample_entry):
+        """reset_to_defaults removes registries.yaml and returns fresh defaults."""
+        mgr._save_registries([sample_entry])
+        assert mgr._registries_path.exists()
+
+        entries = mgr.reset_to_defaults()
+        # Config file should be recreated with defaults
+        assert mgr._registries_path.exists()
+        names = [e.name for e in entries]
+        assert sample_entry.name not in names
+        assert len(entries) > 0
+
+    def test_works_when_no_config_exists(self, mgr):
+        """reset_to_defaults works even if registries.yaml doesn't exist."""
+        assert not mgr._registries_path.exists()
+        entries = mgr.reset_to_defaults()
+        assert len(entries) > 0
+        assert mgr._registries_path.exists()
+
+    def test_saves_defaults_to_file(self, mgr, sample_entry):
+        """After reset, the saved file contains the default entries."""
+        mgr._save_registries([sample_entry])
+        entries = mgr.reset_to_defaults()
+        # Load from file directly to verify persistence
+        loaded = mgr._load_registries_from_file()
+        assert len(loaded) == len(entries)
+        assert loaded[0].name == entries[0].name

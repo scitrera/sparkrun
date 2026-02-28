@@ -46,14 +46,14 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
               help="Override benchmark arg: -o key=value (repeatable)")
 @click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking")
 @click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)")
-@click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
+@click.option("--sync-tuning", is_flag=True, help="Sync tuning configs from registries before benchmarking")
 @click.option("--timeout", "bench_timeout", type=int, default=None,
               help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT)
 @dry_run_option
 @click.pass_context
 def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
               tensor_parallel, port, image, cache_dir, profile, framework,
-              output_file, options, no_stop, skip_run, no_sync_tuning,
+              output_file, options, no_stop, skip_run, sync_tuning,
               bench_timeout, dry_run):
     """Benchmark an inference recipe.
 
@@ -79,7 +79,7 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
     _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
         tensor_parallel, port, image, cache_dir, profile, framework,
-        output_file, options, no_stop, skip_run, no_sync_tuning,
+        output_file, options, no_stop, skip_run, sync_tuning,
         bench_timeout, dry_run,
     )
 
@@ -87,7 +87,7 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
 def _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
         tensor_parallel, port, image, cache_dir, profile, framework_name,
-        output_file, options, no_stop, skip_run, no_sync_tuning,
+        output_file, options, no_stop, skip_run, sync_tuning,
         bench_timeout, dry_run,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
@@ -305,7 +305,7 @@ def _run_benchmark(
             )
 
         # Sync registry tuning configs
-        if not no_sync_tuning and not dry_run:
+        if sync_tuning and not dry_run:
             from sparkrun.tuning.sync import sync_registry_tuning
             try:
                 synced = sync_registry_tuning(
@@ -348,7 +348,9 @@ def _run_benchmark(
             from sparkrun.orchestration.primitives import try_clear_page_cache
             try_clear_page_cache(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
-        # Launch
+        # Launch — pass skip_keys so native-cluster runtimes (sglang,
+        # vllm-distributed, llama-cpp) that regenerate the serve command
+        # internally also suppress served_model_name.
         rc = runtime.run(
             hosts=host_list,
             image=container_image,
@@ -363,6 +365,7 @@ def _run_benchmark(
             detached=True,
             nccl_env=nccl_env,
             ib_ip_map=ib_ip_map,
+            skip_keys={"served_model_name"},
         )
 
         if rc != 0 and not dry_run:
@@ -509,6 +512,14 @@ def _run_benchmark(
                 output_path=output_file,
             )
             click.echo("Results saved to: %s" % output_file)
+
+            # Write raw CSV alongside the YAML when available
+            csv_text = results.get("csv", "")
+            if csv_text and csv_text.strip():
+                from pathlib import Path
+                csv_path = Path(output_file).with_suffix(".csv")
+                csv_path.write_text(csv_text)
+                click.echo("CSV results saved to: %s" % csv_path)
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 

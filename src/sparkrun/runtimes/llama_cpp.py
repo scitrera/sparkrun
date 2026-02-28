@@ -143,9 +143,10 @@ class LlamaCppRuntime(RuntimePlugin):
 
     def _build_rpc_head_command(self, recipe: Recipe, config,
                                 worker_hosts: list[str],
-                                rpc_port: int) -> str:
+                                rpc_port: int,
+                                skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the llama-server head command with --rpc for worker nodes."""
-        base = self._build_command(recipe, config)
+        base = self._build_command(recipe, config, skip_keys=skip_keys)
         rpc_addrs = ",".join("%s:%d" % (h, rpc_port) for h in worker_hosts)
         return "%s --rpc %s" % (base, rpc_addrs)
 
@@ -222,6 +223,7 @@ class LlamaCppRuntime(RuntimePlugin):
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
             rpc_port: int = _DEFAULT_RPC_PORT,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
@@ -372,6 +374,7 @@ class LlamaCppRuntime(RuntimePlugin):
         config_chain = recipe.build_config_chain(overrides)
         head_command = self._build_rpc_head_command(
             recipe, config_chain, rpc_hosts, rpc_port,
+            skip_keys=skip_keys,
         )
         logger.info("Step 5/5: Launching llama-server on head %s...", head_host)
         logger.info("  Command: %s", head_command[:120])

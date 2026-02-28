@@ -44,6 +44,9 @@ def registry_list(ctx, show_disabled, only_show_visible, config_path=None):
     if only_show_visible:
         display_registries = [r for r in display_registries if r.visible]
 
+    # Sort: enabled first, then visible first, then by name
+    display_registries.sort(key=lambda r: (not r.enabled, not r.visible, r.name))
+
     if not display_registries:
         click.echo("No matching registries found.")
         return

@@ -65,6 +65,7 @@ class VllmDistributedRuntime(RuntimePlugin):
             num_nodes: int,
             node_rank: int,
             init_port: int = 25000,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the vllm serve command for a specific node.
 
@@ -78,9 +79,13 @@ class VllmDistributedRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            if skip_keys:
+                rendered = self.strip_flags_from_command(
+                    rendered, skip_keys, _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS,
+                )
             base = rendered
         else:
-            base = self._build_base_command(recipe, config)
+            base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
         # Append vLLM native multi-node arguments
         parts = [
@@ -194,6 +199,7 @@ class VllmDistributedRuntime(RuntimePlugin):
             detached: bool = True,
             nccl_env: dict[str, str] | None = None,
             init_port: int = 25000,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node vLLM cluster using native distribution.
@@ -278,6 +284,7 @@ class VllmDistributedRuntime(RuntimePlugin):
             recipe=recipe, overrides=overrides,
             head_ip=head_ip, num_nodes=num_nodes,
             node_rank=0, init_port=init_port,
+            skip_keys=skip_keys,
         )
         logger.info("Serve command (head, rank 0):")
         for line in head_command.strip().splitlines():
@@ -352,6 +359,7 @@ class VllmDistributedRuntime(RuntimePlugin):
                         recipe=recipe, overrides=overrides,
                         head_ip=head_ip, num_nodes=num_nodes,
                         node_rank=rank, init_port=init_port,
+                        skip_keys=skip_keys,
                     )
                     worker_container = generate_node_container_name(cluster_id, rank)
                     worker_script = self._generate_node_script(

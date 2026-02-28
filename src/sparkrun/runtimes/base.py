@@ -121,6 +121,7 @@ class RuntimePlugin(Plugin):
             num_nodes: int,
             node_rank: int,
             init_port: int = 25000,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the serve command for a specific node in native clustering.
 
@@ -133,6 +134,7 @@ class RuntimePlugin(Plugin):
             num_nodes: Total number of nodes.
             node_rank: This node's rank (0 = head).
             init_port: Coordination port for distributed init.
+            skip_keys: Config keys to omit from the generated command.
 
         Returns:
             The full command string for this node.
@@ -435,6 +437,7 @@ class RuntimePlugin(Plugin):
             detached: bool = True,
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
             **kwargs,
     ) -> int:
         """Launch a workload -- delegates to solo or cluster implementation.
@@ -459,6 +462,10 @@ class RuntimePlugin(Plugin):
                 IB addresses for inter-node communication (e.g. llama.cpp
                 RPC).  When ``None``, the runtime may detect IB IPs
                 itself if ``nccl_env`` is also ``None``.
+            skip_keys: Config keys to omit when the runtime regenerates
+                serve commands internally (e.g. native-cluster runtimes
+                that call ``generate_node_command()`` instead of using
+                the pre-built *serve_command*).
             **kwargs: Runtime-specific keyword arguments (e.g. ray_port,
                 dashboard_port, init_port, rpc_port).
 
@@ -492,6 +499,7 @@ class RuntimePlugin(Plugin):
             detached=detached,
             nccl_env=nccl_env,
             ib_ip_map=ib_ip_map,
+            skip_keys=skip_keys,
             **kwargs,
         )
 

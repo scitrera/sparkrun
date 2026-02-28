@@ -19,7 +19,9 @@ from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
 from sparkrun.recipe import Recipe
 from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
+from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
+from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
 
 
 def _write_yaml(path: Path, data: dict):
@@ -735,3 +737,85 @@ def test_sglang_generate_command_skip_keys():
     assert "8000" in cmd
     assert "--tp-size" in cmd
     assert "2" in cmd
+
+
+# ========== skip_keys in generate_node_command Tests ==========
+# These verify that native-cluster runtimes propagate skip_keys when
+# regenerating the serve command internally (not using the pre-built
+# serve_command string).
+
+
+def test_sglang_generate_node_command_skip_keys():
+    """skip_keys propagates through sglang generate_node_command."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "org/model",
+        "runtime": "sglang",
+        "defaults": {
+            "served_model_name": "my-alias",
+            "port": 8000,
+        },
+    })
+
+    runtime = SglangRuntime()
+    cmd = runtime.generate_node_command(
+        recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+        skip_keys={"served_model_name"},
+    )
+
+    assert "--served-model-name" not in cmd
+    assert "my-alias" not in cmd
+    assert "--port" in cmd
+    assert "--nnodes 2" in cmd
+    assert "--node-rank 0" in cmd
+
+
+def test_vllm_distributed_generate_node_command_skip_keys():
+    """skip_keys propagates through vllm-distributed generate_node_command."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "org/model",
+        "runtime": "vllm-distributed",
+        "defaults": {
+            "served_model_name": "my-alias",
+            "port": 8000,
+        },
+    })
+
+    runtime = VllmDistributedRuntime()
+    cmd = runtime.generate_node_command(
+        recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+        skip_keys={"served_model_name"},
+    )
+
+    assert "--served-model-name" not in cmd
+    assert "my-alias" not in cmd
+    assert "--port" in cmd
+    assert "--nnodes 2" in cmd
+    assert "--node-rank 1" in cmd
+    assert "--headless" in cmd
+
+
+def test_llama_cpp_build_rpc_head_command_skip_keys():
+    """skip_keys propagates through llama-cpp _build_rpc_head_command."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "org/model",
+        "runtime": "llama-cpp",
+        "defaults": {
+            "served_model_name": "my-alias",
+            "port": 8000,
+        },
+    })
+
+    runtime = LlamaCppRuntime()
+    config = recipe.build_config_chain({})
+    cmd = runtime._build_rpc_head_command(
+        recipe, config, worker_hosts=["10.0.0.2"],
+        rpc_port=50052, skip_keys={"served_model_name"},
+    )
+
+    assert "--alias" not in cmd
+    assert "my-alias" not in cmd
+    assert "--port" in cmd
+    assert "--rpc 10.0.0.2:50052" in cmd

@@ -1631,17 +1631,17 @@ class TestBenchmarkCommand:
         assert result.exit_code != 0
 
     def test_benchmark_list_profiles_invalid_registry(self, runner):
-        """list-profiles with nonexistent registry should error, not silently return empty."""
+        """list-benchmark-profiles with nonexistent registry should error, not silently return empty."""
         result = runner.invoke(main, [
-            "benchmark", "list-profiles",
+            "registry", "list-benchmark-profiles",
             "--registry", "does-not-exist-registry",
         ])
         assert result.exit_code != 0
         assert "not found" in result.output or "not found" in (result.output + (result.output or ""))
 
     def test_benchmark_list_profiles_help(self, runner):
-        """list-profiles --help shows options."""
-        result = runner.invoke(main, ["benchmark", "list-profiles", "--help"])
+        """list-benchmark-profiles --help shows options."""
+        result = runner.invoke(main, ["registry", "list-benchmark-profiles", "--help"])
         assert result.exit_code == 0
         assert "--registry" in result.output
         assert "--all" in result.output

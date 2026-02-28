@@ -1,4 +1,4 @@
-"""sparkrun benchmark commands — run benchmarks and manage profiles."""
+"""sparkrun benchmark command — run benchmarks against inference recipes."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import sys
 import tempfile
 
 import click
-import yaml
 
 from ._common import (
     PROFILE_NAME,
@@ -16,7 +15,6 @@ from ._common import (
     _apply_tp_trimming,
     _display_vram_estimate,
     _expand_recipe_shortcut,
-    _get_config_and_registry,
     _is_recipe_url,
     _load_recipe,
     _resolve_hosts_or_exit,
@@ -29,31 +27,8 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-class _BenchmarkGroup(click.Group):
-    """Group that prioritises subcommand names over the optional recipe argument.
-
-    Without this, ``sparkrun benchmark show-profile <name>`` is mis-parsed:
-    Click consumes ``show-profile`` as the optional ``recipe_name`` argument,
-    then ``<name>`` fails as an unknown subcommand.  By temporarily hiding the
-    optional argument when the first token is a registered subcommand, Click
-    routes to the subcommand correctly.
-    """
-
-    def parse_args(self, ctx, args):
-        if args and args[0] in self.commands:
-            saved_params = self.params[:]
-            self.params = [p for p in self.params if p.name != "recipe_name"]
-            try:
-                result = super().parse_args(ctx, args)
-            finally:
-                self.params = saved_params
-            ctx.params.setdefault("recipe_name", None)
-            return result
-        return super().parse_args(ctx, args)
-
-
-@click.group(cls=_BenchmarkGroup, invoke_without_command=True)
-@click.argument("recipe_name", required=False, type=RECIPE_NAME)
+@click.command()
+@click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
@@ -61,7 +36,7 @@ class _BenchmarkGroup(click.Group):
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
-@click.option("--profile", default=None, help="Benchmark profile name or file path")
+@click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
 @click.option("--out", "--output", "output_file", default=None, type=click.Path(),
               help="Output file for results YAML")
@@ -77,14 +52,14 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
               output_file, options, no_stop, skip_run, no_sync_tuning, dry_run):
     """Benchmark an inference recipe.
 
-    When called with a RECIPE_NAME, runs the full benchmark flow
-    (launch inference, run benchmark, stop inference).
+    Runs the full benchmark flow: launch inference, run benchmark, stop
+    inference.
 
-    Use subcommands to manage benchmark profiles:
+    Manage benchmark profiles via the registry subcommands:
 
-      sparkrun benchmark list-profiles
+      sparkrun registry list-benchmark-profiles
 
-      sparkrun benchmark show-profile <name>
+      sparkrun registry show-benchmark-profile <name>
 
     Examples:
 
@@ -96,11 +71,6 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
 
       sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
     """
-    if ctx.invoked_subcommand is not None:
-        return  # subcommand handles it
-    if recipe_name is None:
-        click.echo(ctx.get_help())
-        return
     _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
         tensor_parallel, port, image, cache_dir, profile, framework,
@@ -557,135 +527,3 @@ def _stop_inference(runtime, host_list, cluster_id, config, dry_run):
     except Exception as e:
         logger.warning("Failed to stop inference: %s", e)
         click.echo("Warning: failed to stop inference: %s" % e, err=True)
-
-
-# ---------------------------------------------------------------------------
-# Subcommands: list-profiles, show-profile
-# ---------------------------------------------------------------------------
-
-
-@benchmark.command("list-profiles")
-@click.option("--all", "-a", "show_all", is_flag=True, default=False,
-              help="Include profiles from hidden registries")
-@click.option("--registry", default=None, help="Filter by registry name")
-def list_profiles(show_all, registry):
-    """List available benchmark profiles across registries."""
-    _config, registry_mgr = _get_config_and_registry()
-
-    # Validate registry name exists before searching
-    if registry:
-        from sparkrun.registry import RegistryError
-        try:
-            registry_mgr.get_registry(registry)
-        except RegistryError:
-            click.echo("Error: registry '%s' not found." % registry, err=True)
-            click.echo("", err=True)
-            click.echo("Available registries:", err=True)
-            for entry in registry_mgr.list_registries():
-                click.echo("  %s" % entry.name, err=True)
-            sys.exit(1)
-
-    profiles = registry_mgr.list_benchmark_profiles(
-        registry_name=registry, include_hidden=show_all,
-    )
-
-    if not profiles:
-        if registry:
-            click.echo("No benchmark profiles found in registry '%s'." % registry)
-        else:
-            click.echo("No benchmark profiles found.")
-        return
-
-    # Calculate column widths
-    name_width = max(len(p["file"]) for p in profiles)
-    reg_width = max(len(p["registry"]) for p in profiles)
-    name_width = max(name_width, 4)  # min header width
-    reg_width = max(reg_width, 8)
-
-    # Print header
-    header = "%-*s  %-*s  %s" % (name_width, "Name", reg_width, "Registry", "Description")
-    click.echo(header)
-    click.echo("-" * len(header))
-
-    for p in profiles:
-        desc = p.get("description", "")
-        # Truncate long descriptions
-        if len(desc) > 60:
-            desc = desc[:57] + "..."
-        click.echo("%-*s  %-*s  %s" % (name_width, p["file"], reg_width, p["registry"], desc))
-
-
-@benchmark.command("show-profile")
-@click.argument("profile_name", type=PROFILE_NAME)
-def show_profile(profile_name):
-    """Show detailed benchmark profile information."""
-    from sparkrun.recipe import find_benchmark_profile, ProfileError, ProfileAmbiguousError
-
-    config, registry_mgr = _get_config_and_registry()
-
-    try:
-        profile_path = find_benchmark_profile(
-            profile_name, config, registry_mgr,
-        )
-    except ProfileAmbiguousError as e:
-        click.echo("Error: %s" % e, err=True)
-        click.echo("", err=True)
-        click.echo("Matching registries:", err=True)
-        for reg_name, path in e.matches:
-            click.echo("  @%s/%s" % (reg_name, e.name), err=True)
-        sys.exit(1)
-    except ProfileError as e:
-        click.echo("Error: %s" % e, err=True)
-        sys.exit(1)
-
-    # Read and display profile
-    try:
-        with open(profile_path) as f:
-            data = yaml.safe_load(f) or {}
-    except Exception as e:
-        click.echo("Error reading profile: %s" % e, err=True)
-        sys.exit(1)
-
-    profile_name_display = data.get("name", profile_path.stem)
-    metadata = data.get("metadata", {})
-    if isinstance(metadata, dict) and metadata.get("name") and not data.get("name"):
-        profile_name_display = metadata["name"]
-
-    description = data.get("description", "")
-    if isinstance(metadata, dict) and not description:
-        description = metadata.get("description", "")
-
-    click.echo("Profile:     %s" % profile_name_display)
-    click.echo("File:        %s" % profile_path.name)
-    click.echo("Path:        %s" % profile_path)
-    if description:
-        click.echo("Description: %s" % description.strip())
-
-    # Show parameters
-    known_keys = {"name", "description", "metadata", "framework", "version"}
-    framework = data.get("framework", "")
-    if framework:
-        click.echo("Framework:   %s" % framework)
-
-    params = data.get("parameters", {})
-    if params:
-        click.echo("")
-        click.echo("Parameters:")
-        for key, value in params.items():
-            click.echo("  %-25s %s" % (key + ":", value))
-
-    # Show any other top-level keys as parameters (for non-metadata profiles)
-    extra = {k: v for k, v in data.items() if k not in known_keys and k != "parameters" and k != "metrics"}
-    if extra:
-        if not params:
-            click.echo("")
-            click.echo("Parameters:")
-        for key, value in extra.items():
-            click.echo("  %-25s %s" % (key + ":", value))
-
-    metrics = data.get("metrics", [])
-    if metrics:
-        click.echo("")
-        click.echo("Metrics:")
-        for m in metrics:
-            click.echo("  - %s" % m)

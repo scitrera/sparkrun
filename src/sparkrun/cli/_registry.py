@@ -5,8 +5,10 @@ from __future__ import annotations
 import sys
 
 import click
+import yaml
 
 from ._common import (
+    PROFILE_NAME,
     REGISTRY_NAME,
     _get_config_and_registry,
 )
@@ -191,10 +193,10 @@ def registry_disable(ctx, name, config_path=None):
         sys.exit(1)
 
 
-@registry.command("revert-to-default")
-@click.option("--update", "run_update", is_flag=True, help="Also run registry update after reset")
+@registry.command("revert-to-defaults", hidden=True)
+@click.option("--no-update", "no_run_update", is_flag=True, help="Do not run registry update after reset")
 @click.pass_context
-def registry_revert_to_default(ctx, run_update, config_path=None):
+def registry_revert_to_default(ctx, no_run_update, config_path=None):
     """Reset registries to defaults (deletes config and re-initializes).
 
     Removes the current registries.yaml and re-discovers registries from
@@ -215,7 +217,7 @@ def registry_revert_to_default(ctx, run_update, config_path=None):
         vis = "" if entry.visible else " (hidden)"
         click.echo("  %s — %s%s" % (entry.name, entry.description or entry.url, vis))
 
-    if run_update:
+    if not no_run_update:
         click.echo()
         ctx.invoke(registry_update)
 
@@ -267,3 +269,72 @@ def registry_update(ctx, name, config_path=None):
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Benchmark profile subcommands
+# ---------------------------------------------------------------------------
+
+
+@registry.command("list-benchmark-profiles")
+@click.option("--all", "-a", "show_all", is_flag=True, default=False,
+              help="Include profiles from hidden registries")
+@click.option("--registry", "registry_name", default=None, type=REGISTRY_NAME,
+              help="Filter by registry name")
+@click.pass_context
+def list_benchmark_profiles(ctx, show_all, registry_name, config_path=None):
+    """List available benchmark profiles across registries."""
+    from sparkrun.registry import RegistryError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+
+    # Validate registry name upfront so a typo gives a clear error
+    if registry_name:
+        try:
+            registry_mgr.get_registry(registry_name)
+        except RegistryError:
+            available = [r.name for r in registry_mgr.list_registries() if r.enabled]
+            click.echo(
+                "Error: registry '%s' not found. Available: %s"
+                % (registry_name, ", ".join(available) if available else "(none)"),
+                err=True,
+            )
+            sys.exit(1)
+
+    profiles = registry_mgr.list_benchmark_profiles(
+        registry_name=registry_name,
+        include_hidden=show_all,
+    )
+
+    if not profiles:
+        click.echo("No benchmark profiles found.")
+        return
+
+    click.echo(f"{'Profile':<30} {'Registry':<25} {'Framework':<15}")
+    click.echo("-" * 70)
+    for p in profiles:
+        click.echo(f"{p['file']:<30} {p['registry']:<25} {p.get('framework', 'n/a'):<15}")
+
+
+@registry.command("show-benchmark-profile")
+@click.argument("profile_name", type=PROFILE_NAME)
+@click.pass_context
+def show_benchmark_profile(ctx, profile_name, config_path=None):
+    """Show detailed benchmark profile information."""
+    from sparkrun.recipe import find_benchmark_profile, ProfileError, ProfileAmbiguousError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+
+    try:
+        profile_path = find_benchmark_profile(profile_name, config, registry_mgr)
+    except ProfileAmbiguousError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+
+    click.echo("Profile: %s" % profile_name)
+    click.echo("Path:    %s" % profile_path)
+    click.echo("")
+    click.echo(yaml.safe_dump(yaml.safe_load(profile_path.read_text()), default_flow_style=False))

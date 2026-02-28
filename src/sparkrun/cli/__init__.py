@@ -16,7 +16,7 @@ from ._common import (
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
-from ._registry import registry, registry_list
+from ._registry import registry
 from ._run import run
 from ._setup import setup
 from ._stop_logs import logs_cmd, stop
@@ -92,10 +92,3 @@ def status(ctx, hosts, hosts_file, cluster_name, dry_run):
     """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
     ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file,
                cluster_name=cluster_name, dry_run=dry_run)
-
-# @main.command("registries")
-# @click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registries")
-# @click.pass_context
-# def registries_cmd(ctx, show_all):
-#     """List configured recipe registries (alias for 'registry list')."""
-#     ctx.invoke(registry_list, show_all=show_all)

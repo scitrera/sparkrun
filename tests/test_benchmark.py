@@ -33,8 +33,6 @@ def test_benchmark_load_valid(tmp_path: Path):
     """Test loading a valid benchmark YAML with nested args format."""
     p = tmp_path / "bench.yaml"
     _write_yaml(p, {
-        "recipe": "my-recipe",
-        "model": "org/model",
         "benchmark": {
             "framework": "llama-benchy",
             "args": {
@@ -47,8 +45,6 @@ def test_benchmark_load_valid(tmp_path: Path):
 
     spec = BenchmarkSpec.load(p)
     assert spec.framework == "llama-benchy"
-    assert spec.recipe == "my-recipe"
-    assert spec.model == "org/model"
     assert spec.args["format"] == "csv"
 
 
@@ -59,6 +55,28 @@ def test_benchmark_load_missing_block(tmp_path: Path):
 
     with pytest.raises(BenchmarkError, match="benchmark"):
         BenchmarkSpec.load(p)
+
+
+def test_benchmark_load_standalone_profile(tmp_path: Path):
+    """Test loading a standalone profile file (no benchmark: wrapper)."""
+    p = tmp_path / "profile.yaml"
+    _write_yaml(p, {
+        "framework": "llama-benchy",
+        "metadata": {"description": "Test profile"},
+        "args": {
+            "pp": [2048],
+            "depth": [0, 4096],
+            "concurrency": [1, 2, 5],
+        },
+    })
+
+    spec = BenchmarkSpec.load(p)
+    assert spec.framework == "llama-benchy"
+    assert spec.args["pp"] == [2048]
+    assert spec.args["depth"] == [0, 4096]
+    assert spec.args["concurrency"] == [1, 2, 5]
+    # metadata should NOT leak into args
+    assert "metadata" not in spec.args
 
 
 def test_benchmark_load_flat_format(tmp_path: Path):
@@ -97,8 +115,6 @@ def test_benchmark_from_recipe(tmp_path: Path):
     spec = BenchmarkSpec.from_recipe(recipe)
     assert spec is not None
     assert spec.framework == "llama-benchy"
-    assert spec.recipe == "test-recipe"
-    assert spec.model == "org/model"
     assert spec.args["pp"] == [2048]
 
 
@@ -118,8 +134,6 @@ def test_benchmark_build_command(tmp_path: Path):
     """Test command building with list args and overrides."""
     p = tmp_path / "bench.yaml"
     _write_yaml(p, {
-        "recipe": "my-recipe",
-        "model": "org/model",
         "benchmark": {
             "framework": "llama-benchy",
             "args": {
@@ -134,8 +148,6 @@ def test_benchmark_build_command(tmp_path: Path):
     cmd = spec.build_command({"format": "json"})
 
     assert cmd[0] == "llama-benchy"
-    assert "--recipe" in cmd and "my-recipe" in cmd
-    assert "--model" in cmd and "org/model" in cmd
     assert "--enable-prefix-caching" in cmd
     # List values are repeated flags
     assert cmd.count("--depth") == 2

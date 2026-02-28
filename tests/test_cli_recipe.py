@@ -232,14 +232,14 @@ class TestRegistryAddRemove:
 class TestRegistryRevertToDefault:
     """Test registry revert-to-default command."""
 
-    def test_revert_to_default(self, runner, registry_setup):
+    def test_revert_to_defaults(self, runner, registry_setup):
         """Test reverting registries to defaults."""
-        result = runner.invoke(main, ["registry", "revert-to-default"])
+        result = runner.invoke(main, ["registry", "revert-to-defaults"])
         assert result.exit_code == 0
         assert "reset to defaults" in result.output.lower()
 
-    def test_revert_to_default_help(self, runner):
-        """Test that revert-to-default appears in registry help."""
+    def test_revert_to_defaults_hidden(self, runner):
+        """Test that revert-to-defaults is hidden from registry help."""
         result = runner.invoke(main, ["registry", "--help"])
         assert result.exit_code == 0
-        assert "revert-to-default" in result.output
+        assert "revert-to-defaults" not in result.output

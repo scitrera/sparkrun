@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
 
 # Keys in the benchmark: block that are NOT framework args
-_KNOWN_BENCHMARK_KEYS = {"framework", "args"}
+_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata"}
 
 
 class BenchmarkError(Exception):
@@ -54,12 +54,16 @@ class BenchmarkSpec:
     source_path: str
     framework: str
     args: dict[str, Any]
-    recipe: str | None = None
-    model: str | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> BenchmarkSpec:
-        """Load and validate a benchmark YAML file."""
+        """Load and validate a benchmark YAML file.
+
+        Supports two formats:
+
+        1. Embedded in a recipe YAML (``benchmark:`` key wraps the block).
+        2. Standalone profile file (top-level keys *are* the benchmark config).
+        """
         p = Path(path)
         if not p.exists():
             raise BenchmarkError("Benchmark file not found: %s" % p)
@@ -70,7 +74,11 @@ class BenchmarkSpec:
 
         block = data.get("benchmark")
         if not isinstance(block, dict):
-            raise BenchmarkError("Benchmark file missing required 'benchmark' mapping")
+            # Standalone profile file: top-level keys *are* the benchmark block
+            if "framework" in data:
+                block = data
+            else:
+                raise BenchmarkError("Benchmark file missing required 'benchmark' mapping")
 
         framework = block.get("framework")
         if not framework or not isinstance(framework, str):
@@ -85,20 +93,10 @@ class BenchmarkSpec:
         if not isinstance(args, dict):
             raise BenchmarkError("benchmark.args must be a mapping")
 
-        recipe = data.get("recipe")
-        if recipe is not None and not isinstance(recipe, str):
-            raise BenchmarkError("recipe must be a string when provided")
-
-        model = data.get("model")
-        if model is not None and not isinstance(model, str):
-            raise BenchmarkError("model must be a string when provided")
-
         return cls(
             source_path=str(p),
             framework=framework,
             args=args,
-            recipe=recipe,
-            model=model,
         )
 
     @classmethod
@@ -123,31 +121,20 @@ class BenchmarkSpec:
             source_path=recipe.source_path or "",
             framework=str(framework),
             args=args,
-            recipe=recipe.name,
-            model=recipe.model,
         )
 
     def build_command(self, extra_args: dict[str, Any] | None = None) -> list[str]:
         """Render a shell argv list for this benchmark spec.
 
-        Command shape:
+        Command shape: ``framework --kebab-case-key VALUE ...``
 
-        - executable: ``benchmark.framework``
-        - optional metadata: ``--recipe``, ``--model``
-        - args mapping rendered as ``--kebab-case-key VALUE`` pairs
-          (booleans as flags; lists emit repeated flags).
+        Booleans become bare flags; lists emit repeated flags.
         """
         merged_args = dict(self.args)
         if extra_args:
             merged_args.update(extra_args)
 
         cmd: list[str] = [self.framework]
-
-        if self.recipe:
-            cmd.extend(["--recipe", self.recipe])
-        if self.model:
-            cmd.extend(["--model", self.model])
-
         cmd.extend(render_args_as_flags(merged_args))
 
         return cmd

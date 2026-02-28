@@ -1,0 +1,11 @@
+recipe: nemotron3-nano-30b-nvfp4-vllm
+model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+
+benchmark:
+  framework: llama-benchy
+  args:
+    pp: [2048]
+    depth: [0, 4096, 8192, 16384, 32768, 65535, 100000]
+    enable_prefix_caching: true
+    save_result: benchmark_NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4.csv
+    format: csv

@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from sparkrun.recipe import (
-    Recipe, RecipeError, RecipeAmbiguousError,
+    Recipe, RecipeError,
     find_recipe, list_recipes, resolve_runtime,
     is_recipe_file, discover_cwd_recipes,
 )
@@ -197,9 +197,8 @@ def test_recipe_validate_missing_name():
     """
     recipe = Recipe.from_dict({"name": "ignored"})
     issues = recipe.validate()
-    # Should flag missing model and runtime
+    # Should flag missing model (runtime may be resolved by resolvers)
     assert any("model" in i for i in issues)
-    assert any("runtime" in i for i in issues)
     assert any("name" in issue.lower() for issue in issues)
 
 
@@ -403,7 +402,7 @@ def test_list_recipes(tmp_recipe_dir: Path):
 
     # Verify recipe metadata
     vllm_recipe = next(r for r in recipes if r["file"] == "test-vllm")
-    assert vllm_recipe["name"] == "Test vLLM Recipe"
+    assert vllm_recipe["name"] == "test-vllm"  # name is always the filename stem
     assert vllm_recipe["runtime"] == "vllm-distributed"
     assert "path" in vllm_recipe
 
@@ -1305,7 +1304,7 @@ class TestListRecipesLocalFiles:
         }))
         recipes = list_recipes(local_files=[f])
         assert len(recipes) == 1
-        assert recipes[0]["name"] == "My Local Recipe"
+        assert recipes[0]["name"] == "local-recipe"  # name is the filename stem
         assert recipes[0]["file"] == "local-recipe"
         assert recipes[0]["runtime"] == "sglang"
         assert "registry" not in recipes[0]
@@ -1332,7 +1331,7 @@ class TestListRecipesLocalFiles:
         # Only one recipe with stem "dupe" should appear (the local one)
         dupe_recipes = [r for r in recipes if r["file"] == "dupe"]
         assert len(dupe_recipes) == 1
-        assert dupe_recipes[0]["name"] == "Local Dupe"
+        assert dupe_recipes[0]["name"] == "dupe"  # name is the filename stem
 
 
 class TestFindRecipeLocalFiles:

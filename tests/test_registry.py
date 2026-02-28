@@ -414,11 +414,11 @@ class TestRecipeDiscovery:
         assert paths == []
 
     def test_search_recipes_by_name(self, populated_cache):
-        """Test searching recipes by name."""
+        """Test searching recipes by name (filename stem)."""
         mgr, _ = populated_cache
-        results = mgr.search_recipes("vLLM")
+        results = mgr.search_recipes("vllm")
         assert len(results) >= 1
-        assert any("vLLM" in r["name"] for r in results)
+        assert any("vllm" in r["name"] for r in results)
 
     def test_search_recipes_by_model(self, populated_cache):
         """Test searching recipes by model name."""

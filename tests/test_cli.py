@@ -136,13 +136,12 @@ class TestListCommand:
         assert _TEST_RECIPE_NAME in output_lower
 
     def test_list_table_format(self, runner):
-        """Test that list output has header with Name, Runtime, File columns."""
+        """Test that list output has header with Name, Runtime columns."""
         result = runner.invoke(main, ["list"])
         assert result.exit_code == 0
         # Check for table headers
         assert "Name" in result.output
         assert "Runtime" in result.output
-        assert "File" in result.output
         # Check for separator line
         assert "-" * 10 in result.output
 

@@ -76,8 +76,10 @@ def setup_completion(ctx, shell):
 @setup.command("install")
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None,
               help="Shell type (auto-detected if not specified)")
+@click.option("--no-update-registries", is_flag=True,
+              help="Skip updating recipe registries after installation")
 @click.pass_context
-def setup_install(ctx, shell):
+def setup_install(ctx, shell, no_update_registries):
     """Install sparkrun and tab-completion.
 
     Requires uv (https://docs.astral.sh/uv/).  Typical usage:
@@ -86,8 +88,8 @@ def setup_install(ctx, shell):
       uvx sparkrun setup install
 
     This installs sparkrun as a uv tool (real binary on PATH), cleans up
-    any old aliases/functions from previous installs, and configures
-    tab-completion.
+    any old aliases/functions from previous installs, configures
+    tab-completion, and updates recipe registries.
     """
     import subprocess
 
@@ -125,7 +127,16 @@ def setup_install(ctx, shell):
     # Step 3: Set up tab-completion
     ctx.invoke(setup_completion, shell=shell)
 
-    # TODO: unless opt-out flag given, we should update registries after installation`
+    # Step 4: Update recipe registries from the newly installed binary
+    if not no_update_registries:
+        click.echo()
+        click.echo("Updating recipe registries...")
+        reg_result = subprocess.run(
+            ["sparkrun", "registry", "update"],
+            capture_output=False,
+        )
+        if reg_result.returncode != 0:
+            click.echo("Warning: registry update failed (non-fatal).", err=True)
 
     click.echo()
     click.echo("Restart your shell or run: source %s" % rc_file)
@@ -188,12 +199,17 @@ def setup_update(ctx, no_update_registries):
     else:
         click.echo("sparkrun updated (could not determine new version)")
 
-    # TODO: this doesn't make sense because current impl is old version, we should launch update from the new version
-    # Update recipe registries unless opted out
+    # Update recipe registries from the newly installed binary — the
+    # running process still has old code, so we must shell out.
     if not no_update_registries:
         click.echo()
-        from sparkrun.cli._registry import registry_update
-        ctx.invoke(registry_update)
+        click.echo("Updating recipe registries...")
+        reg_result = subprocess.run(
+            ["sparkrun", "registry", "update"],
+            capture_output=False,
+        )
+        if reg_result.returncode != 0:
+            click.echo("Warning: registry update failed (non-fatal).", err=True)
 
 
 @setup.command("ssh")

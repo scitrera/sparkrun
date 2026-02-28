@@ -109,6 +109,23 @@ sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
 ```
 :::
 
+## Spark Arena recipes
+
+[Spark Arena](https://spark-arena.com) is the community recipe hub for DGX Spark. Browse tested recipes and benchmark results, then run them directly:
+
+```bash
+# Run a recipe from Spark Arena using its short link
+sparkrun run @spark-arena/<recipe-id>
+
+# Inspect it first with VRAM estimation
+sparkrun show @spark-arena/<recipe-id>
+
+# Save a copy locally for customization
+sparkrun show @spark-arena/<recipe-id> --save my-recipe.yaml
+```
+
+Spark Arena recipes are also included in sparkrun's default registries — `sparkrun list` shows them automatically.
+
 ## Custom recipe registries
 
 ```bash
@@ -124,3 +141,5 @@ sparkrun registry update
 # Search across all registries
 sparkrun search qwen3
 ```
+
+See [Registries](/recipes/registries/) for more details.

@@ -41,6 +41,19 @@ sparkrun show <recipe>         # alias
 
 Display detailed recipe information including defaults, metadata, and VRAM estimation. The VRAM estimator auto-detects model architecture from HuggingFace.
 
+Recipes can be local names, file paths, URLs, or [Spark Arena](https://spark-arena.com) shortcuts:
+
+```bash
+# Show a local/registry recipe
+sparkrun show qwen3-1.7b-vllm
+
+# Show a Spark Arena recipe
+sparkrun show @spark-arena/<recipe-id>
+
+# Save a Spark Arena recipe locally for customization
+sparkrun show @spark-arena/<recipe-id> --save my-recipe.yaml
+```
+
 ### Options
 
 | Option | Description |

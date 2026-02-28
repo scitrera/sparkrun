@@ -34,6 +34,15 @@ Jobs launch in the background (detached containers) and sparkrun follows logs au
 | `--dashboard` | Enable Ray dashboard on head node (`vllm-ray` and `eugr-vllm` only) |
 | `--dashboard-port` | Ray dashboard port — default: 8265 |
 
+## Recipe sources
+
+The `<recipe>` argument can be:
+
+- **A local recipe name** — matched against bundled recipes and configured registries (e.g. `qwen3-1.7b-vllm`)
+- **A file path** — a local `.yaml` file (e.g. `./my-recipe.yaml`)
+- **A Spark Arena shortcut** — `@spark-arena/<recipe-id>` to run directly from [Spark Arena](https://spark-arena.com)
+- **A URL** — any `https://` URL pointing to a recipe YAML
+
 ## Examples
 
 ```bash
@@ -45,6 +54,9 @@ sparkrun run qwen3-1.7b-vllm --tp 2
 
 # Specific hosts with overrides
 sparkrun run qwen3-1.7b-vllm -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+
+# Run a recipe from Spark Arena
+sparkrun run @spark-arena/<recipe-id>
 
 # Dry run to preview commands
 sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2 --dry-run

@@ -30,7 +30,7 @@ If you installed via `sparkrun setup install`, tab completion is already configu
 sparkrun setup update
 ```
 
-Updates sparkrun to the latest version in your managed environment.
+Updates sparkrun to the latest version in your managed environment and refreshes all recipe registries. Use `--no-update-registries` to skip the registry update.
 
 ## SSH mesh setup
 
@@ -89,7 +89,7 @@ sparkrun setup fix-permissions [options]
 
 Fix file ownership in the HuggingFace cache (`~/.cache/huggingface`) on cluster hosts. Docker containers create cache files as root, leaving the normal user unable to manage them. This command runs `chown` across all target hosts to restore ownership.
 
-Tries non-interactive sudo first on all hosts in parallel, then falls back to password-based sudo for any that fail.
+Tries non-interactive sudo first on all hosts in parallel, then falls back to password-based sudo for any that fail. Use `--save-sudo` to avoid password prompts on subsequent runs.
 
 ```bash
 sparkrun setup fix-permissions --cluster mylab
@@ -120,7 +120,7 @@ sparkrun setup clear-cache [options]
 
 Drop the Linux page cache on cluster hosts. Runs `sync` followed by writing `3` to `/proc/sys/vm/drop_caches` on each host, freeing cached file data so inference containers have maximum available memory on DGX Spark's unified CPU/GPU memory.
 
-Tries non-interactive sudo first on all hosts in parallel, then falls back to password-based sudo for any that fail.
+Tries non-interactive sudo first on all hosts in parallel, then falls back to password-based sudo for any that fail. Use `--save-sudo` to avoid password prompts on subsequent runs.
 
 ```bash
 sparkrun setup clear-cache --cluster mylab

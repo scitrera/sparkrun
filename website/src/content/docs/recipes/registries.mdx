@@ -8,32 +8,50 @@ sparkrun searches bundled recipes first, then any custom registries you've confi
 ## View configured registries
 
 ```bash
-sparkrun recipe registries
+sparkrun registry list
 ```
 
 ## Add a registry
 
 ```bash
-sparkrun recipe add-registry myteam \
-  --url https://github.com/myorg/spark-recipes.git \
-  --subpath recipes
+sparkrun registry add https://github.com/myorg/spark-recipes.git
 ```
 
-The `--subpath` option specifies where recipe files live within the repository.
+The repository will be cloned using a sparse checkout for efficiency. If recipes live in a subdirectory, they will be discovered automatically.
 
 ## Remove a registry
 
 ```bash
-sparkrun recipe remove-registry myteam
+sparkrun registry remove myteam
+```
+
+## Enable/Disable registries
+
+```bash
+# Disable a registry (keeps config, excludes from searches)
+sparkrun registry disable myteam
+
+# Re-enable a disabled registry
+sparkrun registry enable myteam
 ```
 
 ## Update registries
 
 ```bash
-sparkrun recipe update
+sparkrun registry update
 ```
 
-Fetches the latest recipes from all remote registries.
+Fetches the latest recipes from all enabled remote registries.
+
+## List benchmark profiles
+
+```bash
+# List all available benchmark profiles across registries
+sparkrun registry list-benchmark-profiles
+
+# Show details of a specific benchmark profile
+sparkrun registry show-benchmark-profile deepseek-r1-distill-671b
+```
 
 ## Search across registries
 
@@ -42,7 +60,7 @@ sparkrun search qwen3
 sparkrun recipe search llama
 ```
 
-Searches by name, model, and description across all registries.
+Searches by name, model, and description across all enabled registries.
 
 ## Creating a registry
 

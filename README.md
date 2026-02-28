@@ -126,15 +126,13 @@ DGX Spark's 128 GB unified memory before you launch.
 
 ```bash
 # See what's configured
-sparkrun recipe registries
+sparkrun registry list
 
 # Add a community or private registry
-sparkrun recipe add-registry myteam \
-  --url https://github.com/myorg/spark-recipes.git \
-  --subpath recipes
+sparkrun registry add https://github.com/myorg/spark-recipes.git
 
 # Update all registries
-sparkrun recipe update
+sparkrun registry update
 
 # Search across all registries
 sparkrun search qwen3
@@ -400,7 +398,7 @@ the local copy without re-downloading.
 | `sparkrun run <recipe>`  | Launch an inference workload |
 | `sparkrun stop <recipe>` | Stop a running workload      |
 | `sparkrun logs <recipe>` | Re-attach to workload logs   |
-| `sparkrun benchmark -f <file>` | Run a standalone benchmark YAML |
+| `sparkrun benchmark <recipe>` | Benchmark an inference recipe (auto: run → benchmark → stop) |
 
 **`sparkrun run` options:**
 
@@ -419,7 +417,7 @@ the local copy without re-downloading.
 | `--dry-run` / `-n`           | Show what would be done without executing                |
 | `--foreground`               | Run in foreground (don't detach)                         |
 | `--no-follow`                | Don't follow container logs after launch                 |
-| `--skip-ib`                  | Skip InfiniBand detection     (not recommended)          |
+| `--no-sync-tuning`           | Skip syncing tuning configs from registries              |
 | `--ray-port`                 | Ray GCS port (default: 46379) (`vllm-ray`/`eugr-vllm`)  |
 | `--init-port`                | SGLang distributed init port (default: 25000)            |
 | `--dashboard`                | Enable Ray dashboard on head node (`vllm-ray`/`eugr-vllm`) |
@@ -432,6 +430,7 @@ the local copy without re-downloading.
 | `--hosts` / `-H`             | Comma-separated host list    |
 | `--hosts-file`               | File with hosts              |
 | `--cluster`                  | Use a saved cluster by name  |
+| `--all` / `-a`               | Stop all sparkrun containers (no recipe needed)          |
 | `--tp` / `--tensor-parallel` | Match host trimming from run |
 | `--dry-run` / `-n`           | Show what would be done      |
 
@@ -447,13 +446,27 @@ the local copy without re-downloading.
 
 **`sparkrun benchmark` options:**
 
-| Option             | Description                                   |
-|--------------------|-----------------------------------------------|
-| `--file` / `-f`    | Standalone benchmark YAML file                |
-| `--option` / `-o`  | Override benchmark args: `-o key=value`       |
-| `--dry-run` / `-n` | Print rendered benchmark command without running |
+| Option                       | Description                                              |
+|------------------------------|----------------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list (first = head)                 |
+| `--hosts-file`               | File with hosts (one per line, `#` comments)             |
+| `--cluster`                  | Use a saved cluster by name                              |
+| `--solo`                     | Force single-node mode                                   |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism                              |
+| `--port`                     | Override serve port                                      |
+| `--image`                    | Override container image                                 |
+| `--cache-dir`                | HuggingFace cache directory                              |
+| `--profile`                  | Benchmark profile name or file (`@registry/name` syntax) |
+| `--framework`                | Override benchmarking framework (default: `llama-benchy`) |
+| `--out` / `--output`         | Output file for results YAML                             |
+| `--option` / `-o`            | Override benchmark args: `-o key=value` (repeatable)     |
+| `--no-stop`                  | Don't stop inference after benchmarking                  |
+| `--skip-run`                 | Skip launching inference (benchmark existing instance)   |
+| `--sync-tuning`              | Sync tuning configs from registries before benchmarking  |
+| `--timeout`                  | Benchmark timeout in seconds (default: 14400)            |
+| `--dry-run` / `-n`           | Show what would be done without executing                |
 
-### Tune commands (experimental)
+### Tune commands
 
 | Command                            | Description                                       |
 |------------------------------------|---------------------------------------------------|
@@ -486,6 +499,8 @@ sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1 --tp 1 --tp 2
 | `--tp`                       | TP size(s) to tune (repeatable; default: 1,2,4,8)        |
 | `--parallel` / `-j`          | Run N tuning jobs concurrently (default: 1 = sequential) |
 | `--image`                    | Override container image                                 |
+| `--output-dir`               | Output directory for tuning configs                      |
+| `--cache-dir`                | HuggingFace cache directory                              |
 | `--skip-clone`               | Skip cloning benchmark scripts (if already in image)     |
 | `--dry-run` / `-n`           | Show what would be done without executing                |
 
@@ -502,6 +517,10 @@ sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1 --tp 1 --tp 2
 | `sparkrun recipe validate <recipe>` | Validate a recipe file                            |
 | `sparkrun recipe vram <recipe>`     | Estimate VRAM usage for a recipe                  |
 
+The `list`, `search`, `show` commands (both top-level aliases and `recipe` subcommands) accept `--all` / `-a`
+to include recipes from hidden registries, and `--runtime` to filter by runtime type. `show` also accepts
+`--save <path>` to save a copy of the recipe YAML and `--no-vram` to skip VRAM estimation.
+
 **`sparkrun recipe vram` options:**
 
 | Option                       | Description                               |
@@ -513,12 +532,16 @@ sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 127.0.0.1 --tp 1 --tp 2
 
 ### Registry commands
 
-| Command                                  | Description                       |
-|------------------------------------------|-----------------------------------|
-| `sparkrun recipe registries`             | List configured recipe registries |
-| `sparkrun recipe add-registry <name>`    | Add a custom recipe registry      |
-| `sparkrun recipe remove-registry <name>` | Remove a recipe registry          |
-| `sparkrun recipe update`                 | Update registries from git        |
+| Command                                              | Description                                           |
+|------------------------------------------------------|-------------------------------------------------------|
+| `sparkrun registry list`                             | List configured recipe registries                     |
+| `sparkrun registry add <url>`                        | Add a registry from a repo's manifest                 |
+| `sparkrun registry remove <name>`                    | Remove a recipe registry                              |
+| `sparkrun registry enable <name>`                    | Enable a disabled registry                            |
+| `sparkrun registry disable <name>`                   | Disable a registry (keeps config)                     |
+| `sparkrun registry update [name]`                    | Update registries from git (optionally just one)      |
+| `sparkrun registry list-benchmark-profiles`          | List available benchmark profiles                     |
+| `sparkrun registry show-benchmark-profile <name>`    | Show benchmark profile details                        |
 
 ### Cluster commands
 
@@ -544,11 +567,14 @@ hosts however you like — they become workers.
 |------------------------------------|---------------------------------------------------|
 | `sparkrun setup install`           | Install sparkrun as a uv tool + tab-completion    |
 | `sparkrun setup completion`        | Install shell tab-completion (bash/zsh/fish)      |
-| `sparkrun setup update`            | Update sparkrun to the latest version             |
+| `sparkrun setup update`            | Update sparkrun + registries (`--no-update-registries` to skip) |
 | `sparkrun setup ssh`               | Set up passwordless SSH mesh across hosts         |
 | `sparkrun setup cx7`               | Detect and configure ConnectX-7 NICs across hosts |
 | `sparkrun setup fix-permissions`   | Fix root-owned HF cache files on cluster hosts    |
 | `sparkrun setup clear-cache`       | Drop Linux page cache on cluster hosts             |
+
+Both `setup fix-permissions` and `setup clear-cache` accept `--save-sudo` to install a scoped sudoers entry
+so future runs don't require password prompts.
 
 ## Roadmap
 

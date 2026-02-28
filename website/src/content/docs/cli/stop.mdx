@@ -4,15 +4,16 @@ description: Stop a running inference workload.
 ---
 
 ```bash
-sparkrun stop <recipe> [options]
+sparkrun stop [recipe] [options]
 ```
 
-Stop containers for a running inference workload across all hosts.
+Stop containers for a running inference workload across all hosts. When `--all` is used, `RECIPE_NAME` is optional and all sparkrun containers will be stopped.
 
 ## Options
 
 | Option | Description |
 |---|---|
+| `--all` / `-a` | Stop all sparkrun containers (discovers via `docker ps`). No recipe needed. |
 | `--hosts` / `-H` | Comma-separated host list |
 | `--hosts-file` | File with hosts |
 | `--cluster` | Use a saved cluster by name |

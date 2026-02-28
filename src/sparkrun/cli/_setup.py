@@ -125,19 +125,24 @@ def setup_install(ctx, shell):
     # Step 3: Set up tab-completion
     ctx.invoke(setup_completion, shell=shell)
 
+    # TODO: unless opt-out flag given, we should update registries after installation`
+
     click.echo()
     click.echo("Restart your shell or run: source %s" % rc_file)
 
 
 @setup.command("update")
+@click.option("--no-update-registries", is_flag=True,
+              help="Skip updating recipe registries after upgrading sparkrun")
 @click.pass_context
-def setup_update(ctx):
-    """Update sparkrun to the latest version.
+def setup_update(ctx, no_update_registries):
+    """Update sparkrun and recipe registries.
 
-    Runs ``uv tool upgrade sparkrun`` to fetch the latest release.
+    Runs ``uv tool upgrade sparkrun`` to fetch the latest release, then
+    updates all enabled recipe registries from git.  Use
+    ``--no-update-registries`` to skip the registry sync step.
+
     Only works when sparkrun was installed via ``uv tool install``.
-    Shows whether an update was available or the current version is
-    already the latest.
     """
     import subprocess
 
@@ -182,6 +187,13 @@ def setup_update(ctx):
             click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
     else:
         click.echo("sparkrun updated (could not determine new version)")
+
+    # TODO: this doesn't make sense because current impl is old version, we should launch update from the new version
+    # Update recipe registries unless opted out
+    if not no_update_registries:
+        click.echo()
+        from sparkrun.cli._registry import registry_update
+        ctx.invoke(registry_update)
 
 
 @setup.command("ssh")

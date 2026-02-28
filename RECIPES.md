@@ -362,6 +362,42 @@ build_args: [--some-flag]
 ...instead of nesting them under `runtime_config`, and sparkrun will handle it the same way. The explicit
 `runtime_config` key is preferred for clarity.
 
+### Benchmark Configuration
+
+#### `benchmark`
+
+An optional block that configures automated benchmarking for the recipe. Used by `sparkrun benchmark <recipe>` to run benchmarks with predefined settings.
+
+```yaml
+# Nested format (explicit args dict)
+benchmark:
+  framework: llama-benchy
+  timeout: 3600
+  args:
+    pp: [2048]
+    tg: [32, 128]
+    depth: [0, 4096, 16384]
+    concurrency: [1, 2, 5]
+    enable_prefix_caching: true
+
+# Flat format (unknown keys swept into args automatically)
+benchmark:
+  framework: llama-benchy
+  pp: [2048]
+  depth: [0]
+  enable_prefix_caching: true
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `framework` | string | Benchmarking framework to use (default: `llama-benchy`) |
+| `timeout` | int | Benchmark timeout in seconds |
+| `args` | dict | Framework-specific benchmark arguments (nested format) |
+
+In the flat format, any key that isn't `framework`, `args`, `metadata`, or `timeout` is automatically swept into the args dict. Both formats produce identical behavior.
+
+When `sparkrun benchmark <recipe>` is run without `--profile`, the recipe's `benchmark:` block provides the default benchmark configuration. CLI `-o key=value` overrides are applied on top.
+
 ### Version Fields [NOT FINALIZED]
 
 #### `sparkrun_version` / `recipe_version`
@@ -503,10 +539,11 @@ sparkrun detects `sglang serve` and automatically sets the runtime to `sglang` �
 
 sparkrun searches for recipes in this order:
 
-1. **Exact/relative file path** — if the argument is a path to an existing file.
-2. **Bundled recipes** — shipped with sparkrun in the `recipes/` directory.
-3. **Registry paths** — from configured custom registries.
-4. **Registry stem matching** — searches registry files by filename stem.
+1. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly.
+2. **Exact/relative file path** — if the argument is a path to an existing file.
+3. **Bundled recipes** — shipped with sparkrun in the `recipes/` directory.
+4. **Registry paths** — from configured custom registries.
+5. **Registry stem matching** — searches registry files by filename stem.
 
 Filenames are matched with or without `.yaml`/`.yml` extensions, so `sparkrun run my-recipe` finds
 `my-recipe.yaml`.

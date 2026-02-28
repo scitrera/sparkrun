@@ -3,10 +3,6 @@ title: sparkrun tune
 description: Tune Triton fused MoE kernels for optimal inference performance.
 ---
 
-:::caution[Experimental]
-The `sparkrun tune` commands are experimental. The interface and behavior may change in future releases.
-:::
-
 :::note[Tuning takes a while]
 Triton autotuning is computationally intensive. Each TP size can take hours depending on the model size and architecture. Plan accordingly — use `--dry-run` to preview what will run, and consider using `-j4` to parallelize across TP sizes.
 :::

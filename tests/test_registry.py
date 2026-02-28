@@ -11,7 +11,6 @@ import yaml
 from sparkrun.registry import (
     FALLBACK_DEFAULT_REGISTRIES,
     RESERVED_NAME_PREFIXES,
-    RESERVED_PREFIX_ALLOWED_ORGS,
     RegistryEntry,
     RegistryError,
     RegistryManager,
@@ -175,7 +174,7 @@ class TestRegistryManagerInit:
         """Test that init creates config and cache directories."""
         config = tmp_path / "new_config"
         cache = tmp_path / "new_cache"
-        mgr = RegistryManager(config, cache)
+        RegistryManager(config, cache)  # side effect: creates dirs
         assert config.exists()
         assert cache.exists()
 
@@ -1105,3 +1104,44 @@ class TestResetToDefaults:
         loaded = mgr._load_registries_from_file()
         assert len(loaded) == len(entries)
         assert loaded[0].name == entries[0].name
+
+    def test_clears_cache_on_reset(self, mgr):
+        """reset_to_defaults removes cached registry clones."""
+        # Create fake cache directories and a symlink
+        (mgr.cache_root / "fake-registry" / ".git").mkdir(parents=True)
+        (mgr.cache_root / "_url_abc123def456").mkdir(parents=True)
+        shared = mgr.cache_root / "_url_abc123def456"
+        link = mgr.cache_root / "linked-registry"
+        link.symlink_to(shared)
+
+        assert (mgr.cache_root / "fake-registry").exists()
+        assert link.is_symlink()
+
+        mgr.reset_to_defaults()
+
+        # All cache entries should be gone
+        remaining = [p.name for p in mgr.cache_root.iterdir()]
+        assert "fake-registry" not in remaining
+        assert "_url_abc123def456" not in remaining
+        assert "linked-registry" not in remaining
+
+
+class TestClearCache:
+    """Test clear_cache method."""
+
+    def test_clears_directories_and_symlinks(self, mgr):
+        """clear_cache removes all dirs and symlinks from cache_root."""
+        (mgr.cache_root / "reg1").mkdir()
+        (mgr.cache_root / "reg2").mkdir()
+        shared = mgr.cache_root / "_url_shared"
+        shared.mkdir()
+        link = mgr.cache_root / "reg3"
+        link.symlink_to(shared)
+
+        count = mgr.clear_cache()
+        assert count == 4  # reg1, reg2, _url_shared, reg3
+        assert list(mgr.cache_root.iterdir()) == []
+
+    def test_returns_zero_on_empty_cache(self, mgr):
+        """clear_cache returns 0 when cache is already empty."""
+        assert mgr.clear_cache() == 0

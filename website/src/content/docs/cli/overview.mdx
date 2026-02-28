@@ -22,6 +22,7 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 | `sparkrun run <recipe>` | Launch an inference workload |
 | `sparkrun stop <recipe>` | Stop a running workload |
 | `sparkrun logs <recipe>` | Re-attach to workload logs |
+| `sparkrun benchmark <recipe>` | Benchmark an inference recipe (auto: run → benchmark → stop) |
 
 ### Recipe commands
 
@@ -40,10 +41,12 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 
 | Command | Description |
 |---|---|
-| `sparkrun recipe registries` | List configured recipe registries |
-| `sparkrun recipe add-registry <name>` | Add a custom recipe registry |
-| `sparkrun recipe remove-registry <name>` | Remove a recipe registry |
-| `sparkrun recipe update` | Update registries from git |
+| `sparkrun registry list` | List configured recipe registries |
+| `sparkrun registry add <name>` | Add a custom recipe registry |
+| `sparkrun registry remove <name>` | Remove a recipe registry |
+| `sparkrun registry enable <name>` | Enable a recipe registry |
+| `sparkrun registry disable <name>` | Disable a recipe registry |
+| `sparkrun registry update` | Update registries from git |
 
 ### Cluster commands
 
@@ -59,7 +62,7 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 | `sparkrun cluster default` | Show the current default cluster |
 | `sparkrun cluster status` | Show sparkrun containers running on cluster hosts |
 
-### Tune commands (experimental)
+### Tune commands
 
 | Command | Description |
 |---|---|

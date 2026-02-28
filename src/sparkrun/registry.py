@@ -374,9 +374,10 @@ class RegistryManager:
 
         try:
             if (clone_dir / ".git").exists():
-                # Pull existing clone
+                # Fetch + hard reset to ensure deleted files are removed
+                # and rebased histories are handled correctly
                 result = subprocess.run(
-                    ["git", "-C", str(clone_dir), "pull", "--ff-only"],
+                    ["git", "-C", str(clone_dir), "fetch", "origin"],
                     capture_output=True,
                     text=True,
                     timeout=60,
@@ -385,7 +386,19 @@ class RegistryManager:
                     env=git_env,
                 )
                 if result.returncode != 0:
-                    logger.warning("git pull failed for %s: %s", url, result.stderr.strip())
+                    logger.warning("git fetch failed for %s: %s", url, result.stderr.strip())
+                    return False
+                result = subprocess.run(
+                    ["git", "-C", str(clone_dir), "reset", "--hard", "FETCH_HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    env=git_env,
+                )
+                if result.returncode != 0:
+                    logger.warning("git reset failed for %s: %s", url, result.stderr.strip())
                     return False
             else:
                 # Fresh sparse clone
@@ -473,8 +486,10 @@ class RegistryManager:
                     check=False, stdin=subprocess.DEVNULL, env=git_env,
                 )
 
+                # Fetch + hard reset to ensure deleted files are removed
+                # and rebased histories are handled correctly
                 result = subprocess.run(
-                    ["git", "-C", str(cache_dir), "pull", "--ff-only"],
+                    ["git", "-C", str(cache_dir), "fetch", "--depth=1", "origin"],
                     capture_output=True,
                     text=True,
                     timeout=60,
@@ -484,7 +499,21 @@ class RegistryManager:
                 )
                 if result.returncode != 0:
                     logger.debug(
-                        "Git pull failed for %s: %s", entry.name, result.stderr
+                        "Git fetch failed for %s: %s", entry.name, result.stderr
+                    )
+                    return False
+                result = subprocess.run(
+                    ["git", "-C", str(cache_dir), "reset", "--hard", "FETCH_HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    env=git_env,
+                )
+                if result.returncode != 0:
+                    logger.debug(
+                        "Git reset failed for %s: %s", entry.name, result.stderr
                     )
                     return False
             else:
@@ -725,16 +754,37 @@ class RegistryManager:
 
         return cleaned
 
+    def clear_cache(self) -> int:
+        """Remove all cached registry clones for a clean slate.
+
+        Removes per-registry symlinks and shared ``_url_*`` clone
+        directories from :attr:`cache_root`.
+
+        Returns:
+            Number of cache entries removed.
+        """
+        import shutil
+
+        count = 0
+        if self.cache_root.exists():
+            for child in self.cache_root.iterdir():
+                if child.is_symlink():
+                    child.unlink()
+                    count += 1
+                elif child.is_dir():
+                    shutil.rmtree(child)
+                    count += 1
+        logger.debug("Cleared %d cache entries from %s", count, self.cache_root)
+        return count
+
     def reset_to_defaults(self) -> list[RegistryEntry]:
-        """Delete the registries config and re-initialize from defaults.
+        """Delete the registries config, clear cache, and re-initialize from defaults.
 
-        Removes ``registries.yaml`` (if it exists), resets the manifest
-        discovery flag, and re-runs the default initialization path
-        (manifest discovery first, then hardcoded fallback).  The resulting
-        registries are saved to ``registries.yaml`` and returned.
-
-        Existing git caches are left in place — a subsequent ``update``
-        will refresh them.
+        Removes ``registries.yaml`` (if it exists), clears all cached git
+        clones, resets the manifest discovery flag, and re-runs the default
+        initialization path (manifest discovery first, then hardcoded
+        fallback).  The resulting registries are saved to
+        ``registries.yaml`` and returned.
 
         Returns:
             The new list of registry entries.
@@ -742,6 +792,11 @@ class RegistryManager:
         if self._registries_path.exists():
             self._registries_path.unlink()
             logger.info("Removed existing registries.yaml")
+
+        # Clear all cached clones so the subsequent update does fresh clones
+        cleared = self.clear_cache()
+        if cleared:
+            logger.info("Cleared %d cached registry clones", cleared)
 
         # Allow manifest discovery to run again
         self._manifest_discovery_attempted = False

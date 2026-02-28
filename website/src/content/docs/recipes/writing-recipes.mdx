@@ -69,9 +69,7 @@ command: |
 Create a git repository with your YAML files and register it:
 
 ```bash
-sparkrun recipe add-registry myteam \
-  --url https://github.com/myorg/spark-recipes.git \
-  --subpath recipes
+sparkrun registry add https://github.com/myorg/spark-recipes.git
 ```
 
 Anyone who adds your registry can use your recipes by name.

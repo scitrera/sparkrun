@@ -47,10 +47,11 @@ export default defineConfig({
                         {label: 'stop', slug: 'cli/stop'},
                         {label: 'logs', slug: 'cli/logs'},
                         {label: 'status', slug: 'cli/status'},
+                        {label: 'benchmark', slug: 'cli/benchmark'},
                         {label: 'Recipe Commands', slug: 'cli/recipe-commands'},
                         {label: 'Cluster Commands', slug: 'cli/cluster-commands'},
                         {label: 'Setup Commands', slug: 'cli/setup-commands'},
-                        {label: 'tune (experimental)', slug: 'cli/tune'},
+                        {label: 'tune', slug: 'cli/tune'},
                     ],
                 },
                 {

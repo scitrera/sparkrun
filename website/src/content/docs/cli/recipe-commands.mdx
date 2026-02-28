@@ -12,6 +12,14 @@ sparkrun list [query]          # alias
 
 List available recipes from all configured registries. Optionally filter by a search query.
 
+### Options
+
+| Option | Description |
+|---|---|
+| `--all` / `-a` | Include recipes from hidden registries |
+| `--runtime` | Filter by runtime (e.g., `vllm`, `sglang`) |
+| `--registry` | Filter by registry name |
+
 The output table includes:
 
 | Column | Description |
@@ -33,6 +41,14 @@ sparkrun show <recipe>         # alias
 
 Display detailed recipe information including defaults, metadata, and VRAM estimation. The VRAM estimator auto-detects model architecture from HuggingFace.
 
+### Options
+
+| Option | Description |
+|---|---|
+| `--save <path>` | Save the recipe to the specified file path |
+| `--no-vram` | Skip VRAM estimation display |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism for VRAM estimate |
+
 ## Search recipes
 
 ```bash
@@ -41,6 +57,14 @@ sparkrun search <query>        # alias
 ```
 
 Search for recipes by name, model, or description across all registries.
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--all` / `-a` | Include recipes from hidden registries |
+| `--runtime` | Filter by runtime (e.g., `vllm`, `sglang`) |
+| `--registry` | Filter by registry name |
 
 The output table includes:
 

@@ -270,6 +270,20 @@ If the command doesn't match any of these patterns, the recipe falls through to 
 
 An explicit `runtime` field **always wins** — command-hint detection only fires when `runtime` is omitted. Existing recipes that set `runtime` continue to work identically.
 
+## Benchmark configuration
+
+Recipes can include a `benchmark:` block to define default benchmark settings used by `sparkrun benchmark`:
+
+```yaml
+benchmark:
+  framework: llama-benchy
+  pp: [2048]
+  depth: [0, 4096]
+  enable_prefix_caching: true
+```
+
+See the [benchmark command](/cli/benchmark/) for details on how benchmark configuration is resolved.
+
 ## Recipe discovery
 
 sparkrun searches for recipes in this order:

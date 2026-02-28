@@ -113,15 +113,13 @@ sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
 
 ```bash
 # See configured registries
-sparkrun recipe registries
+sparkrun registry list
 
 # Add a community or private registry
-sparkrun recipe add-registry myteam \
-  --url https://github.com/myorg/spark-recipes.git \
-  --subpath recipes
+sparkrun registry add https://github.com/myorg/spark-recipes.git
 
 # Update all registries
-sparkrun recipe update
+sparkrun registry update
 
 # Search across all registries
 sparkrun search qwen3

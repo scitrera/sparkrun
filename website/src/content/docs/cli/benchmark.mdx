@@ -1,0 +1,164 @@
+---
+title: benchmark
+description: Automated benchmarking for inference recipes.
+---
+
+The `sparkrun benchmark` command runs end-to-end benchmarking: it launches inference, executes a benchmark framework against the running server, collects results, and stops inference — all in one command.
+
+## Usage
+
+```bash
+sparkrun benchmark <recipe> [options]
+```
+
+## Quick examples
+
+```bash
+# Benchmark on localhost with defaults (uses llama-benchy)
+sparkrun benchmark qwen3-1.7b-vllm --solo
+
+# Benchmark using a specific profile from a registry
+sparkrun benchmark qwen3-1.7b-sglang --profile spark-arena-v1
+
+# Benchmark an already-running inference server (skip launch/stop)
+sparkrun benchmark qwen3-1.7b-vllm --skip-run --hosts 192.168.11.13
+
+# Override benchmark args
+sparkrun benchmark qwen3-1.7b-vllm --solo -o depth=0,4096,16384 -o concurrency=1,2,5
+
+# Dry run — shows what would be done
+sparkrun benchmark qwen3-1.7b-vllm --solo --dry-run
+```
+
+## How it works
+
+The benchmark command follows a three-step flow:
+
+1. **Launch inference** — Starts the inference server using the same logic as `sparkrun run`. The server's `served_model_name` is suppressed so the benchmark framework can address the model by its HuggingFace ID.
+2. **Run benchmark** — Executes the benchmarking framework (default: [llama-benchy](https://github.com/meta-llama/llama-benchy)) against the running server. Results are streamed live and captured for export.
+3. **Stop inference** — Stops the inference server after benchmarking completes.
+
+Each step can be controlled independently:
+- `--skip-run` skips step 1 (benchmark an existing server)
+- `--no-stop` skips step 3 (leave inference running after benchmarking)
+
+## Options
+
+| Option                       | Description                                              |
+|------------------------------|----------------------------------------------------------|
+| `RECIPE_NAME`                | Recipe to benchmark (required)                           |
+| `--hosts` / `-H`             | Comma-separated host list (first = head)                 |
+| `--hosts-file`               | File with hosts (one per line, `#` comments)             |
+| `--cluster`                  | Use a saved cluster by name                              |
+| `--solo`                     | Force single-node mode                                   |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism                              |
+| `--port`                     | Override serve port                                      |
+| `--image`                    | Override container image                                 |
+| `--cache-dir`                | HuggingFace cache directory                              |
+| `--profile`                  | Benchmark profile name or file (`@registry/name` syntax) |
+| `--framework`                | Override benchmarking framework (default: `llama-benchy`) |
+| `--out` / `--output`         | Output file for results YAML                             |
+| `--option` / `-o`            | Override benchmark args: `-o key=value` (repeatable)     |
+| `--no-stop`                  | Don't stop inference after benchmarking                  |
+| `--skip-run`                 | Skip launching inference (benchmark existing instance)   |
+| `--sync-tuning`              | Sync tuning configs from registries before benchmarking  |
+| `--timeout`                  | Benchmark timeout in seconds (default: 14400)            |
+| `--dry-run` / `-n`           | Show what would be done without executing                |
+
+## Benchmark configuration
+
+Benchmark arguments are resolved from multiple sources (highest priority first):
+
+1. **CLI overrides** (`-o key=value`)
+2. **Benchmark profile** (`--profile`)
+3. **Recipe's `benchmark:` block** (embedded in recipe YAML)
+4. **Framework defaults** (e.g. llama-benchy defaults)
+
+### Benchmark profiles
+
+Profiles are standalone YAML files that define benchmark configurations. They can live in recipe registries alongside recipes.
+
+```bash
+# List available profiles
+sparkrun registry list-benchmark-profiles
+
+# Show profile details
+sparkrun registry show-benchmark-profile spark-arena-v1
+
+# Use a profile
+sparkrun benchmark my-recipe --profile spark-arena-v1
+```
+
+Profiles from registries use `@registry/name` syntax:
+
+```bash
+sparkrun benchmark my-recipe --profile @sparkrun-testing/spark-arena-v1
+```
+
+### Recipe benchmark blocks
+
+Recipes can embed default benchmark configuration:
+
+```yaml
+model: Qwen/Qwen3-1.7B
+runtime: vllm
+container: scitrera/dgx-spark-vllm:0.16.0-t5
+
+benchmark:
+  framework: llama-benchy
+  pp: [2048]
+  depth: [0, 4096]
+  enable_prefix_caching: true
+```
+
+## Results
+
+Results are saved as YAML (and optionally CSV) with full metadata:
+
+```yaml
+sparkrun_benchmark:
+  version: "1"
+  timestamp: "2026-02-28T..."
+  recipe:
+    name: qwen3-1.7b-vllm
+    model: Qwen/Qwen3-1.7B
+    runtime: vllm
+  cluster:
+    hosts: ["192.168.11.13"]
+    tp: 1
+  benchmark:
+    framework: llama-benchy
+    args:
+      pp: [2048]
+      depth: [0]
+  results:
+    rows:
+      - {pp: 2048, tg: 32, depth: 0, ...}
+```
+
+The output filename is auto-generated as `benchmark_<recipe>_<profile>.yaml` unless `--out` is specified.
+
+## llama-benchy framework
+
+The default benchmarking framework is [llama-benchy](https://github.com/meta-llama/llama-benchy), invoked via `uvx llama-benchy`. It benchmarks OpenAI-compatible inference endpoints with configurable prompt sizes, token generation counts, and concurrency levels.
+
+Common benchmark args:
+
+| Arg | Type | Description |
+|-----|------|-------------|
+| `pp` | list[int] | Prompt processing token counts (default: `[2048]`) |
+| `tg` | list[int] | Token generation counts (default: `[32]`) |
+| `depth` | list[int] | Context depths (default: `[0]`) |
+| `concurrency` | list[int] | Concurrent requests per test (default: `[1]`) |
+| `runs` | int | Runs per test (default: `3`) |
+| `enable_prefix_caching` | bool | Enable prefix caching measurement |
+
+```bash
+# Example: comprehensive benchmark
+sparkrun benchmark my-recipe --solo \
+  -o pp=2048 \
+  -o tg=32,128 \
+  -o depth=0,4096,16384,65536 \
+  -o concurrency=1,2,5,10 \
+  -o enable_prefix_caching=true
+```

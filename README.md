@@ -400,6 +400,7 @@ the local copy without re-downloading.
 | `sparkrun run <recipe>`  | Launch an inference workload |
 | `sparkrun stop <recipe>` | Stop a running workload      |
 | `sparkrun logs <recipe>` | Re-attach to workload logs   |
+| `sparkrun benchmark -f <file>` | Run a standalone benchmark YAML |
 
 **`sparkrun run` options:**
 
@@ -443,6 +444,14 @@ the local copy without re-downloading.
 | `--cluster`                  | Use a saved cluster by name                         |
 | `--tp` / `--tensor-parallel` | Match host trimming from run                        |
 | `--tail`                     | Number of existing log lines to show (default: 100) |
+
+**`sparkrun benchmark` options:**
+
+| Option             | Description                                   |
+|--------------------|-----------------------------------------------|
+| `--file` / `-f`    | Standalone benchmark YAML file                |
+| `--option` / `-o`  | Override benchmark args: `-o key=value`       |
+| `--dry-run` / `-n` | Print rendered benchmark command without running |
 
 ### Tune commands (experimental)
 

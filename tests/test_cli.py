@@ -54,6 +54,7 @@ class TestVersionAndHelp:
         assert "search" in result.output
         assert "stop" in result.output
         assert "logs" in result.output
+        assert "benchmark" in result.output
 
     def test_run_help(self, runner):
         """Test that sparkrun run --help shows run command help."""
@@ -1490,6 +1491,50 @@ class TestSetupClearCache:
             assert "2 cleared" in result.output
             # Only the sudoers install calls — no fallback sudo calls for drop_caches
             assert mock_sudo.call_count == 2
+
+
+class TestBenchmarkCommand:
+    """Test the benchmark command."""
+
+    def test_benchmark_help(self, runner):
+        """sparkrun benchmark --help shows benchmark options."""
+        result = runner.invoke(main, ["benchmark", "--help"])
+        assert result.exit_code == 0
+        assert "--file" in result.output
+        assert "--option" in result.output
+
+    def test_benchmark_dry_run(self, runner):
+        """sparkrun benchmark -f ... --dry-run renders command."""
+        result = runner.invoke(main, [
+            "benchmark",
+            "-f", "benchmarks/nemotron3-nano-30b-vllm.yaml",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert "Benchmark file:" in result.output
+        assert "Benchmark command:" in result.output
+        assert "llama-benchy" in result.output
+
+    def test_benchmark_dry_run_with_option_override(self, runner):
+        """-o overrides benchmark args for rendered command."""
+        result = runner.invoke(main, [
+            "benchmark",
+            "-f", "benchmarks/nemotron3-nano-30b-vllm.yaml",
+            "--dry-run",
+            "-o", "format=json",
+        ])
+        assert result.exit_code == 0
+        assert "--format json" in result.output
+
+    def test_benchmark_missing_file_errors(self, runner):
+        """Missing benchmark file should exit with error."""
+        result = runner.invoke(main, [
+            "benchmark",
+            "-f", "benchmarks/does-not-exist.yaml",
+            "--dry-run",
+        ])
+        assert result.exit_code != 0
+        assert "Error" in result.output
 
 
 class TestLogCommand:

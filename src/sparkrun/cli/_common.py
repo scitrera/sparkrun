@@ -468,8 +468,7 @@ class RecipeNameType(click.ParamType):
                         if not reg.enabled or not reg.name.startswith(prefix):
                             continue
                         recipe_path = registry_mgr.cache_root / reg.name / reg.subpath
-                        recipes = list_recipes(search_paths=[recipe_path],
-                                               registry_manager=registry_mgr)
+                        recipes = list_recipes(search_paths=[recipe_path])
                         for r in recipes:
                             items.append(click.shell_completion.CompletionItem(
                                 "@%s/%s" % (reg.name, r["file"])))
@@ -484,8 +483,7 @@ class RecipeNameType(click.ParamType):
                     except Exception:
                         return []
                     recipe_path = registry_mgr.cache_root / entry.name / entry.subpath
-                    recipes = list_recipes(search_paths=[recipe_path],
-                                           registry_manager=registry_mgr)
+                    recipes = list_recipes(search_paths=[recipe_path])
                     return [
                         click.shell_completion.CompletionItem("@%s/%s" % (registry_name, r["file"]))
                         for r in recipes

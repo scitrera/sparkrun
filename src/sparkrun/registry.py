@@ -916,33 +916,16 @@ class RegistryManager:
         Returns:
             List of recipe metadata dicts.
         """
-        recipes = []
         if not recipe_dir.is_dir():
-            return recipes
+            return []
 
-        from sparkrun.recipe import resolve_runtime
+        from sparkrun.recipe import recipe_summary
 
+        recipes = []
         for f in sorted(recipe_dir.rglob("*.yaml")):
-            stem = f.stem
-            try:
-                data = read_yaml(str(f))
-                if not isinstance(data, dict):
-                    continue
-                defaults = data.get("defaults", {})
-                recipes.append({
-                    "name": data.get("name", stem),
-                    "file": stem,
-                    "path": str(f),
-                    "model": data.get("model", ""),
-                    "description": data.get("description", ""),
-                    "runtime": resolve_runtime(data),
-                    "registry": registry_name,
-                    "min_nodes": data.get("min_nodes", 1),
-                    "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",
-                    "gpu_mem": defaults.get("gpu_memory_utilization", "") if isinstance(defaults, dict) else "",
-                })
-            except Exception:
-                logger.debug("Skipping invalid recipe file: %s", f)
+            entry = recipe_summary(f, registry_name=registry_name)
+            if entry is not None:
+                recipes.append(entry)
         return recipes
 
     def search_recipes(self, query: str, include_hidden: bool = False) -> list[dict[str, Any]]:

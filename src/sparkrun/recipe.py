@@ -232,7 +232,7 @@ class Recipe:
 
         # Core fields — name defaults to source filename stem if not provided
         default_name = Path(source_path).stem if source_path else "unnamed"
-        self.name: str = data.get("name", default_name)
+        self.name: str = default_name  # data.get("name", default_name)
         self.description: str = data.get("description", "")
         self.model: str = data.get("model", "")
         self.model_revision: str | None = data.get("model_revision")
@@ -273,10 +273,10 @@ class Recipe:
         self.metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
 
         # Metadata values supplement missing top-level fields
-        if not self.name or self.name == default_name:
-            meta_name = self.metadata.get("name")
-            if meta_name:
-                self.name = str(meta_name)
+        # if not self.name or self.name == default_name:
+        #     meta_name = self.metadata.get("name")
+        #     if meta_name:
+        #         self.name = str(meta_name)
         if not self.description:
             meta_desc = self.metadata.get("description")
             if meta_desc:
@@ -703,37 +703,55 @@ def find_benchmark_profile(
     raise ProfileError("Benchmark profile '%s' not found" % lookup_name)
 
 
+def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, Any] | None:
+    """Build a lightweight recipe summary dict from a YAML file.
+
+    Returns a metadata dict suitable for recipe listing and search, or
+    ``None`` if the file cannot be read or does not contain a dict.
+
+    This is intentionally cheaper than constructing a full :class:`Recipe`
+    — it skips version migration, resolver chains, and env expansion.
+    """
+    try:
+        data = read_yaml(str(path))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    stem = path.stem
+    defaults = data.get("defaults", {})
+    entry: dict[str, Any] = {
+        "name": stem,
+        "file": stem,
+        "path": str(path),
+        "model": data.get("model", ""),
+        "description": data.get("description", ""),
+        "runtime": resolve_runtime(data),
+        "min_nodes": data.get("min_nodes", 1),
+        "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",
+        "gpu_mem": defaults.get("gpu_memory_utilization", "") if isinstance(defaults, dict) else "",
+    }
+    if registry_name:
+        entry["registry"] = registry_name
+    return entry
+
+
 def list_recipes(search_paths: list[Path] | None = None,
                  registry_manager: RegistryManager | None = None,
                  include_hidden: bool = False,
-                 local_files: list[Path] | None = None) -> list[dict[str, str]]:
+                 local_files: list[Path] | None = None) -> list[dict[str, Any]]:
     """List all available recipes with name and path."""
-    recipes = []
+    recipes: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
     # Process CWD-discovered local files first (no registry label)
     for f in (local_files or []):
-        stem = f.stem
-        if stem in seen_names:
+        if f.stem in seen_names:
             continue
-        seen_names.add(stem)
-        try:
-            data = read_yaml(str(f))
-            entry = {
-                "name": data.get("name", stem) if isinstance(data, dict) else stem,
-                "file": stem,
-                "path": str(f),
-                "runtime": resolve_runtime(data) if isinstance(data, dict) else "unknown",
-            }
-            if isinstance(data, dict):
-                entry["min_nodes"] = data.get("min_nodes", '1')
-                defaults = data.get("defaults", {})
-                if isinstance(defaults, dict):
-                    entry["tp"] = defaults.get("tensor_parallel", "")
-                    entry["gpu_mem"] = defaults.get("gpu_memory_utilization", "")
+        seen_names.add(f.stem)
+        entry = recipe_summary(f)
+        if entry is not None:
             recipes.append(entry)
-        except Exception:
-            logger.debug("Skipping invalid local recipe file: %s", f)
 
     all_paths = list(search_paths or [])
 
@@ -756,28 +774,12 @@ def list_recipes(search_paths: list[Path] | None = None,
                         break
 
         for f in sorted(search_dir.rglob("*.yaml")):
-            stem = f.stem
-            if stem not in seen_names:
-                seen_names.add(stem)
-                try:
-                    data = read_yaml(str(f))
-                    entry = {
-                        "name": data.get("name", stem) if isinstance(data, dict) else stem,
-                        "file": stem,
-                        "path": str(f),
-                        "runtime": resolve_runtime(data) if isinstance(data, dict) else "unknown",
-                    }
-                    if isinstance(data, dict):
-                        entry["min_nodes"] = data.get("min_nodes", '1')
-                        defaults = data.get("defaults", {})
-                        if isinstance(defaults, dict):
-                            entry["tp"] = defaults.get("tensor_parallel", "")
-                            entry["gpu_mem"] = defaults.get("gpu_memory_utilization", "")
-                    if registry_name:
-                        entry["registry"] = registry_name
+            if f.stem not in seen_names:
+                seen_names.add(f.stem)
+                entry = recipe_summary(f, registry_name=registry_name)
+                if entry is not None:
                     recipes.append(entry)
-                except Exception:
-                    logger.debug("Skipping invalid recipe file: %s", f)
+
     return recipes
 
 

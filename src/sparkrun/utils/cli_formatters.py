@@ -9,7 +9,7 @@ def format_recipe_table(
         recipes: list[dict[str, Any]],
         *,
         show_model: bool = False,
-        show_file: bool = True,
+        show_file: bool = False,
 ) -> str:
     """Format recipe metadata as a text table.
 

@@ -47,7 +47,7 @@ def recipe_list(ctx, registry, runtime, show_all, query, config_path=None):
                                local_files=discover_cwd_recipes())
 
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
-    click.echo(format_recipe_table(recipes, show_file=True))
+    click.echo(format_recipe_table(recipes, show_model=True))
 
 
 @recipe.command("search")

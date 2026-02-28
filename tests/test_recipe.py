@@ -24,7 +24,7 @@ def test_load_v2_recipe(tmp_recipe_dir: Path):
     recipe_path = tmp_recipe_dir / "test-vllm.yaml"
     recipe = Recipe.load(recipe_path)
 
-    assert recipe.name == "Test vLLM Recipe"
+    assert recipe.name == "test-vllm"  # name is always the filename stem
     assert recipe.description == "A test recipe for vLLM"
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.runtime == "vllm-distributed"
@@ -54,7 +54,7 @@ def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
     recipe_path = tmp_recipe_dir / "test-eugr.yaml"
     recipe = Recipe.load(recipe_path)
 
-    assert recipe.name == "Test EUGR Recipe"
+    assert recipe.name == "test-eugr"  # name is always the filename stem
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.sparkrun_version == "1"
 
@@ -76,7 +76,7 @@ def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
     recipe_path = tmp_recipe_dir / "test-plain-v1.yaml"
     recipe = Recipe.load(recipe_path)
 
-    assert recipe.name == "Test Plain v1 Recipe"
+    assert recipe.name == "test-plain-v1"  # name is always the filename stem
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.sparkrun_version == "1"
 
@@ -95,7 +95,7 @@ def test_recipe_from_dict(sample_v2_recipe_data: dict[str, Any]):
     """
     recipe = Recipe.from_dict(sample_v2_recipe_data)
 
-    assert recipe.name == "Sample vLLM Recipe"
+    assert recipe.name == "unnamed"  # from_dict has no source_path, so name defaults
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
     assert recipe.runtime == "vllm-distributed"
     assert recipe.mode == "auto"
@@ -147,29 +147,36 @@ def test_recipe_name_defaults_to_filename(tmp_path):
 
 
 def test_recipe_name_explicit_overrides_filename(tmp_path):
-    """Explicit name in YAML should override filename-derived default."""
+    """Recipe name is always the filename stem, ignoring the YAML name field."""
     recipe_file = tmp_path / "some-file.yaml"
     recipe_file.write_text("name: My Custom Name\nmodel: test-model\nruntime: vllm\n")
     recipe = Recipe.load(recipe_file)
-    assert recipe.name == "My Custom Name"
+    assert recipe.name == "some-file"
 
 
-def test_recipe_slug():
-    """Test slug generation from recipe names with spaces and special characters.
+def test_recipe_slug(tmp_path):
+    """Test slug generation from recipe names (filename stems).
 
-    Verifies that recipe names are correctly converted to URL/filesystem-safe slugs.
+    Recipe.name is always the filename stem, so slugs derive from filenames.
     """
-    recipe1 = Recipe.from_dict({"name": "My Test Recipe", "model": "test"})
+    f1 = tmp_path / "My Test Recipe.yaml"
+    f1.write_text("model: test\nruntime: vllm\n")
+    recipe1 = Recipe.load(f1)
     assert recipe1.slug == "my-test-recipe"
 
-    recipe2 = Recipe.from_dict({"name": "Recipe!!!With@Special#Chars", "model": "test"})
+    f2 = tmp_path / "Recipe!!!With@Special#Chars.yaml"
+    f2.write_text("model: test\nruntime: vllm\n")
+    recipe2 = Recipe.load(f2)
     assert recipe2.slug == "recipe-with-special-chars"
 
-    recipe3 = Recipe.from_dict({"name": "  Extra   Spaces  ", "model": "test"})
-    assert recipe3.slug == "extra-spaces"
+    f3 = tmp_path / "CamelCaseRecipe.yaml"
+    f3.write_text("model: test\nruntime: vllm\n")
+    recipe3 = Recipe.load(f3)
+    assert recipe3.slug == "camelcaserecipe"
 
-    recipe4 = Recipe.from_dict({"name": "CamelCaseRecipe", "model": "test"})
-    assert recipe4.slug == "camelcaserecipe"
+    # from_dict with no source_path defaults to "unnamed"
+    recipe4 = Recipe.from_dict({"model": "test"})
+    assert recipe4.slug == "unnamed"
 
 
 def test_recipe_validate_valid(sample_v2_recipe_data: dict[str, Any]):
@@ -183,15 +190,16 @@ def test_recipe_validate_valid(sample_v2_recipe_data: dict[str, Any]):
 
 
 def test_recipe_validate_missing_name():
-    """Validate a recipe with empty name field and verify error is returned.
+    """Validate a recipe missing model/runtime and verify errors are returned.
 
-    Tests validation error detection for empty required field.
-    Note: Recipe defaults missing 'name' to 'unnamed', so we must
-    explicitly pass an empty string to trigger the validation error.
+    Recipe.name is always populated from the filename stem (or 'unnamed'
+    for from_dict), so we test validation of other required fields instead.
     """
-    recipe = Recipe.from_dict({"name": "", "model": "test-model", "runtime": "vllm"})
+    recipe = Recipe.from_dict({"name": "ignored"})
     issues = recipe.validate()
-    assert len(issues) > 0
+    # Should flag missing model and runtime
+    assert any("model" in i for i in issues)
+    assert any("runtime" in i for i in issues)
     assert any("name" in issue.lower() for issue in issues)
 
 

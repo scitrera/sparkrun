@@ -61,7 +61,8 @@ class RuntimePlugin(Plugin):
     @abstractmethod
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
+                         head_ip: str | None = None,
+                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Generate the serve command string from recipe + CLI overrides.
 
         Args:
@@ -70,6 +71,9 @@ class RuntimePlugin(Plugin):
             is_cluster: Whether running in multi-node mode
             num_nodes: Total number of nodes in the cluster
             head_ip: Head node IP (only set for cluster mode)
+            skip_keys: Config keys to omit from the generated command.
+                Used by the benchmark flow to suppress ``served_model_name``
+                so the server responds to the raw HF model ID.
 
         Returns:
             The full command string to execute inside the container
@@ -242,6 +246,40 @@ class RuntimePlugin(Plugin):
             else:
                 parts.extend([flag, str(value)])
         return parts
+
+    @staticmethod
+    def strip_flags_from_command(
+            command: str,
+            skip_keys: set[str] | frozenset[str],
+            flag_map: dict[str, str],
+            bool_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
+        """Strip CLI flags for *skip_keys* from a rendered command string.
+
+        Used when ``recipe.render_command()`` produces the command via template
+        substitution, bypassing ``build_flags_from_map()``'s skip_keys support.
+        Each runtime calls this with its own flag_map.
+
+        Args:
+            command: The rendered command string.
+            skip_keys: Config keys whose flags should be removed.
+            flag_map: Mapping of config key to CLI flag string.
+            bool_keys: Set of keys treated as boolean (flag-only, no value).
+
+        Returns:
+            Command string with the specified flags removed.
+        """
+        import re
+        for key in skip_keys:
+            flag = flag_map.get(key)
+            if not flag:
+                continue
+            escaped = re.escape(flag)
+            if key in bool_keys:
+                command = re.sub(r'\s*' + escaped + r'(?=\s|$)', '', command)
+            else:
+                command = re.sub(r'\s*' + escaped + r'\s+\S+', '', command)
+        return command
 
     def is_delegating_runtime(self) -> bool:
         """True if this runtime delegates entirely to external scripts.

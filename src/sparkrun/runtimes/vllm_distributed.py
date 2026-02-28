@@ -36,7 +36,8 @@ class VllmDistributedRuntime(RuntimePlugin):
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
+                         head_ip: str | None = None,
+                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Generate the vllm serve command.
 
         For cluster mode this produces the *base* command without
@@ -48,9 +49,13 @@ class VllmDistributedRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            if skip_keys:
+                rendered = self.strip_flags_from_command(
+                    rendered, skip_keys, _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS,
+                )
             return rendered
 
-        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip)
+        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip, skip_keys=skip_keys)
 
     def generate_node_command(
             self,
@@ -89,7 +94,8 @@ class VllmDistributedRuntime(RuntimePlugin):
             parts.append("--headless")
         return " ".join(parts)
 
-    def _build_base_command(self, recipe: Recipe, config) -> str:
+    def _build_base_command(self, recipe: Recipe, config,
+                            skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the vllm serve command without cluster-specific arguments."""
         parts = ["vllm", "serve", recipe.model]
 
@@ -99,6 +105,7 @@ class VllmDistributedRuntime(RuntimePlugin):
 
         # Add flags from defaults (skip tp and distributed_executor_backend)
         skip = {"tensor_parallel", "distributed_executor_backend"}
+        skip.update(skip_keys)
         parts.extend(self.build_flags_from_map(
             config, _VLLM_FLAG_MAP, bool_keys=_VLLM_BOOL_FLAGS, skip_keys=skip,
         ))
@@ -106,14 +113,15 @@ class VllmDistributedRuntime(RuntimePlugin):
         return " ".join(parts)
 
     def _build_command(self, recipe: Recipe, config, is_cluster: bool,
-                       num_nodes: int, head_ip: str | None = None) -> str:
+                       num_nodes: int, head_ip: str | None = None,
+                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the vllm serve command from structured config.
 
         For cluster mode, includes ``--nnodes``, ``--master-addr``, and
         ``--master-port`` but NOT ``--node-rank`` (that is added per-node
         by :meth:`generate_node_command`).
         """
-        base = self._build_base_command(recipe, config)
+        base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
         if is_cluster and head_ip:
             base += " --nnodes %d --master-addr %s --master-port 25000" % (num_nodes, head_ip)

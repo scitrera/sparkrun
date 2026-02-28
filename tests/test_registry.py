@@ -141,17 +141,26 @@ class TestDefaultRegistries:
 
     def test_has_experimental_registry(self):
         """Test that FALLBACK_DEFAULT_REGISTRIES includes the experimental registry."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 3
-        experimental = FALLBACK_DEFAULT_REGISTRIES[2]
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 4
+        experimental = FALLBACK_DEFAULT_REGISTRIES[3]
         assert experimental.name == "experimental"
         assert "github.com/spark-arena/recipe-registry" in experimental.url
         assert experimental.subpath == "experimental-recipes"
         assert experimental.enabled is True
         assert experimental.visible is False
 
-    def test_three_default_registries(self):
-        """Test that there are exactly three default registries."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) == 3
+    def test_has_eugr_registry(self):
+        """Test that FALLBACK_DEFAULT_REGISTRIES includes the eugr registry."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 3
+        eugr = FALLBACK_DEFAULT_REGISTRIES[2]
+        assert eugr.name == "eugr"
+        assert "eugr/spark-vllm-docker" in eugr.url
+        assert eugr.enabled is True
+        assert eugr.visible is True
+
+    def test_four_default_registries(self):
+        """Test that there are exactly four default registries."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) == 4
 
     def test_testing_registry_subpath(self):
         """Test the sparkrun-testing registry subpath."""
@@ -761,7 +770,7 @@ class TestDefaultRegistriesNewFields:
         assert official.name == "official"
 
     def test_experimental_is_hidden(self):
-        experimental = FALLBACK_DEFAULT_REGISTRIES[2]
+        experimental = FALLBACK_DEFAULT_REGISTRIES[3]
         assert experimental.visible is False
 
 

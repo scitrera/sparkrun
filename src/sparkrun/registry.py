@@ -70,6 +70,13 @@ FALLBACK_DEFAULT_REGISTRIES = [
         visible=True,
     ),
     RegistryEntry(
+        name="eugr",
+        url='https://github.com/eugr/spark-vllm-docker',
+        subpath="recipes",
+        description="Official eugr/spark-vllm-docker repo recipes",
+        visible=True,
+    ),
+    RegistryEntry(
         name="experimental",
         url="https://github.com/spark-arena/recipe-registry.git",
         subpath="experimental-recipes",

@@ -23,6 +23,7 @@ _LLAMA_CPP_FLAG_MAP = {
     "chat_template": "--chat-template",
     "reasoning_format": "--reasoning-format",
     "split_mode": "--split-mode",
+    "served_model_name": "--alias",
 }
 
 # Defaults injected when not set in recipe config
@@ -66,7 +67,8 @@ class LlamaCppRuntime(RuntimePlugin):
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
+                         head_ip: str | None = None,
+                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Generate the llama-server command.
 
         When a pre-resolved GGUF path is available (``_gguf_model_path``
@@ -87,12 +89,18 @@ class LlamaCppRuntime(RuntimePlugin):
                 # but -hf expects a HF repo spec, not a local file.
                 # Switch to -m (model file path) instead.
                 rendered = rendered.replace("-hf ", "-m ", 1)
+            if skip_keys:
+                all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
+                rendered = self.strip_flags_from_command(
+                    rendered, skip_keys, all_flags, set(_LLAMA_CPP_BOOL_FLAGS),
+                )
             return rendered
 
         # Otherwise, build command from structured defaults
-        return self._build_command(recipe, config)
+        return self._build_command(recipe, config, skip_keys=skip_keys)
 
-    def _build_command(self, recipe: Recipe, config) -> str:
+    def _build_command(self, recipe: Recipe, config,
+                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the llama-server command from structured config."""
         from vpd.legacy.yaml_dict import vpd_chain
 
@@ -121,6 +129,7 @@ class LlamaCppRuntime(RuntimePlugin):
         all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
         parts.extend(self.build_flags_from_map(
             config, all_flags, bool_keys=set(_LLAMA_CPP_BOOL_FLAGS),
+            skip_keys=skip_keys,
         ))
 
         return " ".join(parts)

@@ -51,7 +51,8 @@ class SglangRuntime(RuntimePlugin):
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
+                         head_ip: str | None = None,
+                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Generate the sglang launch_server command.
 
         For cluster mode this produces the *base* command without
@@ -64,9 +65,13 @@ class SglangRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            if skip_keys:
+                rendered = self.strip_flags_from_command(
+                    rendered, skip_keys, _SGLANG_FLAG_MAP, _SGLANG_BOOL_FLAGS,
+                )
             return rendered
 
-        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip)
+        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip, skip_keys=skip_keys)
 
     def generate_node_command(
             self,
@@ -117,7 +122,8 @@ class SglangRuntime(RuntimePlugin):
         if gguf_path:
             config.put("model", str(gguf_path))
 
-    def _build_base_command(self, recipe: Recipe, config) -> str:
+    def _build_base_command(self, recipe: Recipe, config,
+                            skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the sglang command without cluster-specific arguments."""
         # For GGUF models, use the resolved file path instead of the HF repo name
         model_path = config.get("_gguf_model_path") or recipe.model
@@ -127,22 +133,25 @@ class SglangRuntime(RuntimePlugin):
         if tp:
             parts.extend(["--tp-size", str(tp)])
 
+        skip = {"tensor_parallel"}
+        skip.update(skip_keys)
         parts.extend(self.build_flags_from_map(
             config, _SGLANG_FLAG_MAP, bool_keys=_SGLANG_BOOL_FLAGS,
-            skip_keys={"tensor_parallel"},
+            skip_keys=skip,
         ))
 
         return " ".join(parts)
 
     def _build_command(self, recipe: Recipe, config, is_cluster: bool,
-                       num_nodes: int, head_ip: str | None = None) -> str:
+                       num_nodes: int, head_ip: str | None = None,
+                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the sglang launch_server command from structured config.
 
         For cluster mode, includes ``--dist-init-addr`` and ``--nnodes`` but
         NOT ``--node-rank`` (that is added per-node by the orchestrator or
         by :meth:`generate_node_command`).
         """
-        base = self._build_base_command(recipe, config)
+        base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
         if is_cluster and head_ip:
             base += " --dist-init-addr %s:25000 --nnodes %d" % (head_ip, num_nodes)

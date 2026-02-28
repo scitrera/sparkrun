@@ -10,6 +10,7 @@ from scitrera_app_framework.util import find_types_in_modules
 
 if TYPE_CHECKING:
     from sparkrun.runtimes.base import RuntimePlugin
+    from sparkrun.benchmarking.base import BenchmarkingPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,15 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
         except (ValueError, TypeError) as e:
             logger.debug("Skipping runtime %s: %s", runtime_cls.__name__, e)
 
-    # TODO: auto-discover and register benchmarking framework plugins
+    # Auto-discover all BenchmarkingPlugin subclasses in sparkrun.benchmarking
+    from sparkrun.benchmarking.base import BenchmarkingPlugin as _BenchPlugin
+    discovered_bench = list(find_types_in_modules("sparkrun.benchmarking", _BenchPlugin))
+    for bench_cls in discovered_bench:
+        try:
+            register_plugin(bench_cls, v=v)
+            logger.debug("Registered benchmarking framework: %s", bench_cls.__name__)
+        except (ValueError, TypeError) as e:
+            logger.debug("Skipping benchmarking framework %s: %s", bench_cls.__name__, e)
 
     return v
 

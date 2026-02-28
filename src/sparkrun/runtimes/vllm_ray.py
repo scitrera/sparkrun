@@ -52,7 +52,8 @@ class VllmRayRuntime(RuntimePlugin):
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None) -> str:
+                         head_ip: str | None = None,
+                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Generate the vllm serve command."""
         config = recipe.build_config_chain(overrides)
 
@@ -62,12 +63,17 @@ class VllmRayRuntime(RuntimePlugin):
             # Ensure --distributed-executor-backend ray is present for cluster mode
             if is_cluster and "--distributed-executor-backend" not in rendered:
                 rendered = rendered.rstrip() + " --distributed-executor-backend ray"
+            if skip_keys:
+                rendered = self.strip_flags_from_command(
+                    rendered, skip_keys, _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS,
+                )
             return rendered
 
         # Otherwise, build command from structured defaults
-        return self._build_command(recipe, config, is_cluster, num_nodes)
+        return self._build_command(recipe, config, is_cluster, num_nodes, skip_keys=skip_keys)
 
-    def _build_command(self, recipe: Recipe, config, is_cluster: bool, num_nodes: int) -> str:
+    def _build_command(self, recipe: Recipe, config, is_cluster: bool, num_nodes: int,
+                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the vllm serve command from structured config."""
         parts = ["vllm", "serve", recipe.model]
 
@@ -86,6 +92,7 @@ class VllmRayRuntime(RuntimePlugin):
         skip = {"tensor_parallel"}
         if is_cluster:
             skip.add("distributed_executor_backend")
+        skip.update(skip_keys)
         parts.extend(self.build_flags_from_map(
             config, _VLLM_FLAG_MAP, bool_keys=_VLLM_BOOL_FLAGS, skip_keys=skip,
         ))

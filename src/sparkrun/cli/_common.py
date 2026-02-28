@@ -294,6 +294,12 @@ def _load_recipe(config, recipe_name):
 
     # Tag recipe with its source registry (None for local/CWD recipes)
     recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
+    if recipe.source_registry:
+        try:
+            entry = registry_mgr.get_registry(recipe.source_registry)
+            recipe.source_registry_url = entry.url
+        except Exception:
+            pass
     return recipe, recipe_path, registry_mgr
 
 

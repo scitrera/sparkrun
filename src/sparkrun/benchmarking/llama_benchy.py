@@ -26,6 +26,12 @@ _BOOL_ARGS = {
     "save_total_throughput_timeseries", "save_all_throughput_timeseries",
 }
 
+# Common shorthand aliases → canonical llama-benchy arg names.
+# Profiles may use shorter key names for convenience.
+_ARG_ALIASES: dict[str, str] = {
+    "prefix_caching": "enable_prefix_caching",
+}
+
 
 class LlamaBenchyFramework(BenchmarkingPlugin):
     """llama-benchy benchmarking framework.
@@ -55,11 +61,11 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         return missing
 
     def build_benchmark_command(
-        self,
-        target_url: str,
-        model: str,
-        args: dict[str, Any],
-        result_file: str | None = None,
+            self,
+            target_url: str,
+            model: str,
+            args: dict[str, Any],
+            result_file: str | None = None,
     ) -> list[str]:
         """Build the uvx llama-benchy command.
 
@@ -81,6 +87,9 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
             # Skip args we handle explicitly above
             if key in ("base_url", "model", "format", "save_result"):
                 continue
+
+            # Resolve shorthand aliases to canonical names
+            key = _ARG_ALIASES.get(key, key)
 
             flag = "--" + key.replace("_", "-")
 
@@ -107,6 +116,9 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         comma-separated. Known booleans become bool. Others use coerce_value().
         """
         from sparkrun.utils import coerce_value
+
+        # Resolve shorthand aliases
+        key = _ARG_ALIASES.get(key, key)
 
         if key in _BOOL_ARGS:
             return coerce_value(value)
@@ -146,5 +158,6 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
         return {
             "rows": rows,
-            "raw_stdout": stdout,
+            'csv': csv_text,
+            "stdout": stdout,
         }

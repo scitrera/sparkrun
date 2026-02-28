@@ -39,6 +39,12 @@ _LLAMA_CPP_BOOL_FLAGS = {
     "jinja": "--jinja",
 }
 
+# Short-form flag aliases recognised when stripping flags from rendered
+# command templates (e.g. ``-a`` is the short form of ``--alias``).
+_LLAMA_CPP_FLAG_ALIASES: dict[str, list[str]] = {
+    "served_model_name": ["-a"],
+}
+
 # Default RPC port for llama.cpp distributed inference
 _DEFAULT_RPC_PORT = 50052
 
@@ -93,6 +99,7 @@ class LlamaCppRuntime(RuntimePlugin):
                 all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
                 rendered = self.strip_flags_from_command(
                     rendered, skip_keys, all_flags, set(_LLAMA_CPP_BOOL_FLAGS),
+                    flag_aliases=_LLAMA_CPP_FLAG_ALIASES,
                 )
             return rendered
 
@@ -347,6 +354,7 @@ class LlamaCppRuntime(RuntimePlugin):
                     host, rpc_port,
                     max_retries=30, retry_interval=2,
                     ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                    container_name=worker_container_name,
                 )
                 if not ready:
                     logger.error(

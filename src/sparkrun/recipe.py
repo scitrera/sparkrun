@@ -18,6 +18,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Matches a backslash followed by trailing whitespace before a newline.
+# In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
+# an escaped space — a common YAML editing mistake that silently breaks
+# multi-line commands.
+_TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
+
 _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
 _CMD_VLLM_RE = re.compile(r"^vllm\s+serve\b")
 _CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_server)\b")
@@ -126,10 +132,10 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     if runtime_config is not None and not isinstance(runtime_config, dict):
         raise RecipeError("Recipe 'runtime_config' field must be a mapping, got %s" % type(runtime_config).__name__)
     if runtime in ("vllm", "") and (
-        data.get("build_args")
-        or data.get("mods")
-        or runtime_config.get("build_args")
-        or runtime_config.get("mods")
+            data.get("build_args")
+            or data.get("mods")
+            or runtime_config.get("build_args")
+            or runtime_config.get("mods")
     ):
         return "eugr-vllm"
     if runtime in ("vllm", ""):
@@ -194,12 +200,14 @@ class RecipeAmbiguousError(RecipeError):
         )
 
 
+# TODO: profile errors and functions problem belong in benchmarking-related code (and should not be shoved into recipe)
 class ProfileError(Exception):
     """Raised when a benchmark profile cannot be found."""
 
 
 class ProfileAmbiguousError(ProfileError):
     """Raised when a profile name matches multiple registries."""
+
     def __init__(self, name: str, matches: list[tuple[str, Path]]):
         self.name = name
         self.matches = matches
@@ -217,6 +225,7 @@ class Recipe:
         self._raw = data
         self.source_path = source_path
         self.source_registry: str | None = None  # set by _load_recipe after resolution
+        self.source_registry_url: str | None = None  # set by _load_recipe after resolution
 
         # Detect version
         self.sparkrun_version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
@@ -306,12 +315,6 @@ class Recipe:
         base.setdefault("model", self.model)
         return vpd_chain(cli_overrides or {}, user_config or {}, base)
 
-    # Matches a backslash followed by trailing whitespace before a newline.
-    # In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
-    # an escaped space — a common YAML editing mistake that silently breaks
-    # multi-line commands.
-    _TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
-
     def render_command(self, config_chain: VirtualPathDictChain) -> str | None:
         """Render the command template with values from the config chain.
 
@@ -331,7 +334,7 @@ class Recipe:
 
         # Fix trailing spaces after backslash line-continuations.
         # ``\<space><newline>`` → ``\<newline>``
-        rendered = self._TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
+        rendered = _TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
 
         return rendered
 
@@ -475,7 +478,7 @@ class Recipe:
         gpu_mem_val = config.get("gpu_memory_utilization")
         gpu_memory_utilization = float(gpu_mem_val) if gpu_mem_val is not None else None
 
-        return _estimate_vram(
+        result = _estimate_vram(
             model_params=model_params,
             model_dtype=str(model_dtype) if model_dtype else None,
             kv_dtype=str(kv_dtype) if kv_dtype else None,
@@ -488,6 +491,21 @@ class Recipe:
             kv_vram_per_token=float(kv_vram_per_token) if kv_vram_per_token is not None else None,
             gpu_memory_utilization=gpu_memory_utilization,
         )
+
+        # Write back auto-detected values so downstream consumers
+        # (e.g. benchmark result export) can use them without re-fetching.
+        if model_dtype and "model_dtype" not in self.metadata:
+            self.metadata["model_dtype"] = str(model_dtype)
+        if num_layers is not None and "num_layers" not in self.metadata:
+            self.metadata["num_layers"] = int(num_layers)
+        if num_kv_heads is not None and "num_kv_heads" not in self.metadata:
+            self.metadata["num_kv_heads"] = int(num_kv_heads)
+        if head_dim is not None and "head_dim" not in self.metadata:
+            self.metadata["head_dim"] = int(head_dim)
+        if model_params is not None and "model_params" not in self.metadata:
+            self.metadata["model_params"] = model_params
+
+        return result
 
     def __repr__(self) -> str:
         return "Recipe(name=%r, runtime=%r, model=%r)" % (self.name, self.runtime, self.model)
@@ -607,10 +625,10 @@ def find_recipe_in_registry(name: str, registry_name: str,
 
 
 def find_benchmark_profile(
-    name: str,
-    config,
-    registry_manager=None,
-    include_hidden: bool = False,
+        name: str,
+        config,
+        registry_manager=None,
+        include_hidden: bool = False,
 ) -> Path:
     """Find a benchmark profile by name.
 

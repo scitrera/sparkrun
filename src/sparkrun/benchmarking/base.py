@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
 
 # Keys in the benchmark: block that are NOT framework args
-_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata"}
+_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout"}
 
 
 class BenchmarkError(Exception):
@@ -54,6 +55,7 @@ class BenchmarkSpec:
     source_path: str
     framework: str
     args: dict[str, Any]
+    timeout: int | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> BenchmarkSpec:
@@ -93,10 +95,15 @@ class BenchmarkSpec:
         if not isinstance(args, dict):
             raise BenchmarkError("benchmark.args must be a mapping")
 
+        timeout = block.get("timeout")
+        if timeout is not None:
+            timeout = int(timeout)
+
         return cls(
             source_path=str(p),
             framework=framework,
             args=args,
+            timeout=timeout,
         )
 
     @classmethod
@@ -117,10 +124,15 @@ class BenchmarkSpec:
             if k not in _KNOWN_BENCHMARK_KEYS and k not in args:
                 args[k] = v
 
+        timeout = block.get("timeout")
+        if timeout is not None:
+            timeout = int(timeout)
+
         return cls(
             source_path=recipe.source_path or "",
             framework=str(framework),
             args=args,
+            timeout=timeout,
         )
 
     def build_command(self, extra_args: dict[str, Any] | None = None) -> list[str]:
@@ -201,11 +213,11 @@ class BenchmarkingPlugin(Plugin):
 
     @abstractmethod
     def build_benchmark_command(
-        self,
-        target_url: str,
-        model: str,
-        args: dict[str, Any],
-        result_file: str | None = None,
+            self,
+            target_url: str,
+            model: str,
+            args: dict[str, Any],
+            result_file: str | None = None,
     ) -> list[str]:
         """Build the benchmark command argv list.
 
@@ -255,16 +267,16 @@ class BenchmarkingPlugin(Plugin):
 
 
 def export_results(
-    *,
-    recipe: Recipe,
-    hosts: list[str],
-    tp: int,
-    cluster_id: str,
-    framework_name: str,
-    profile_name: str | None,
-    args: dict[str, Any],
-    results: dict[str, Any],
-    output_path: str | Path,
+        *,
+        recipe: Recipe,
+        hosts: list[str],
+        tp: int,
+        cluster_id: str,
+        framework_name: str,
+        profile_name: str | None,
+        args: dict[str, Any],
+        results: dict[str, Any],
+        output_path: str | Path,
 ) -> Path:
     """Export benchmark results to a YAML file.
 
@@ -283,6 +295,25 @@ def export_results(
         Path to the written file.
     """
     output_path = Path(output_path)
+    # noinspection PyProtectedMember
+    recipe_text = yaml.safe_dump(recipe._raw, indent=2, sort_keys=True)
+    recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
+
+    # Build model metadata from recipe metadata (includes auto-detected
+    # values written back by Recipe.estimate_vram).
+    model_meta: dict[str, Any] = {}
+    if recipe.metadata.get("model_dtype"):
+        model_meta["dtype"] = recipe.metadata["model_dtype"]
+    if recipe.model_revision:
+        model_meta["revision"] = recipe.model_revision
+    if recipe.metadata.get("model_params"):
+        model_meta["params"] = recipe.metadata["model_params"]
+    if recipe.metadata.get("num_layers"):
+        model_meta["num_layers"] = recipe.metadata["num_layers"]
+    if recipe.metadata.get("num_kv_heads"):
+        model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
+    if recipe.metadata.get("head_dim"):
+        model_meta["head_dim"] = recipe.metadata["head_dim"]
 
     data = {
         "sparkrun_benchmark": {
@@ -290,12 +321,17 @@ def export_results(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "recipe": {
                 "name": recipe.name,
+                "type": "sparkrun",
                 "model": recipe.model,
+                "container": recipe.container,
                 "runtime": recipe.runtime,
-                "source_registry": recipe.source_registry,
+                "registry": recipe.source_registry,
+                "registry_git": recipe.source_registry_url or "",
+                "text": recipe_text,
+                "hash": recipe_hash,
             },
+            "model": model_meta,
             "cluster": {
-                "hosts": hosts,
                 "tp": tp,
                 "cluster_id": cluster_id,
             },

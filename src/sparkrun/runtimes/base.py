@@ -253,6 +253,7 @@ class RuntimePlugin(Plugin):
             skip_keys: set[str] | frozenset[str],
             flag_map: dict[str, str],
             bool_keys: set[str] | frozenset[str] = frozenset(),
+            flag_aliases: dict[str, list[str]] | None = None,
     ) -> str:
         """Strip CLI flags for *skip_keys* from a rendered command string.
 
@@ -265,20 +266,42 @@ class RuntimePlugin(Plugin):
             skip_keys: Config keys whose flags should be removed.
             flag_map: Mapping of config key to CLI flag string.
             bool_keys: Set of keys treated as boolean (flag-only, no value).
+            flag_aliases: Optional mapping of config key to additional flag
+                forms (e.g. short flags) that should also be stripped.
 
         Returns:
             Command string with the specified flags removed.
         """
         import re
         for key in skip_keys:
-            flag = flag_map.get(key)
-            if not flag:
+            # Collect all flag forms for this key: canonical + aliases
+            flags_to_strip: list[str] = []
+            canonical = flag_map.get(key)
+            if canonical:
+                flags_to_strip.append(canonical)
+            if flag_aliases and key in flag_aliases:
+                flags_to_strip.extend(flag_aliases[key])
+            if not flags_to_strip:
                 continue
-            escaped = re.escape(flag)
-            if key in bool_keys:
-                command = re.sub(r'\s*' + escaped + r'(?=\s|$)', '', command)
-            else:
-                command = re.sub(r'\s*' + escaped + r'\s+\S+', '', command)
+
+            for flag in flags_to_strip:
+                escaped = re.escape(flag)
+                if key in bool_keys:
+                    command = re.sub(r'\s*' + escaped + r'(?=\s|$)', '', command)
+                else:
+                    # Match the flag, its value, and an optional trailing
+                    # backslash continuation on the same line.
+                    command = re.sub(
+                        escaped + r'\s+\S+\s*\\?\s*\n?', '', command,
+                    )
+
+        # Clean up artifacts from removed lines:
+        # - collapse double backslash-continuations (``\ \``) into one
+        # - remove blank continuation lines (``\`` followed by only whitespace)
+        command = re.sub(r'\\\s*\\\s*\n', '\\\n', command)
+        command = re.sub(r'\\\s*\n(\s*\\\s*\n)', r'\\\n', command)
+        # Remove lines that are only whitespace (left behind after removal)
+        command = re.sub(r'\n\s*\n', '\n', command)
         return command
 
     def is_delegating_runtime(self) -> bool:
@@ -354,6 +377,19 @@ class RuntimePlugin(Plugin):
             stream_remote_logs(
                 hosts[0], container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
             )
+
+    def get_head_container_name(self, cluster_id: str, is_solo: bool = False) -> str:
+        """Return the expected head/solo container name for *cluster_id*.
+
+        Solo mode always uses ``{cluster_id}_solo``.  Cluster mode
+        delegates to :meth:`_head_container_name` which subclasses
+        override when they use non-standard naming (e.g.
+        ``{cluster_id}_node_0`` for SGLang and vLLM distributed).
+        """
+        from sparkrun.orchestration.docker import generate_container_name
+        if is_solo:
+            return generate_container_name(cluster_id, "solo")
+        return self._head_container_name(cluster_id)
 
     def _head_container_name(self, cluster_id: str) -> str:
         """Return the head container name for log following.

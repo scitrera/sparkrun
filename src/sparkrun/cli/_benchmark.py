@@ -26,6 +26,8 @@ from ._common import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
+
 
 @click.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
@@ -45,11 +47,14 @@ logger = logging.getLogger(__name__)
 @click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking")
 @click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)")
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
+@click.option("--timeout", "bench_timeout", type=int, default=None,
+              help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT)
 @dry_run_option
 @click.pass_context
 def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
               tensor_parallel, port, image, cache_dir, profile, framework,
-              output_file, options, no_stop, skip_run, no_sync_tuning, dry_run):
+              output_file, options, no_stop, skip_run, no_sync_tuning,
+              bench_timeout, dry_run):
     """Benchmark an inference recipe.
 
     Runs the full benchmark flow: launch inference, run benchmark, stop
@@ -74,14 +79,16 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
     _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
         tensor_parallel, port, image, cache_dir, profile, framework,
-        output_file, options, no_stop, skip_run, no_sync_tuning, dry_run,
+        output_file, options, no_stop, skip_run, no_sync_tuning,
+        bench_timeout, dry_run,
     )
 
 
 def _run_benchmark(
-    ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-    tensor_parallel, port, image, cache_dir, profile, framework_name,
-    output_file, options, no_stop, skip_run, no_sync_tuning, dry_run,
+        ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
+        tensor_parallel, port, image, cache_dir, profile, framework_name,
+        output_file, options, no_stop, skip_run, no_sync_tuning,
+        bench_timeout, dry_run,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
     from sparkrun.benchmarking.base import BenchmarkSpec, export_results
@@ -157,6 +164,9 @@ def _run_benchmark(
             sys.exit(1)
         key, _, val = opt_str.partition("=")
         bench_args[key.strip()] = fw.interpret_arg(key.strip(), val.strip())
+
+    # Resolve effective timeout: CLI override > spec timeout > default
+    effective_timeout = bench_timeout or (bench_spec.timeout if bench_spec else None) or DEFAULT_BENCHMARK_TIMEOUT
 
     # ---------------------------------------------------------------
     # 3. Check prerequisites
@@ -244,19 +254,19 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("sparkrun benchmark")
     click.echo("=" * 60)
-    click.echo("Recipe:      %s" % recipe.name)
-    click.echo("Model:       %s" % recipe.model)
-    click.echo("Runtime:     %s" % runtime.runtime_name)
-    click.echo("Image:       %s" % container_image)
-    click.echo("Framework:   %s" % fw.framework_name)
+    click.echo("Recipe:                %s" % recipe.name)
+    click.echo("Model:                 %s" % recipe.model)
+    click.echo("Runtime:               %s" % runtime.runtime_name)
+    click.echo("Image:                 %s" % container_image)
+    click.echo("Benchmark Framework:   %s" % fw.framework_name)
     if profile:
-        click.echo("Profile:     %s" % profile)
-    click.echo("Hosts:       %s" % ", ".join(host_list))
-    click.echo("Mode:        %s" % ("solo" if is_solo else "cluster (%d nodes)" % len(host_list)))
+        click.echo("Benchmark Profile:     %s" % profile)
+    click.echo("Hosts:                 %s" % ", ".join(host_list))
+    click.echo("Mode:                  %s" % ("solo" if is_solo else "cluster (%d nodes)" % len(host_list)))
     click.echo("")
     click.echo("Benchmark args:")
     for k, bv in bench_args.items():
-        click.echo("  %-25s %s" % (k + ":", bv))
+        click.echo("  %-35s %s" % (k + ":", bv))
     click.echo("=" * 60)
     click.echo("")
 
@@ -366,153 +376,174 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 7. Wait for readiness and build target URL
     # ---------------------------------------------------------------
-    serve_port = int(config_chain.get("port") or 8000)
+    result_file = tempfile.mktemp(suffix=".csv", prefix="sparkrun_bench_")
+    try:
+        serve_port = int(config_chain.get("port") or 8000)
 
-    if is_local_host(head_host):
-        target_ip = "127.0.0.1"
-    else:
+        if is_local_host(head_host):
+            target_ip = "127.0.0.1"
+        else:
+            if dry_run:
+                target_ip = "<HEAD_IP>"
+            else:
+                try:
+                    target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+                except RuntimeError as e:
+                    click.echo("Error detecting head IP: %s" % e, err=True)
+                    if launched and not no_stop:
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                    sys.exit(1)
+
+        if not dry_run and not skip_run:
+            head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
+            click.echo("Waiting for inference server on %s:%d..." % (head_host, serve_port))
+            ready = wait_for_port(
+                head_host, serve_port,
+                max_retries=120, retry_interval=5,
+                ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                container_name=head_container,
+            )
+            if not ready:
+                click.echo("Error: inference server did not become ready", err=True)
+                if launched and not no_stop:
+                    _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                sys.exit(1)
+            click.echo("Inference server ready.")
+        elif dry_run:
+            click.echo("[dry-run] Would wait for inference server on %s:%d" % (head_host, serve_port))
+
+        base_url = "http://%s:%d/v1" % (target_ip, serve_port)
+
+        # -----------------------------------------------------------
+        # 8. Run benchmark
+        # -----------------------------------------------------------
+        click.echo("")
+        click.echo("Step 2/3: Running benchmark (%s)..." % fw.framework_name)
+
+        bench_cmd = fw.build_benchmark_command(
+            target_url=base_url,
+            model=recipe.model,
+            args=bench_args,
+            result_file=result_file,
+        )
+
+        click.echo("Benchmark command:")
+        click.echo("  %s" % " ".join(bench_cmd))
+        click.echo("")
+
         if dry_run:
-            target_ip = "<HEAD_IP>"
+            click.echo("[dry-run] Would execute benchmark command")
+            stdout_text = ""
+            stderr_text = ""
         else:
             try:
-                target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-            except RuntimeError as e:
-                click.echo("Error detecting head IP: %s" % e, err=True)
+                # Stream stdout live so the user sees progress, while
+                # capturing it for result parsing afterwards.
+                proc = subprocess.Popen(
+                    bench_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+                stdout_lines: list[str] = []
+                for line in proc.stdout:
+                    click.echo(line, nl=False)
+                    stdout_lines.append(line)
+
+                proc.wait(timeout=effective_timeout)
+                stdout_text = "".join(stdout_lines)
+                stderr_text = proc.stderr.read()
+
+                if proc.returncode != 0:
+                    click.echo("Warning: benchmark exited with code %d" % proc.returncode, err=True)
+                    if stderr_text:
+                        click.echo("stderr: %s" % stderr_text[:500], err=True)
+                else:
+                    click.echo("Benchmark completed successfully.")
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                click.echo("Error: benchmark timed out after %d seconds" % effective_timeout, err=True)
+                stdout_text = ""
+                stderr_text = ""
+            except FileNotFoundError:
+                click.echo("Error: benchmark command not found: %s" % bench_cmd[0], err=True)
                 if launched and not no_stop:
                     _stop_inference(runtime, host_list, cluster_id, config, dry_run)
                 sys.exit(1)
 
-    if not dry_run and not skip_run:
-        click.echo("Waiting for inference server on %s:%d..." % (head_host, serve_port))
-        ready = wait_for_port(
-            head_host, serve_port,
-            max_retries=120, retry_interval=5,
-            ssh_kwargs=ssh_kwargs, dry_run=dry_run,
-        )
-        if not ready:
-            click.echo("Error: inference server did not become ready", err=True)
-            if launched and not no_stop:
-                _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-            sys.exit(1)
-        click.echo("Inference server ready.")
-    elif dry_run:
-        click.echo("[dry-run] Would wait for inference server on %s:%d" % (head_host, serve_port))
+        # -----------------------------------------------------------
+        # 9. Parse and export results
+        # -----------------------------------------------------------
+        if not dry_run:
+            results = fw.parse_results(stdout_text, stderr_text, result_file=result_file)
 
-    base_url = "http://%s:%d/v1" % (target_ip, serve_port)
+            # Print summary of results
+            rows = results.get("rows", [])
+            if rows:
+                click.echo("")
+                click.echo("Results: %d test row(s) collected" % len(rows))
+            elif stdout_text.strip():
+                click.echo("")
+                click.echo("Raw output:")
+                for line in stdout_text.strip().splitlines()[:20]:
+                    click.echo("  %s" % line)
 
-    # ---------------------------------------------------------------
-    # 8. Run benchmark
-    # ---------------------------------------------------------------
-    click.echo("")
-    click.echo("Step 2/3: Running benchmark (%s)..." % fw.framework_name)
+            # Export results
+            if not output_file:
+                profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
+                output_file = "benchmark_%s_%s.yaml" % (
+                    recipe.name.replace("/", "_"),
+                    profile_slug,
+                )
 
-    # Create temp file for results
-    result_file = tempfile.mktemp(suffix=".csv", prefix="sparkrun_bench_")
-    bench_cmd = fw.build_benchmark_command(
-        target_url=base_url,
-        model=recipe.model,
-        args=bench_args,
-        result_file=result_file,
-    )
+            export_results(
+                recipe=recipe,
+                hosts=host_list,
+                tp=effective_tp,
+                cluster_id=cluster_id,
+                framework_name=fw.framework_name,
+                profile_name=profile,
+                args=bench_args,
+                results=results,
+                output_path=output_file,
+            )
+            click.echo("Results saved to: %s" % output_file)
+        else:
+            click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 
-    click.echo("Benchmark command:")
-    click.echo("  %s" % " ".join(bench_cmd))
-    click.echo("")
+        # -----------------------------------------------------------
+        # 10. Stop inference (unless --no-stop)
+        # -----------------------------------------------------------
+        if launched and not no_stop:
+            click.echo("")
+            click.echo("Step 3/3: Stopping inference...")
+            _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+            click.echo("Inference stopped.")
+        elif no_stop:
+            click.echo("")
+            click.echo("Step 3/3: Skipping inference stop (--no-stop)")
+        elif skip_run:
+            click.echo("")
+            click.echo("Step 3/3: Skipping inference stop (--skip-run)")
 
-    if dry_run:
-        click.echo("[dry-run] Would execute benchmark command")
-        stdout_text = ""
-        stderr_text = ""
-    else:
+        click.echo("")
+        click.echo("Benchmark complete.")
+
+    except KeyboardInterrupt:
+        click.echo("")
+        click.echo("Interrupted.")
+        if launched and not no_stop:
+            click.echo("Stopping inference...")
+            _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+            click.echo("Inference stopped.")
+        sys.exit(130)
+    finally:
+        import os
         try:
-            proc = subprocess.run(
-                bench_cmd,
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour timeout
-            )
-            stdout_text = proc.stdout
-            stderr_text = proc.stderr
-
-            if proc.returncode != 0:
-                click.echo("Warning: benchmark exited with code %d" % proc.returncode, err=True)
-                if stderr_text:
-                    click.echo("stderr: %s" % stderr_text[:500], err=True)
-            else:
-                click.echo("Benchmark completed successfully.")
-        except subprocess.TimeoutExpired:
-            click.echo("Error: benchmark timed out after 1 hour", err=True)
-            stdout_text = ""
-            stderr_text = ""
-        except FileNotFoundError:
-            click.echo("Error: benchmark command not found: %s" % bench_cmd[0], err=True)
-            if launched and not no_stop:
-                _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-            sys.exit(1)
-
-    # ---------------------------------------------------------------
-    # 9. Parse and export results
-    # ---------------------------------------------------------------
-    if not dry_run:
-        results = fw.parse_results(stdout_text, stderr_text, result_file=result_file)
-
-        # Print summary of results
-        rows = results.get("rows", [])
-        if rows:
-            click.echo("")
-            click.echo("Results: %d test row(s) collected" % len(rows))
-        elif stdout_text.strip():
-            click.echo("")
-            click.echo("Raw output:")
-            for line in stdout_text.strip().splitlines()[:20]:
-                click.echo("  %s" % line)
-
-        # Export results
-        if not output_file:
-            output_file = "benchmark_%s_%s.yaml" % (
-                recipe.name.replace("/", "_"),
-                fw.framework_name,
-            )
-
-        export_results(
-            recipe=recipe,
-            hosts=host_list,
-            tp=effective_tp,
-            cluster_id=cluster_id,
-            framework_name=fw.framework_name,
-            profile_name=profile,
-            args=bench_args,
-            results=results,
-            output_path=output_file,
-        )
-        click.echo("Results saved to: %s" % output_file)
-    else:
-        click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
-
-    # ---------------------------------------------------------------
-    # 10. Stop inference (unless --no-stop)
-    # ---------------------------------------------------------------
-    if launched and not no_stop:
-        click.echo("")
-        click.echo("Step 3/3: Stopping inference...")
-        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-        click.echo("Inference stopped.")
-    elif no_stop:
-        click.echo("")
-        click.echo("Step 3/3: Skipping inference stop (--no-stop)")
-    elif skip_run:
-        click.echo("")
-        click.echo("Step 3/3: Skipping inference stop (--skip-run)")
-
-    # Cleanup temp file
-    import os
-    try:
-        os.unlink(result_file)
-    except OSError:
-        pass
-
-    click.echo("")
-    click.echo("Benchmark complete.")
+            os.unlink(result_file)
+        except OSError:
+            pass
 
 
 def _stop_inference(runtime, host_list, cluster_id, config, dry_run):

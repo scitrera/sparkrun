@@ -8,6 +8,7 @@ import click
 
 from ._common import (
     RECIPE_NAME,
+    _apply_cluster_user,
     _apply_tp_trimming,
     _load_recipe,
     _resolve_hosts_or_exit,
@@ -69,6 +70,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     from sparkrun.orchestration.ssh import run_remote_command
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -121,6 +123,7 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
@@ -176,6 +179,7 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
 
     # Resolve hosts
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)

@@ -12,6 +12,7 @@ import click
 from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
+    _apply_cluster_user,
     _apply_tp_trimming,
     _display_vram_estimate,
     _expand_recipe_shortcut,
@@ -199,6 +200,7 @@ def _run_benchmark(
         click.echo("Warning: %s" % issue, err=True)
 
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, cluster_mgr)
 
     # TP validation / trimming
     if len(host_list) > 1 and not solo:
@@ -379,7 +381,7 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 7. Wait for readiness and build target URL
     # ---------------------------------------------------------------
-    result_file = tempfile.mktemp(suffix=".csv", prefix="sparkrun_bench_")
+    result_file = tempfile.mktemp(suffix=".json", prefix="sparkrun_bench_")
     try:
         serve_port = int(config_chain.get("port") or 8000)
 
@@ -513,13 +515,14 @@ def _run_benchmark(
             )
             click.echo("Results saved to: %s" % output_file)
 
-            # Write raw CSV alongside the YAML when available
-            csv_text = results.get("csv", "")
-            if csv_text and csv_text.strip():
+            # Write raw JSON alongside the YAML when available
+            json_data = results.get("json", {})
+            if json_data:
+                import json
                 from pathlib import Path
-                csv_path = Path(output_file).with_suffix(".csv")
-                csv_path.write_text(csv_text)
-                click.echo("CSV results saved to: %s" % csv_path)
+                json_path = Path(output_file).with_suffix(".json")
+                json_path.write_text(json.dumps(json_data, indent=2))
+                click.echo("JSON results saved to: %s" % json_path)
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 

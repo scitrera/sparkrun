@@ -11,6 +11,7 @@ import click
 from ._common import (
     RECIPE_NAME,
     RUNTIME_NAME,
+    _apply_cluster_user,
     _load_recipe,
     _resolve_hosts_or_exit,
     _setup_logging,
@@ -85,6 +86,7 @@ def tune_sglang(
 
     # Resolve hosts — only use the first host
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
@@ -167,6 +169,7 @@ def tune_vllm(
 
     # Resolve hosts — only use the first host
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)

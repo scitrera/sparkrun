@@ -227,6 +227,17 @@ def _resolve_cluster_user(
     return None
 
 
+def _apply_cluster_user(config, cluster_name, hosts, hosts_file, cluster_mgr):
+    """Set the cluster's SSH user on config so all downstream SSH calls use it.
+
+    The cluster user takes precedence over the global config ``ssh.user``.
+    If no cluster user is defined, config is left unchanged.
+    """
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+    if cluster_user:
+        config.ssh_user = cluster_user
+
+
 def _get_cluster_manager(v=None):
     """Create a ClusterManager using the SAF config root."""
     from sparkrun.cluster_manager import ClusterManager

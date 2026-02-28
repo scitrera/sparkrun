@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import csv
-import io
+import json
 import logging
 import shutil
 from logging import Logger
@@ -37,7 +36,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     """llama-benchy benchmarking framework.
 
     Uses ``uvx llama-benchy`` to run OpenAI-compatible inference benchmarks.
-    Produces CSV output for machine-parseable results.
+    Produces JSON output for machine-parseable results.
     """
 
     framework_name = "llama-benchy"
@@ -69,14 +68,14 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     ) -> list[str]:
         """Build the uvx llama-benchy command.
 
-        Always uses ``--format csv`` for machine-parseable output and
+        Always uses ``--format json`` for machine-parseable output and
         ``--save-result`` to capture results to a file.
         """
         cmd = [
             "uvx", "llama-benchy",
             "--base-url", target_url,
             "--model", model,
-            "--format", "csv",
+            "--format", "json",
         ]
 
         if result_file:
@@ -129,35 +128,37 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         return coerce_value(value)
 
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
-        """Parse llama-benchy CSV output into structured results.
+        """Parse llama-benchy JSON output into structured results.
 
         Reads from the ``--save-result`` file if available, otherwise
         falls back to parsing stdout.
         """
-        rows: list[dict[str, str]] = []
+        json_data: dict[str, Any] = {}
 
         # Try reading from saved result file first
-        csv_text = None
+        json_text = None
         if result_file:
             try:
                 from pathlib import Path
-                csv_text = Path(result_file).read_text()
+                json_text = Path(result_file).read_text()
             except (OSError, FileNotFoundError):
                 logger.debug("Could not read result file %s, falling back to stdout", result_file)
 
-        if csv_text is None:
-            csv_text = stdout
+        if json_text is None:
+            json_text = stdout
 
-        # Parse CSV content
-        if csv_text.strip():
+        # Parse JSON content
+        if json_text.strip():
             try:
-                reader = csv.DictReader(io.StringIO(csv_text))
-                rows = list(reader)
-            except csv.Error:
-                logger.warning("Failed to parse CSV output from llama-benchy")
+                json_data = json.loads(json_text)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Failed to parse JSON output from llama-benchy")
+
+        # Extract benchmark rows for summary display
+        rows = json_data.get("benchmarks", [])
 
         return {
             "rows": rows,
-            'csv': csv_text,
+            "json": json_data,
             "stdout": stdout,
         }

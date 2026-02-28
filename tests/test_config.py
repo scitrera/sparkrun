@@ -351,3 +351,79 @@ def test_get_config_root_none_variables():
     from sparkrun.config import get_config_root, DEFAULT_CONFIG_DIR
     result = get_config_root(None)
     assert result == DEFAULT_CONFIG_DIR
+
+
+# ---------------------------------------------------------------------------
+# ssh_user override (setter) tests
+# ---------------------------------------------------------------------------
+
+
+class TestSshUserOverride:
+    """Tests for the ssh_user property setter added to fix cluster SSH user propagation."""
+
+    def test_setter_overrides_config_value(self, tmp_path: Path):
+        """Setting ssh_user overrides the value from config YAML."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"ssh": {"user": "yaml_user"}}))
+        config = SparkrunConfig(config_path=config_file)
+
+        assert config.ssh_user == "yaml_user"
+        config.ssh_user = "override_user"
+        assert config.ssh_user == "override_user"
+
+    def test_setter_overrides_none_default(self, tmp_path: Path):
+        """Setting ssh_user works when no user was configured in YAML."""
+        config_file = tmp_path / "nonexistent.yaml"
+        config = SparkrunConfig(config_path=config_file)
+
+        assert config.ssh_user is None
+        config.ssh_user = "cluster_user"
+        assert config.ssh_user == "cluster_user"
+
+    def test_setter_to_none_clears_override(self, tmp_path: Path):
+        """Setting ssh_user to None clears a previous override."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"ssh": {"user": "yaml_user"}}))
+        config = SparkrunConfig(config_path=config_file)
+
+        config.ssh_user = "override_user"
+        assert config.ssh_user == "override_user"
+
+        # Setting to None should still return None (the override takes effect)
+        config.ssh_user = None
+        assert config.ssh_user is None
+
+    def test_override_flows_to_build_ssh_kwargs(self, tmp_path: Path):
+        """Verify the override propagates through build_ssh_kwargs."""
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"ssh": {"user": "yaml_user"}}))
+        config = SparkrunConfig(config_path=config_file)
+
+        # Before override
+        kwargs = build_ssh_kwargs(config)
+        assert kwargs["ssh_user"] == "yaml_user"
+
+        # After override
+        config.ssh_user = "cluster_user"
+        kwargs = build_ssh_kwargs(config)
+        assert kwargs["ssh_user"] == "cluster_user"
+
+    def test_override_does_not_affect_other_ssh_fields(self, tmp_path: Path):
+        """Setting ssh_user does not change ssh_key or ssh_options."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "ssh": {
+                "user": "yaml_user",
+                "key": "~/.ssh/test_key",
+                "options": ["-o StrictHostKeyChecking=no"],
+            },
+        }))
+        config = SparkrunConfig(config_path=config_file)
+        config.ssh_user = "cluster_user"
+
+        assert config.ssh_user == "cluster_user"
+        assert config.ssh_key is not None
+        assert "test_key" in config.ssh_key
+        assert config.ssh_options == ["-o StrictHostKeyChecking=no"]

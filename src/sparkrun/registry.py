@@ -77,6 +77,14 @@ FALLBACK_DEFAULT_REGISTRIES = [
         visible=True,
     ),
     RegistryEntry(
+        name="sparkrun-transitional",
+        url="https://github.com/dbotwinick/sparkrun-recipe-registry.git",
+        subpath="transitional/recipes",
+        description="Transitional registry for recipes",
+        visible=True,
+    ),
+
+    RegistryEntry(
         name="experimental",
         url="https://github.com/spark-arena/recipe-registry.git",
         subpath="experimental-recipes",
@@ -103,7 +111,7 @@ DEPRECATED_REGISTRIES: list[str] = [
 # This prevents third-party registries from impersonating official sources.
 RESERVED_NAME_PREFIXES = (
     'arena', 'spark-arena', 'sparkarena',
-    'sparkrun', 'official', 'experimental',
+    'sparkrun', 'official', 'experimental', 'transitional',
     'eugr', 'dbotwinick', 'raphaelamorim', 'scitrera',
 )
 

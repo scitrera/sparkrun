@@ -40,14 +40,14 @@ def test_benchmark_load_valid(tmp_path: Path):
             "args": {
                 "pp": [2048],
                 "enable_prefix_caching": True,
-                "format": "csv",
+                "format": "json",
             },
         },
     })
 
     spec = BenchmarkSpec.load(p)
     assert spec.framework == "llama-benchy"
-    assert spec.args["format"] == "csv"
+    assert spec.args["format"] == "json"
 
 
 def test_benchmark_load_missing_block(tmp_path: Path):
@@ -290,7 +290,7 @@ def test_llama_benchy_build_command():
         target_url="http://localhost:8000/v1",
         model="org/model",
         args=args,
-        result_file="/tmp/results.csv",
+        result_file="/tmp/results.json",
     )
 
     assert cmd[0] == "uvx"
@@ -300,9 +300,9 @@ def test_llama_benchy_build_command():
     assert "--model" in cmd
     assert "org/model" in cmd
     assert "--format" in cmd
-    assert "csv" in cmd
+    assert "json" in cmd
     assert "--save-result" in cmd
-    assert "/tmp/results.csv" in cmd
+    assert "/tmp/results.json" in cmd
 
 
 def test_llama_benchy_build_command_bool_flag():
@@ -391,21 +391,28 @@ def test_llama_benchy_interpret_arg_scalar():
     assert result == 8
 
 
-def test_llama_benchy_parse_results_csv():
-    """Test CSV text parsed into rows via DictReader."""
+def test_llama_benchy_parse_results_json():
+    """Test JSON text parsed into structured results."""
     fw = LlamaBenchyFramework()
-    csv_text = "pp,tg,depth\n2048,32,0\n4096,64,100\n"
+    import json
+    json_text = json.dumps({
+        "version": "0.1.0",
+        "model": "org/model",
+        "benchmarks": [
+            {"concurrency": 1, "context_size": 2048, "pp_throughput": {"mean": 100.0}},
+            {"concurrency": 1, "context_size": 4096, "pp_throughput": {"mean": 200.0}},
+        ],
+    })
 
-    results = fw.parse_results(csv_text, "", result_file=None)
+    results = fw.parse_results(json_text, "", result_file=None)
 
     assert "rows" in results
     assert len(results["rows"]) == 2
-    assert results["rows"][0]["pp"] == "2048"
-    assert results["rows"][0]["tg"] == "32"
-    assert results["rows"][0]["depth"] == "0"
-    assert results["rows"][1]["pp"] == "4096"
-    assert results["rows"][1]["tg"] == "64"
-    assert results["rows"][1]["depth"] == "100"
+    assert results["rows"][0]["concurrency"] == 1
+    assert results["rows"][0]["context_size"] == 2048
+    assert results["rows"][1]["context_size"] == 4096
+    assert "json" in results
+    assert results["json"]["model"] == "org/model"
 
 
 def test_llama_benchy_parse_results_empty():
@@ -414,6 +421,7 @@ def test_llama_benchy_parse_results_empty():
     results = fw.parse_results("", "", result_file=None)
 
     assert results["rows"] == []
+    assert results["json"] == {}
 
 
 def test_llama_benchy_check_prerequisites_with_uvx():

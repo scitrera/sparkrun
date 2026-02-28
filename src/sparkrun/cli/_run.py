@@ -9,6 +9,7 @@ import click
 
 from ._common import (
     RECIPE_NAME,
+    _apply_cluster_user,
     _apply_tp_trimming,
     _display_vram_estimate,
     _expand_recipe_shortcut,
@@ -115,6 +116,7 @@ def run(
 
     # Determine hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, cluster_mgr)
 
     # Determine host source for display
     if hosts:

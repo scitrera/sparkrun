@@ -78,8 +78,14 @@ class SparkrunConfig:
 
     @property
     def ssh_user(self) -> str | None:
+        if hasattr(self, "_ssh_user_override"):
+            return self._ssh_user_override
         ssh = self._data.get("ssh", {})
         return ssh.get("user")
+
+    @ssh_user.setter
+    def ssh_user(self, value: str | None) -> None:
+        self._ssh_user_override = value
 
     @property
     def ssh_key(self) -> str | None:

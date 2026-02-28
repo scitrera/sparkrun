@@ -8,6 +8,7 @@ import click
 
 from ._common import (
     CLUSTER_NAME,
+    _apply_cluster_user,
     _get_cluster_manager,
     _resolve_hosts_or_exit,
     dry_run_option,
@@ -225,6 +226,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     ssh_kwargs = build_ssh_kwargs(config)
 

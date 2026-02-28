@@ -457,6 +457,22 @@ class RegistryManager:
             if (cache_dir / ".git").exists():
                 # Update existing repository
                 logger.debug("Updating registry %s", entry.name)
+
+                # Ensure sparse checkout covers all configured subpaths
+                # (picks up tuning_subpath / benchmark_subpath added after
+                # the initial clone)
+                sparse_paths = [entry.subpath]
+                if entry.tuning_subpath:
+                    sparse_paths.append(entry.tuning_subpath)
+                if entry.benchmark_subpath:
+                    sparse_paths.append(entry.benchmark_subpath)
+                sparse_paths.append(".sparkrun")
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "sparse-checkout", "set"] + sparse_paths,
+                    capture_output=True, text=True, timeout=30,
+                    check=False, stdin=subprocess.DEVNULL, env=git_env,
+                )
+
                 result = subprocess.run(
                     ["git", "-C", str(cache_dir), "pull", "--ff-only"],
                     capture_output=True,
@@ -501,7 +517,13 @@ class RegistryManager:
                     )
                     return False
 
-                # Configure sparse checkout for subpath only
+                # Configure sparse checkout for all subpaths
+                sparse_paths = [entry.subpath]
+                if entry.tuning_subpath:
+                    sparse_paths.append(entry.tuning_subpath)
+                if entry.benchmark_subpath:
+                    sparse_paths.append(entry.benchmark_subpath)
+                sparse_paths.append(".sparkrun")
                 result = subprocess.run(
                     [
                         "git",
@@ -509,8 +531,7 @@ class RegistryManager:
                         str(cache_dir),
                         "sparse-checkout",
                         "set",
-                        entry.subpath,
-                    ],
+                    ] + sparse_paths,
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -1153,9 +1174,11 @@ class RegistryManager:
         for entry in self._load_registries():
             if not entry.enabled:
                 continue
-            if not include_hidden and not entry.visible:
-                continue
             if registry_name and entry.name != registry_name:
+                continue
+            # When a specific registry is requested by name, skip the
+            # visibility filter — the user is explicitly targeting it.
+            if not registry_name and not include_hidden and not entry.visible:
                 continue
             benchmark_dir = self._benchmark_dir(entry)
             if benchmark_dir is None:

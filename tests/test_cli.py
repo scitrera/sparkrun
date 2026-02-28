@@ -1871,3 +1871,332 @@ class TestUrlRecipe:
         ):
             with pytest.raises(click.ClickException, match="Failed to fetch"):
                 _fetch_and_cache_recipe("https://example.com/recipe")
+
+
+# ---------------------------------------------------------------------------
+# Cluster SSH user propagation tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveClusterUser:
+    """Tests for _resolve_cluster_user helper."""
+
+    def test_returns_user_from_named_cluster(self, tmp_path, monkeypatch):
+        """Named cluster with a user returns that user."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1", "10.0.0.2"], user="labuser")
+
+        result = _resolve_cluster_user("mylab", None, None, mgr)
+        assert result == "labuser"
+
+    def test_returns_none_for_cluster_without_user(self, tmp_path, monkeypatch):
+        """Named cluster without a user returns None."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("nouser", ["10.0.0.1"])
+
+        result = _resolve_cluster_user("nouser", None, None, mgr)
+        assert result is None
+
+    def test_returns_none_when_hosts_flag_given(self, tmp_path, monkeypatch):
+        """When --hosts is provided, cluster user is not resolved."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], user="labuser")
+
+        # hosts flag is non-None, so cluster_name is ignored
+        result = _resolve_cluster_user(None, "10.0.0.1", None, mgr)
+        assert result is None
+
+    def test_returns_none_when_hosts_file_given(self, tmp_path, monkeypatch):
+        """When --hosts-file is provided, cluster user is not resolved."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], user="labuser")
+
+        result = _resolve_cluster_user(None, None, "/some/hosts.txt", mgr)
+        assert result is None
+
+    def test_falls_back_to_default_cluster(self, tmp_path, monkeypatch):
+        """When no explicit cluster/hosts, uses default cluster's user."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("default-lab", ["10.0.0.1"], user="defaultuser")
+        mgr.set_default("default-lab")
+
+        result = _resolve_cluster_user(None, None, None, mgr)
+        assert result == "defaultuser"
+
+    def test_returns_none_when_no_cluster_mgr(self):
+        """When cluster_mgr is None, returns None."""
+        from sparkrun.cli._common import _resolve_cluster_user
+
+        result = _resolve_cluster_user(None, None, None, None)
+        assert result is None
+
+    def test_returns_none_for_nonexistent_cluster(self, tmp_path, monkeypatch):
+        """Nonexistent cluster name returns None (no crash)."""
+        from sparkrun.cli._common import _resolve_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        result = _resolve_cluster_user("doesnotexist", None, None, mgr)
+        assert result is None
+
+
+class TestApplyClusterUser:
+    """Tests for _apply_cluster_user helper."""
+
+    def test_sets_user_on_config(self, tmp_path, monkeypatch):
+        """_apply_cluster_user sets the cluster user on config."""
+        from sparkrun.cli._common import _apply_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+        from sparkrun.config import SparkrunConfig
+
+        import sparkrun.config as config_mod
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        config_file = tmp_path / "nonexistent.yaml"
+        config = SparkrunConfig(config_path=config_file)
+        assert config.ssh_user is None
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], user="labuser")
+
+        _apply_cluster_user(config, "mylab", None, None, mgr)
+        assert config.ssh_user == "labuser"
+
+    def test_no_op_when_no_cluster_user(self, tmp_path, monkeypatch):
+        """_apply_cluster_user leaves config unchanged when cluster has no user."""
+        from sparkrun.cli._common import _apply_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+        from sparkrun.config import SparkrunConfig
+
+        import sparkrun.config as config_mod
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"ssh": {"user": "global_user"}}))
+        config = SparkrunConfig(config_path=config_file)
+        assert config.ssh_user == "global_user"
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("nouser-cluster", ["10.0.0.1"])
+
+        _apply_cluster_user(config, "nouser-cluster", None, None, mgr)
+        # global user should remain since cluster has no user
+        assert config.ssh_user == "global_user"
+
+    def test_cluster_user_overrides_global_config(self, tmp_path, monkeypatch):
+        """Cluster user takes precedence over global ssh.user in config."""
+        from sparkrun.cli._common import _apply_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+        from sparkrun.config import SparkrunConfig
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        import sparkrun.config as config_mod
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"ssh": {"user": "global_user"}}))
+        config = SparkrunConfig(config_path=config_file)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], user="cluster_user")
+
+        _apply_cluster_user(config, "mylab", None, None, mgr)
+
+        # The override should flow through to build_ssh_kwargs
+        kwargs = build_ssh_kwargs(config)
+        assert kwargs["ssh_user"] == "cluster_user"
+
+    def test_no_op_when_hosts_flag_given(self, tmp_path, monkeypatch):
+        """When --hosts is provided, cluster user is not applied."""
+        from sparkrun.cli._common import _apply_cluster_user
+        from sparkrun.cluster_manager import ClusterManager
+        from sparkrun.config import SparkrunConfig
+
+        import sparkrun.config as config_mod
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        config_file = tmp_path / "nonexistent.yaml"
+        config = SparkrunConfig(config_path=config_file)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], user="labuser")
+
+        # hosts is non-None, so cluster user should not be resolved
+        _apply_cluster_user(config, None, "10.0.0.1", None, mgr)
+        assert config.ssh_user is None
+
+
+class TestClusterUserInCLICommands:
+    """Integration tests verifying cluster SSH user propagation through CLI commands.
+
+    These tests verify that commands which call _resolve_hosts_or_exit also
+    call _apply_cluster_user, so the cluster's SSH user flows through to
+    build_ssh_kwargs and all downstream SSH operations.
+    """
+
+    @pytest.fixture
+    def cluster_with_user(self, tmp_path, monkeypatch):
+        """Set up a cluster with a custom SSH user."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.config
+        monkeypatch.setattr(sparkrun.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("userlab", ["10.0.0.1", "10.0.0.2"], user="labadmin")
+        return config_root
+
+    def test_cluster_status_uses_cluster_user(self, runner, cluster_with_user, monkeypatch):
+        """cluster status with --cluster should use the cluster's SSH user."""
+        captured_kwargs = {}
+
+        def mock_query_status(host_list, ssh_kwargs=None, cache_dir=None):
+            captured_kwargs.update(ssh_kwargs or {})
+            # Return a minimal result object
+            from types import SimpleNamespace
+            return SimpleNamespace(
+                groups={}, solo_entries=[], errors={},
+                idle_hosts=host_list, pending_ops=[],
+                total_containers=0, host_count=len(host_list),
+            )
+
+        monkeypatch.setattr(
+            "sparkrun.cluster_manager.query_cluster_status",
+            mock_query_status,
+        )
+
+        result = runner.invoke(main, [
+            "cluster", "status",
+            "--cluster", "userlab",
+        ])
+        assert result.exit_code == 0
+        assert captured_kwargs.get("ssh_user") == "labadmin"
+
+    def test_stop_all_uses_cluster_user(self, runner, cluster_with_user, monkeypatch):
+        """stop --all with --cluster should use the cluster's SSH user."""
+        captured_kwargs = {}
+
+        def mock_query_status(host_list, ssh_kwargs=None, cache_dir=None):
+            captured_kwargs.update(ssh_kwargs or {})
+            from types import SimpleNamespace
+            return SimpleNamespace(
+                groups={}, solo_entries=[], errors={},
+                idle_hosts=host_list, pending_ops=[],
+                total_containers=0, host_count=len(host_list),
+            )
+
+        monkeypatch.setattr(
+            "sparkrun.cluster_manager.query_cluster_status",
+            mock_query_status,
+        )
+
+        result = runner.invoke(main, [
+            "stop", "--all",
+            "--cluster", "userlab",
+        ])
+        assert result.exit_code == 0
+        assert captured_kwargs.get("ssh_user") == "labadmin"
+
+    def test_stop_recipe_uses_cluster_user(self, runner, cluster_with_user, monkeypatch):
+        """stop <recipe> with --cluster should use the cluster's SSH user."""
+        captured_kwargs = {}
+
+        def mock_cleanup(host_list, container_names, ssh_kwargs=None, dry_run=False):
+            captured_kwargs.update(ssh_kwargs or {})
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.cleanup_containers",
+            mock_cleanup,
+        )
+
+        result = runner.invoke(main, [
+            "stop", _TEST_RECIPE_NAME,
+            "--cluster", "userlab",
+        ])
+        assert result.exit_code == 0
+        assert captured_kwargs.get("ssh_user") == "labadmin"
+
+    def test_logs_uses_cluster_user(self, runner, cluster_with_user, reset_bootstrap, monkeypatch):
+        """logs with --cluster should use the cluster's SSH user."""
+        captured_config = {}
+
+        original_follow_logs = SglangRuntime.follow_logs
+
+        def mock_follow_logs(self, hosts=None, cluster_id=None, config=None, **kw):
+            captured_config["ssh_user"] = config.ssh_user if config else None
+
+        monkeypatch.setattr(SglangRuntime, "follow_logs", mock_follow_logs)
+
+        result = runner.invoke(main, [
+            "logs", _TEST_RECIPE_NAME,
+            "--cluster", "userlab",
+        ])
+        assert result.exit_code == 0
+        assert captured_config.get("ssh_user") == "labadmin"
+
+    def test_run_dry_run_uses_cluster_user(self, runner, cluster_with_user, reset_bootstrap, monkeypatch):
+        """run --dry-run with --cluster should use the cluster's SSH user."""
+        captured_config = {}
+
+        original_run = SglangRuntime.run
+
+        def mock_run(self, hosts=None, image=None, serve_command=None,
+                     recipe=None, overrides=None, cluster_id=None,
+                     env=None, cache_dir=None, config=None, dry_run=False,
+                     **kw):
+            captured_config["ssh_user"] = config.ssh_user if config else None
+            return 0
+
+        monkeypatch.setattr(SglangRuntime, "run", mock_run)
+        # Mock distribute_resources to avoid SSH calls
+        monkeypatch.setattr(
+            "sparkrun.orchestration.distribution.distribute_resources",
+            lambda *a, **kw: (None, {}, {}),
+        )
+        # Mock try_clear_page_cache
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.try_clear_page_cache",
+            lambda *a, **kw: None,
+        )
+
+        result = runner.invoke(main, [
+            "run", _TEST_RECIPE_NAME,
+            "--cluster", "userlab",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert captured_config.get("ssh_user") == "labadmin"

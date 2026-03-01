@@ -238,6 +238,12 @@ def registry_update(ctx, name, config_path=None):
     config, registry_mgr = _get_config_and_registry(config_path)
 
     try:
+        # Clean up deprecated registries before updating
+        if not name:
+            cleaned = registry_mgr.cleanup_deprecated()
+            for cname in cleaned:
+                click.echo("Removed deprecated registry: %s" % cname)
+
         if name:
             entry = registry_mgr.get_registry(name)
             if not entry.enabled:

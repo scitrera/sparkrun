@@ -138,10 +138,20 @@ class TestDefaultRegistries:
         assert official.enabled is True
         assert official.visible is True
 
+    def test_has_transitional_registry(self):
+        """Test that FALLBACK_DEFAULT_REGISTRIES includes the transitional registry."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 4
+        transitional = FALLBACK_DEFAULT_REGISTRIES[3]
+        assert transitional.name == "sparkrun-transitional"
+        assert "github.com/dbotwinick/sparkrun-recipe-registry" in transitional.url
+        assert transitional.subpath == "transitional/recipes"
+        assert transitional.enabled is True
+        assert transitional.visible is True
+
     def test_has_experimental_registry(self):
         """Test that FALLBACK_DEFAULT_REGISTRIES includes the experimental registry."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 4
-        experimental = FALLBACK_DEFAULT_REGISTRIES[3]
+        assert len(FALLBACK_DEFAULT_REGISTRIES) >= 5
+        experimental = FALLBACK_DEFAULT_REGISTRIES[4]
         assert experimental.name == "experimental"
         assert "github.com/spark-arena/recipe-registry" in experimental.url
         assert experimental.subpath == "experimental-recipes"
@@ -157,9 +167,9 @@ class TestDefaultRegistries:
         assert eugr.enabled is True
         assert eugr.visible is True
 
-    def test_four_default_registries(self):
-        """Test that there are exactly four default registries."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) == 4
+    def test_five_default_registries(self):
+        """Test that there are exactly five default registries."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) == 5
 
     def test_testing_registry_subpath(self):
         """Test the sparkrun-testing registry subpath."""
@@ -768,8 +778,12 @@ class TestDefaultRegistriesNewFields:
         official = FALLBACK_DEFAULT_REGISTRIES[1]
         assert official.name == "official"
 
+    def test_transitional_is_visible(self):
+        transitional = FALLBACK_DEFAULT_REGISTRIES[3]
+        assert transitional.visible is True
+
     def test_experimental_is_hidden(self):
-        experimental = FALLBACK_DEFAULT_REGISTRIES[3]
+        experimental = FALLBACK_DEFAULT_REGISTRIES[4]
         assert experimental.visible is False
 
 
@@ -1056,22 +1070,228 @@ class TestDefaultRegistriesFallback:
         assert len(result) == len(FALLBACK_DEFAULT_REGISTRIES)
         assert result[0].name == FALLBACK_DEFAULT_REGISTRIES[0].name
 
-    def test_returns_manifest_entries_on_success(self, mgr):
-        """When manifest discovery succeeds, _default_registries returns those entries."""
+    def test_returns_manifest_entries_plus_fallbacks_on_success(self, mgr):
+        """When manifest discovery succeeds, _default_registries returns manifest entries plus non-conflicting fallbacks."""
         manifest_entries = [
             RegistryEntry(name="from-manifest", url="https://example.com/m", subpath="r"),
         ]
         mgr._manifest_discovery_attempted = False  # allow discovery for this test
         with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=manifest_entries):
             result = mgr._default_registries()
-        assert len(result) == 1
+        # Manifest entry comes first, then all fallback entries (none conflict by name)
         assert result[0].name == "from-manifest"
+        assert len(result) == 1 + len(FALLBACK_DEFAULT_REGISTRIES)
+        fallback_names = {e.name for e in FALLBACK_DEFAULT_REGISTRIES}
+        result_names = {e.name for e in result[1:]}
+        assert result_names == fallback_names
 
-    def test_init_manifests_returns_empty_on_clone_failure(self, mgr):
-        """_init_defaults_from_manifests returns [] when git clone fails."""
-        with mock.patch.object(mgr, "add_registry_from_url", side_effect=RegistryError("clone fail")):
+    def test_manifest_entries_override_fallbacks_by_name(self, mgr):
+        """When a manifest entry shares a name with a fallback, the manifest entry wins."""
+        # Use a name that matches one of the FALLBACK entries
+        fallback_name = FALLBACK_DEFAULT_REGISTRIES[0].name
+        manifest_entries = [
+            RegistryEntry(name=fallback_name, url="https://example.com/new", subpath="new-recipes"),
+        ]
+        mgr._manifest_discovery_attempted = False
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=manifest_entries):
+            result = mgr._default_registries()
+        # Should have manifest version of the conflicting entry, plus remaining fallbacks
+        assert len(result) == len(FALLBACK_DEFAULT_REGISTRIES)
+        first = result[0]
+        assert first.name == fallback_name
+        assert first.url == "https://example.com/new"  # manifest version, not fallback
+        assert first.subpath == "new-recipes"
+
+    def test_init_manifests_returns_empty_on_all_urls_fail(self, mgr):
+        """_init_defaults_from_manifests returns [] when all URLs fail."""
+        with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=RegistryError("clone fail")):
             result = mgr._init_defaults_from_manifests()
         assert result == []
+
+
+class TestDiscoverManifestEntries:
+    """Test _discover_manifest_entries method."""
+
+    def test_returns_entries_from_manifest(self, mgr):
+        """Successful clone with valid manifest returns parsed entries."""
+        manifest_yaml = yaml.dump({
+            "registries": [
+                {"name": "reg-a", "subpath": "recipes-a", "description": "Registry A"},
+                {"name": "reg-b", "subpath": "recipes-b", "tuning_subpath": "tuning"},
+            ]
+        })
+
+        def fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                # Create the manifest in the temp dir
+                tmp_path = Path(cmd[-1])
+                tmp_path.mkdir(parents=True, exist_ok=True)
+                manifest_dir = tmp_path / ".sparkrun"
+                manifest_dir.mkdir(parents=True)
+                (manifest_dir / "registry.yaml").write_text(manifest_yaml)
+                return mock.Mock(returncode=0, stderr="")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            entries = mgr._discover_manifest_entries("https://example.com/repo")
+
+        assert len(entries) == 2
+        assert entries[0].name == "reg-a"
+        assert entries[0].url == "https://example.com/repo"
+        assert entries[0].subpath == "recipes-a"
+        assert entries[0].description == "Registry A"
+        assert entries[1].name == "reg-b"
+        assert entries[1].tuning_subpath == "tuning"
+
+    def test_clone_failure_raises(self, mgr):
+        """Failed clone raises RegistryError."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=1, stderr="fatal: error")
+            with pytest.raises(RegistryError, match="Failed to clone"):
+                mgr._discover_manifest_entries("https://example.com/repo")
+
+    def test_no_manifest_raises(self, mgr):
+        """Missing manifest file raises RegistryError."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stderr="")
+            with pytest.raises(RegistryError, match="No .sparkrun/registry.yaml"):
+                mgr._discover_manifest_entries("https://example.com/repo")
+
+    def test_empty_manifest_raises(self, mgr):
+        """Manifest with no registries raises RegistryError."""
+        manifest_yaml = yaml.dump({"registries": []})
+
+        def fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                tmp_path = Path(cmd[-1])
+                tmp_path.mkdir(parents=True, exist_ok=True)
+                manifest_dir = tmp_path / ".sparkrun"
+                manifest_dir.mkdir(parents=True)
+                (manifest_dir / "registry.yaml").write_text(manifest_yaml)
+                return mock.Mock(returncode=0, stderr="")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(RegistryError, match="declares no registries"):
+                mgr._discover_manifest_entries("https://example.com/repo")
+
+
+class TestInitDefaultsFromManifests:
+    """Test _init_defaults_from_manifests bulk-save flow."""
+
+    def test_returns_entries_without_saving_or_calling_add_registry(self, mgr):
+        """Entries are returned without saving or calling add_registry (no re-entrancy)."""
+        entries_url1 = [
+            RegistryEntry(name="m1", url="https://example.com/r1", subpath="recipes"),
+        ]
+        entries_url2 = [
+            RegistryEntry(name="m2", url="https://example.com/r2", subpath="recipes"),
+        ]
+
+        call_count = [0]
+
+        def fake_discover(url):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return entries_url1
+            return entries_url2
+
+        with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=fake_discover):
+            with mock.patch.object(mgr, "add_registry") as mock_add:
+                result = mgr._init_defaults_from_manifests()
+
+        # add_registry should NOT be called (that's the whole point of the fix)
+        mock_add.assert_not_called()
+        assert len(result) == 2
+        assert result[0].name == "m1"
+        assert result[1].name == "m2"
+        # _init_defaults_from_manifests does NOT save; _default_registries handles that
+        assert not mgr._registries_path.exists()
+
+    def test_partial_failure_still_returns_successful_entries(self, mgr):
+        """If one URL fails, entries from the other URL are still returned."""
+        good_entries = [
+            RegistryEntry(name="good-reg", url="https://example.com/good", subpath="recipes"),
+        ]
+
+        def fake_discover(url):
+            if "bad" in url:
+                raise RegistryError("clone failed")
+            return good_entries
+
+        from sparkrun import registry as reg_module
+        original = reg_module.DEFAULT_REGISTRIES_GIT
+        try:
+            reg_module.DEFAULT_REGISTRIES_GIT = [
+                "https://example.com/bad-repo",
+                "https://example.com/good-repo",
+            ]
+            with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=fake_discover):
+                result = mgr._init_defaults_from_manifests()
+        finally:
+            reg_module.DEFAULT_REGISTRIES_GIT = original
+
+        assert len(result) == 1
+        assert result[0].name == "good-reg"
+
+    def test_deduplicates_by_name(self, mgr):
+        """Duplicate names across URLs are deduplicated (first wins)."""
+        entries_url1 = [
+            RegistryEntry(name="shared-name", url="https://example.com/r1", subpath="from-r1"),
+        ]
+        entries_url2 = [
+            RegistryEntry(name="shared-name", url="https://example.com/r2", subpath="from-r2"),
+            RegistryEntry(name="unique", url="https://example.com/r2", subpath="recipes"),
+        ]
+
+        call_count = [0]
+
+        def fake_discover(url):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return entries_url1
+            return entries_url2
+
+        with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=fake_discover):
+            result = mgr._init_defaults_from_manifests()
+
+        names = [e.name for e in result]
+        assert names == ["shared-name", "unique"]
+        # First one wins — subpath should be from url1
+        assert result[0].subpath == "from-r1"
+
+    def test_all_urls_fail_returns_empty(self, mgr):
+        """When every URL fails, returns [] for fallback."""
+        with mock.patch.object(
+            mgr, "_discover_manifest_entries", side_effect=RegistryError("fail")
+        ):
+            result = mgr._init_defaults_from_manifests()
+        assert result == []
+        # No file should have been saved
+        assert not mgr._registries_path.exists()
+
+    def test_no_re_entrancy_on_first_run(self, reg_dirs):
+        """Full integration: first-run path does not re-enter _load_registries via add_registry."""
+        config, cache = reg_dirs
+        mgr = RegistryManager(config, cache)
+        # Do NOT set _manifest_discovery_attempted — simulate real first run
+
+        manifest_entries = [
+            RegistryEntry(name="from-manifest", url="https://example.com/m", subpath="r"),
+        ]
+        with mock.patch.object(mgr, "_discover_manifest_entries", return_value=manifest_entries):
+            # This calls _load_registries → _default_registries → _init_defaults_from_manifests
+            registries = mgr.list_registries()
+
+        # Manifest entry first, then non-conflicting fallbacks
+        assert registries[0].name == "from-manifest"
+        assert len(registries) == 1 + len(FALLBACK_DEFAULT_REGISTRIES)
+        # Verify the file was saved (persisted by _default_registries)
+        assert mgr._registries_path.exists()
+        # Verify saved file matches what was returned
+        loaded = mgr._load_registries_from_file()
+        assert len(loaded) == len(registries)
+        assert loaded[0].name == "from-manifest"
 
 
 class TestResetToDefaults:

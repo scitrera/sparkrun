@@ -221,41 +221,75 @@ class RegistryManager:
         """Return the default registry list.
 
         On first run (no ``registries.yaml``), attempts manifest-based
-        discovery from ``DEFAULT_REGISTRIES_GIT``.  If that fails (offline,
-        no git, etc.), falls back to the hardcoded ``FALLBACK_DEFAULT_REGISTRIES``.
+        discovery from ``DEFAULT_REGISTRIES_GIT``.  Discovered manifest
+        entries take priority; ``FALLBACK_DEFAULT_REGISTRIES`` entries are
+        then layered on for any names not already present.  This lets git
+        manifests override/refresh entries while hardcoded fallbacks fill
+        gaps (e.g. when a manifest URL is unreachable).
+
+        When manifest entries are discovered, the combined list is persisted
+        to ``registries.yaml`` so subsequent loads read from file.
 
         Manifest discovery is attempted at most once per ``RegistryManager``
         instance to avoid repeated slow network calls.
         """
+        discovered: list[RegistryEntry] = []
         if not self._manifest_discovery_attempted:
             self._manifest_discovery_attempted = True
             discovered = self._init_defaults_from_manifests()
-            if discovered:
-                return discovered
-        return list(FALLBACK_DEFAULT_REGISTRIES)
+
+        # Layer fallback entries whose names don't collide with manifest entries
+        seen_names = {e.name for e in discovered}
+        combined = list(discovered)
+        for fallback in FALLBACK_DEFAULT_REGISTRIES:
+            if fallback.name not in seen_names:
+                combined.append(fallback)
+                seen_names.add(fallback.name)
+
+        # Persist so subsequent _load_registries() reads from file
+        if discovered:
+            self._save_registries(combined)
+
+        return combined
 
     def _init_defaults_from_manifests(self) -> list[RegistryEntry]:
-        """Try to populate default registries from git manifest files.
+        """Try to discover default registries from git manifest files.
 
         For each URL in ``DEFAULT_REGISTRIES_GIT``, clones the repo and reads
-        its ``.sparkrun/registry.yaml`` manifest via :meth:`add_registry_from_url`.
-        On success the discovered entries are saved to ``registries.yaml`` and
-        returned.  On any failure an empty list is returned so the caller can
-        fall back to hardcoded defaults.
+        its ``.sparkrun/registry.yaml`` manifest.  Entries are collected,
+        deduplicated by name, and validated.
+
+        URLs that fail to clone are skipped individually — successful URLs
+        still contribute their entries (partial success).  Only if ALL URLs
+        fail does this return ``[]``.
+
+        This method does **not** save to ``registries.yaml``; the caller
+        (:meth:`_default_registries`) handles persistence after layering
+        fallback entries.
+
+        This method bypasses :meth:`add_registry` to avoid a re-entrancy bug
+        where ``add_registry`` → ``_load_registries`` → ``_default_registries``
+        would see the ``_manifest_discovery_attempted`` flag already set and
+        fall back to ``FALLBACK_DEFAULT_REGISTRIES``.
         """
         all_entries: list[RegistryEntry] = []
+        seen_names: set[str] = set()
+
         for url in DEFAULT_REGISTRIES_GIT:
             try:
-                entries = self.add_registry_from_url(url)
-                all_entries.extend(entries)
+                entries = self._discover_manifest_entries(url)
+                for entry in entries:
+                    if entry.name in seen_names:
+                        logger.debug("Skipping duplicate manifest entry %r", entry.name)
+                        continue
+                    validate_registry_name(entry.name, entry.url)
+                    seen_names.add(entry.name)
+                    all_entries.append(entry)
             except Exception as e:
-                logger.debug("Manifest discovery failed for %s: %s", url, e)
-                return []
-        if all_entries:
-            # add_registry_from_url already saved to registries.yaml via add_registry,
-            # so just return what we collected
-            return self._load_registries_from_file()
-        return []
+                logger.warning("Manifest discovery failed for %s: %s", url, e)
+                # Continue to next URL instead of aborting entirely
+
+        return all_entries
 
     def _load_registries_from_file(self) -> list[RegistryEntry]:
         """Load registries from the YAML config file without any fallback logic.
@@ -626,23 +660,22 @@ class RegistryManager:
         self._save_registries(registries)
         logger.info("Added registry %s", entry.name)
 
-    def add_registry_from_url(self, url: str) -> list[RegistryEntry]:
-        """Add registries by discovering them from a repo's .sparkrun/registry.yaml manifest.
+    def _discover_manifest_entries(self, url: str) -> list[RegistryEntry]:
+        """Clone a repo, read its .sparkrun/registry.yaml manifest, return entries.
 
-        Clones the repo temporarily, reads the manifest, and adds all declared registries.
+        Does NOT save or add entries — purely a discovery/parsing operation.
 
         Args:
             url: Git repository URL.
 
         Returns:
-            List of RegistryEntry objects added.
+            List of RegistryEntry objects declared in the manifest.
 
         Raises:
-            RegistryError: If clone fails or no manifest found.
+            RegistryError: If clone fails, no manifest found, or manifest is empty.
         """
         import tempfile
 
-        # Shallow clone to temp dir
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp) / "repo"
             git_env = self._git_env()
@@ -667,9 +700,8 @@ class RegistryManager:
             if not registries_data:
                 raise RegistryError("Manifest in %s declares no registries" % url)
 
-            added = []
-            for reg_data in registries_data:
-                entry = RegistryEntry(
+            return [
+                RegistryEntry(
                     name=reg_data["name"],
                     url=url,
                     subpath=reg_data.get("subpath", "recipes"),
@@ -679,16 +711,34 @@ class RegistryManager:
                     tuning_subpath=reg_data.get("tuning_subpath", ""),
                     benchmark_subpath=reg_data.get("benchmark_subpath", ""),
                 )
-                # Validate before add_registry so the error references the manifest
-                validate_registry_name(entry.name, entry.url)
-                try:
-                    self.add_registry(entry)
-                    added.append(entry)
-                    logger.info("Added registry '%s' from manifest", entry.name)
-                except RegistryError:
-                    logger.warning("Registry '%s' already exists, skipping", entry.name)
+                for reg_data in registries_data
+            ]
 
-            return added
+    def add_registry_from_url(self, url: str) -> list[RegistryEntry]:
+        """Add registries by discovering them from a repo's .sparkrun/registry.yaml manifest.
+
+        Clones the repo temporarily, reads the manifest, and adds all declared registries.
+
+        Args:
+            url: Git repository URL.
+
+        Returns:
+            List of RegistryEntry objects added.
+
+        Raises:
+            RegistryError: If clone fails or no manifest found.
+        """
+        entries = self._discover_manifest_entries(url)
+        added = []
+        for entry in entries:
+            validate_registry_name(entry.name, entry.url)
+            try:
+                self.add_registry(entry)
+                added.append(entry)
+                logger.info("Added registry '%s' from manifest", entry.name)
+            except RegistryError:
+                logger.warning("Registry '%s' already exists, skipping", entry.name)
+        return added
 
     def remove_registry(self, name: str) -> None:
         """Remove a registry by name.
@@ -742,9 +792,11 @@ class RegistryManager:
         cleaned = []
         remaining = []
 
+        deprecated_urls: set[str] = set()
         for entry in entries:
             if self._is_deprecated_url(entry.url):
-                # Remove cache
+                deprecated_urls.add(entry.url)
+                # Remove per-registry cache (symlink or directory)
                 cache_dir = self._cache_dir(entry.name)
                 if cache_dir.exists():
                     import shutil
@@ -759,6 +811,17 @@ class RegistryManager:
 
         if cleaned:
             self._save_registries(remaining)
+
+            # Clean up orphaned shared clones: if no remaining registry
+            # references a deprecated URL, remove the shared _url_* dir.
+            import shutil
+            remaining_urls = {e.url for e in remaining}
+            for dep_url in deprecated_urls:
+                if dep_url not in remaining_urls:
+                    shared_dir = self._clone_dir_for_url(dep_url)
+                    if shared_dir.exists():
+                        shutil.rmtree(shared_dir)
+                        logger.info("Removed orphaned shared clone: %s", shared_dir.name)
 
         return cleaned
 

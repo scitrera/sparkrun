@@ -71,13 +71,24 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user, cache_dir):
     elif hosts_file:
         host_list = parse_hosts_file(hosts_file)
 
-    if host_list is None and description is None and user is None and cache_dir is None:
+    from click.core import ParameterSource
+
+    user_provided = ctx.get_parameter_source("user") == ParameterSource.COMMANDLINE
+    cache_dir_provided = ctx.get_parameter_source("cache_dir") == ParameterSource.COMMANDLINE
+
+    if host_list is None and description is None and not user_provided and not cache_dir_provided:
         click.echo("Error: Nothing to update. Provide --hosts, --hosts-file, -d, --user, or --cache-dir.", err=True)
         sys.exit(1)
 
+    update_kwargs = {}
+    if user_provided:
+        update_kwargs["user"] = user
+    if cache_dir_provided:
+        update_kwargs["cache_dir"] = cache_dir
+
     mgr = _get_cluster_manager()
     try:
-        mgr.update(name, hosts=host_list, description=description, user=user, cache_dir=cache_dir)
+        mgr.update(name, hosts=host_list, description=description, **update_kwargs)
         click.echo(f"Cluster '{name}' updated.")
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)

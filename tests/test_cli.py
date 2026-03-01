@@ -586,6 +586,28 @@ class TestClusterCommands:
         result = runner.invoke(main, ["cluster", "show", "test-cluster"])
         assert "/mnt/new-cache" in result.output
 
+    def test_cluster_update_hosts_does_not_clear_user_or_cache_dir(self, runner, tmp_path, monkeypatch):
+        """Test that updating --hosts does not clear previously set user or cache_dir."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("preserve-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser", cache_dir="/mnt/models")
+
+        result = runner.invoke(main, [
+            "cluster", "update", "preserve-cluster",
+            "--hosts", "10.0.0.3,10.0.0.4",
+        ])
+        assert result.exit_code == 0
+
+        # user and cache_dir must still be present after updating only hosts
+        result = runner.invoke(main, ["cluster", "show", "preserve-cluster"])
+        assert result.exit_code == 0
+        assert "dgxuser" in result.output
+        assert "/mnt/models" in result.output
+
 
 class TestRunWithCluster:
     """Test run command with --cluster and --hosts-file options."""

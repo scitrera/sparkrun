@@ -470,19 +470,34 @@ class RecipeNameType(click.ParamType):
                 from sparkrun.recipe import list_recipes
 
                 if "/" not in incomplete:
-                    # No slash yet — expand directly to @registry/recipe items
-                    # so the user gets full completions in one tab press.
+                    # No slash yet — try to expand directly to @registry/recipe
+                    # items so the user gets full completions in one tab press.
+                    # Fall back to @registry/ names when recipes can't be listed
+                    # (e.g. cache not populated yet).
                     registries = registry_mgr.list_registries()
                     prefix = incomplete[1:]  # strip @
                     items = []
+                    matching_registries = []
                     for reg in registries:
                         if not reg.enabled or not reg.name.startswith(prefix):
                             continue
+                        matching_registries.append(reg)
                         recipe_path = registry_mgr.cache_root / reg.name / reg.subpath
                         recipes = list_recipes(search_paths=[recipe_path])
                         for r in recipes:
                             items.append(click.shell_completion.CompletionItem(
                                 "@%s/%s" % (reg.name, r["file"])))
+                    if not items and matching_registries:
+                        # No recipes found — show registry names so the user
+                        # can still discover and select the registry.
+                        # type="dir" prevents the shell from appending a
+                        # trailing space, so the user can continue typing
+                        # the recipe name after the slash.
+                        items = [
+                            click.shell_completion.CompletionItem(
+                                "@%s/" % reg.name, type="dir")
+                            for reg in matching_registries
+                        ]
                     return items
                 else:
                     # Completing recipe after @registry/

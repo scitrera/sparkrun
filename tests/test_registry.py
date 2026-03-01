@@ -1102,6 +1102,52 @@ class TestDefaultRegistriesFallback:
         assert first.url == "https://example.com/new"  # manifest version, not fallback
         assert first.subpath == "new-recipes"
 
+    def test_fallback_fields_merged_into_manifest_entry(self, mgr):
+        """Fallback tuning/benchmark subpaths fill in manifest entries that omit them."""
+        # sparkrun-testing fallback has tuning_subpath and benchmark_subpath
+        fallback = FALLBACK_DEFAULT_REGISTRIES[0]
+        assert fallback.tuning_subpath, "test assumes fallback has tuning_subpath"
+        assert fallback.benchmark_subpath, "test assumes fallback has benchmark_subpath"
+
+        # Manifest entry with same name but missing tuning/benchmark subpaths
+        manifest_entries = [
+            RegistryEntry(
+                name=fallback.name,
+                url=fallback.url,
+                subpath=fallback.subpath,
+                description="From manifest",
+            ),
+        ]
+        mgr._manifest_discovery_attempted = False
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=manifest_entries):
+            result = mgr._default_registries()
+
+        merged = result[0]
+        assert merged.name == fallback.name
+        assert merged.description == "From manifest"  # manifest field preserved
+        assert merged.tuning_subpath == fallback.tuning_subpath  # backfilled from fallback
+        assert merged.benchmark_subpath == fallback.benchmark_subpath  # backfilled from fallback
+
+    def test_manifest_subpaths_not_overwritten_by_fallback(self, mgr):
+        """When manifest explicitly sets tuning/benchmark subpaths, fallback doesn't overwrite."""
+        fallback = FALLBACK_DEFAULT_REGISTRIES[0]
+        manifest_entries = [
+            RegistryEntry(
+                name=fallback.name,
+                url=fallback.url,
+                subpath=fallback.subpath,
+                tuning_subpath="custom/tuning",
+                benchmark_subpath="custom/bench",
+            ),
+        ]
+        mgr._manifest_discovery_attempted = False
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=manifest_entries):
+            result = mgr._default_registries()
+
+        merged = result[0]
+        assert merged.tuning_subpath == "custom/tuning"  # manifest value kept
+        assert merged.benchmark_subpath == "custom/bench"  # manifest value kept
+
     def test_init_manifests_returns_empty_on_all_urls_fail(self, mgr):
         """_init_defaults_from_manifests returns [] when all URLs fail."""
         with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=RegistryError("clone fail")):
@@ -1112,8 +1158,8 @@ class TestDefaultRegistriesFallback:
 class TestDiscoverManifestEntries:
     """Test _discover_manifest_entries method."""
 
-    def test_returns_entries_from_manifest(self, mgr):
-        """Successful clone with valid manifest returns parsed entries."""
+    def test_returns_entries_from_manifest_canonical_keys(self, mgr):
+        """Successful clone with canonical keys (subpath, tuning_subpath) returns parsed entries."""
         manifest_yaml = yaml.dump({
             "registries": [
                 {"name": "reg-a", "subpath": "recipes-a", "description": "Registry A"},
@@ -1142,6 +1188,81 @@ class TestDiscoverManifestEntries:
         assert entries[0].description == "Registry A"
         assert entries[1].name == "reg-b"
         assert entries[1].tuning_subpath == "tuning"
+
+    def test_returns_entries_from_manifest_short_keys(self, mgr):
+        """Manifest using short keys (recipes, tuning, benchmarks) is parsed correctly."""
+        manifest_yaml = yaml.dump({
+            "registries": [
+                {
+                    "name": "testing-reg",
+                    "description": "Testing registry",
+                    "recipes": "testing/recipes",
+                    "tuning": "testing/tuning",
+                    "benchmarks": "testing/benchmarking",
+                    "visible": False,
+                },
+                {
+                    "name": "transitional-reg",
+                    "description": "Transitional registry",
+                    "recipes": "transitional/recipes",
+                    "visible": True,
+                },
+            ]
+        })
+
+        def fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                tmp_path = Path(cmd[-1])
+                tmp_path.mkdir(parents=True, exist_ok=True)
+                manifest_dir = tmp_path / ".sparkrun"
+                manifest_dir.mkdir(parents=True)
+                (manifest_dir / "registry.yaml").write_text(manifest_yaml)
+                return mock.Mock(returncode=0, stderr="")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            entries = mgr._discover_manifest_entries("https://example.com/repo")
+
+        assert len(entries) == 2
+        # First entry: short keys mapped correctly
+        assert entries[0].name == "testing-reg"
+        assert entries[0].subpath == "testing/recipes"
+        assert entries[0].tuning_subpath == "testing/tuning"
+        assert entries[0].benchmark_subpath == "testing/benchmarking"
+        assert entries[0].visible is False
+        # Second entry: no tuning/benchmark
+        assert entries[1].name == "transitional-reg"
+        assert entries[1].subpath == "transitional/recipes"
+        assert entries[1].tuning_subpath == ""
+        assert entries[1].benchmark_subpath == ""
+
+    def test_canonical_keys_take_precedence_over_short_keys(self, mgr):
+        """When both canonical and short keys are present, canonical wins."""
+        manifest_yaml = yaml.dump({
+            "registries": [{
+                "name": "both-keys",
+                "subpath": "canonical-path",
+                "recipes": "short-path",
+                "tuning_subpath": "canonical-tuning",
+                "tuning": "short-tuning",
+            }]
+        })
+
+        def fake_run(cmd, **kwargs):
+            if "clone" in cmd:
+                tmp_path = Path(cmd[-1])
+                tmp_path.mkdir(parents=True, exist_ok=True)
+                manifest_dir = tmp_path / ".sparkrun"
+                manifest_dir.mkdir(parents=True)
+                (manifest_dir / "registry.yaml").write_text(manifest_yaml)
+                return mock.Mock(returncode=0, stderr="")
+            return mock.Mock(returncode=0, stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            entries = mgr._discover_manifest_entries("https://example.com/repo")
+
+        assert entries[0].subpath == "canonical-path"
+        assert entries[0].tuning_subpath == "canonical-tuning"
 
     def test_clone_failure_raises(self, mgr):
         """Failed clone raises RegistryError."""

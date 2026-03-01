@@ -700,16 +700,19 @@ class RegistryManager:
             if not registries_data:
                 raise RegistryError("Manifest in %s declares no registries" % url)
 
+            # Support both canonical keys (subpath, tuning_subpath,
+            # benchmark_subpath) used in registries.yaml and the shorter
+            # keys (recipes, tuning, benchmarks) used in repo manifests.
             return [
                 RegistryEntry(
                     name=reg_data["name"],
                     url=url,
-                    subpath=reg_data.get("subpath", "recipes"),
+                    subpath=reg_data.get("subpath", reg_data.get("recipes", "recipes")),
                     description=reg_data.get("description", ""),
                     enabled=reg_data.get("enabled", True),
                     visible=reg_data.get("visible", True),
-                    tuning_subpath=reg_data.get("tuning_subpath", ""),
-                    benchmark_subpath=reg_data.get("benchmark_subpath", ""),
+                    tuning_subpath=reg_data.get("tuning_subpath", reg_data.get("tuning", "")),
+                    benchmark_subpath=reg_data.get("benchmark_subpath", reg_data.get("benchmarks", "")),
                 )
                 for reg_data in registries_data
             ]

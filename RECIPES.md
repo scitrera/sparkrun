@@ -406,9 +406,16 @@ When `sparkrun benchmark <recipe>` is run without `--profile`, the recipe's `ben
 
 Declares the recipe format version. The current format is version `2` (the default).
 
+Current format (v2):
+
 ```yaml
-recipe_version: "2"   # current format
-recipe_version: "1"     # eugr v1 format — also automatically resolves runtime to eugr-vllm runtime
+recipe_version: "2"
+```
+
+Legacy eugr format (v1) — automatically resolves runtime to `eugr-vllm`:
+
+```yaml
+recipe_version: "1"
 ```
 
 Version `1` recipes are automatically migrated: the runtime is set to `eugr-vllm` and eugr-specific fields are

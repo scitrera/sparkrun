@@ -4,14 +4,15 @@ description: Manage recipe registries and create inference recipes
 ---
 
 <Purpose>
-Provides complete reference for managing sparkrun recipe registries, browsing and searching recipes, validating recipes, and understanding the recipe file format for NVIDIA DGX Spark inference workloads.
+Provides complete reference for managing sparkrun recipe registries, browsing and searching recipes, managing benchmark profiles, validating recipes, and understanding the recipe file format for NVIDIA DGX Spark inference workloads.
 </Purpose>
 
 <Use_When>
-- User wants to add, remove, or update recipe registries
+- User wants to add, remove, enable, disable, or update recipe registries
 - User wants to browse or search for available recipes
 - User wants to create or edit a recipe YAML file
 - User wants to validate a recipe or check VRAM requirements
+- User wants to browse or inspect benchmark profiles
 - User asks about recipe format or fields
 </Use_When>
 
@@ -25,17 +26,27 @@ Provides complete reference for managing sparkrun recipe registries, browsing an
 ## Registry Commands
 
 ```bash
-# List configured registries
-sparkrun recipe registries
+# List configured registries (enabled only by default)
+sparkrun registry list
+sparkrun registry list --show-disabled
 
-# Add a custom registry (git repo with recipe YAML files)
-sparkrun recipe add-registry <name> --url <git_url> [--branch <branch>] [--path <subdir>]
+# Add registries from a git repo's .sparkrun/registry.yaml manifest
+sparkrun registry add <git_url>
 
 # Remove a registry
-sparkrun recipe remove-registry <name>
+sparkrun registry remove <name>
 
-# Update all registries from git (fetches latest recipes)
-sparkrun recipe update
+# Enable a disabled registry
+sparkrun registry enable <name>
+
+# Disable a registry (recipes will not appear in searches)
+sparkrun registry disable <name>
+
+# Update all enabled registries from git (fetches latest recipes)
+sparkrun registry update
+
+# Update a specific registry
+sparkrun registry update <name>
 ```
 
 ## Browsing Recipes
@@ -44,14 +55,32 @@ sparkrun recipe update
 # List all recipes across all registries (no filter)
 sparkrun list
 
+# List with filters
+sparkrun list --all                         # include hidden registry recipes
+sparkrun list --registry <name>             # filter by registry
+sparkrun list --runtime vllm                # filter by runtime (vllm, sglang, llama-cpp)
+
 # Search for recipes by name, model, runtime, or description (contains-match)
 sparkrun recipe search <query>
+sparkrun recipe search <query> --registry <name> --runtime sglang
 
 # Inspect a specific known recipe (by exact name or file path)
 sparkrun recipe show <recipe> [--tp N]
 ```
 
 Use `sparkrun recipe search` as the first attempt when looking for a particular recipe. Use `sparkrun recipe show` when given a specific recipe name or file -- it may not appear in search results.
+
+## Benchmark Profiles
+
+```bash
+# List available benchmark profiles across registries
+sparkrun registry list-benchmark-profiles
+sparkrun registry list-benchmark-profiles --registry <name>
+sparkrun registry list-benchmark-profiles --all    # include hidden registries
+
+# Show detailed benchmark profile information
+sparkrun registry show-benchmark-profile <name>
+```
 
 ## Validating Recipes
 
@@ -116,13 +145,14 @@ All sparkrun commands are executed via the Bash tool. No MCP tools are required.
 </Tool_Usage>
 
 <Important_Notes>
-- Run `sparkrun recipe update` periodically to get the latest community recipes
+- Run `sparkrun registry update` periodically to get the latest community recipes
 - Use `sparkrun recipe validate` before publishing custom recipes
 - Use `sparkrun recipe vram` to check if a model fits on DGX Spark before trying to run it
 - When creating GGUF + SGLang recipes, always set `tokenizer_path` in defaults
 - Custom command templates should include all relevant `{placeholder}` references to pick up defaults and CLI overrides
-- Registries are cached at `~/.cache/sparkrun/registries/` and updated with `sparkrun recipe update`
+- Registries are cached at `~/.cache/sparkrun/registries/` and updated with `sparkrun registry update`
 - sparkrun ships with built-in recipes; additional registries point to any git repo containing `.yaml` recipe files
+- Use `sparkrun registry list-benchmark-profiles` to discover available benchmark profiles from registries
 </Important_Notes>
 
 Task: {{ARGUMENTS}}

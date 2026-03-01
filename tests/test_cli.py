@@ -721,6 +721,78 @@ class TestOptionOverrides:
             # --port should win over -o port=
             assert call_kwargs["overrides"]["port"] == 8080
 
+    def test_served_model_name_override(self, runner, reset_bootstrap):
+        """--served-model-name sets the override."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                _TEST_RECIPE_NAME,
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "--served-model-name", "my-alias",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["overrides"]["served_model_name"] == "my-alias"
+
+    def test_max_model_len_override(self, runner, reset_bootstrap):
+        """--max-model-len sets the override."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                _TEST_RECIPE_NAME,
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "--max-model-len", "4096",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["overrides"]["max_model_len"] == 4096
+
+    def test_max_model_len_overrides_option(self, runner, reset_bootstrap):
+        """--max-model-len takes priority over -o max_model_len=XXX."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                _TEST_RECIPE_NAME,
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "max_model_len=8192",
+                "--max-model-len", "4096",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            # --max-model-len should win over -o max_model_len=
+            assert call_kwargs["overrides"]["max_model_len"] == 4096
+
+    def test_served_model_name_overrides_option(self, runner, reset_bootstrap):
+        """--served-model-name takes priority over -o served_model_name=XXX."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(main, [
+                "run",
+                _TEST_RECIPE_NAME,
+                "--solo",
+                "--dry-run",
+                "--hosts", "localhost",
+                "-o", "served_model_name=from-option",
+                "--served-model-name", "from-flag",
+            ])
+
+            assert result.exit_code == 0
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            # --served-model-name should win over -o served_model_name=
+            assert call_kwargs["overrides"]["served_model_name"] == "from-flag"
+
     def test_option_coerces_types(self, runner, reset_bootstrap):
         """Values are auto-coerced: int, float, bool."""
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:

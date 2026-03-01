@@ -3,4 +3,4 @@
 # Run: python scripts/update-versions.py --check to verify (CI-friendly)
 
 sparkrun: 0.1.0
-sparkrun-cc-plugin: 0.0.2
+sparkrun-cc-plugin: 0.0.3

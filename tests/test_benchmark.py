@@ -98,7 +98,7 @@ def test_benchmark_load_flat_format(tmp_path: Path):
     # Unknown keys swept into args
     assert spec.args["pp"] == [2048]
     assert spec.args["depth"] == [0]
-    assert spec.args["enable_prefix_caching"] is True
+    assert spec.args["prefix_caching"] is True
 
 
 def test_benchmark_from_recipe(tmp_path: Path):

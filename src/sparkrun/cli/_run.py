@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")
 @click.option("--gpu-mem", type=float, default=None, help="Override GPU memory utilization")
+@click.option("--served-model-name", default=None, help="Override served model name")
+@click.option("--max-model-len", type=int, default=None, help="Override maximum model context length")
 @click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--ray-port", type=int, default=46379, help="Ray GCS port (vllm-ray)")
@@ -49,7 +51,7 @@ logger = logging.getLogger(__name__)
 @click.pass_context
 def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
-        gpu_mem, image, cache_dir, ray_port, init_port, dashboard, dashboard_port,
+        gpu_mem, served_model_name, max_model_len, image, cache_dir, ray_port, init_port, dashboard, dashboard_port,
         dry_run, foreground, no_follow, no_sync_tuning, options, extra_args, config_path=None, setup=True,
 ):
     """Run an inference recipe.
@@ -98,6 +100,10 @@ def run(
         overrides["tensor_parallel"] = tensor_parallel
     if gpu_mem is not None:
         overrides["gpu_memory_utilization"] = gpu_mem
+    if served_model_name is not None:
+        overrides["served_model_name"] = served_model_name
+    if max_model_len is not None:
+        overrides["max_model_len"] = max_model_len
     if image:
         recipe.container = image
 

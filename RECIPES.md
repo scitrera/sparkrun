@@ -181,6 +181,8 @@ runtime-specific flags, and optional features.
 
 These fields control how many nodes the recipe can run on and how sparkrun decides between solo and cluster mode.
 
+> **Preferred approach:** Use `min_nodes` and `max_nodes` to set appropriate limits for your recipe. The `solo_only`, `cluster_only`, and `mode` fields exist for convenience and backward compatibility, but explicit node limits are clearer and more flexible.
+
 #### `mode`
 
 Explicit topology mode. Usually not needed — sparkrun infers it from `min_nodes` and `max_nodes`.

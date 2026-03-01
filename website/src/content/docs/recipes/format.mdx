@@ -140,6 +140,10 @@ Substitution is iterative: if a placeholder resolves to a string containing anot
 
 ## Topology fields
 
+:::tip[Prefer min_nodes / max_nodes]
+Use `min_nodes` and `max_nodes` to set appropriate limits for your recipe. The `solo_only`, `cluster_only`, and `mode` fields exist for convenience and backward compatibility, but explicit node limits are clearer and more flexible.
+:::
+
 ### `mode`
 
 Explicit topology mode. Usually not needed — sparkrun infers from `min_nodes` and `max_nodes`.
@@ -187,16 +191,23 @@ defaults:
   served_model_name: nemotron3-30b-a3b
 ```
 
-Well-known keys with dedicated CLI flags:
+#### Standardized defaults
+
+The following keys are recognized by all runtimes and are automatically mapped to the correct runtime-specific flags. New runtimes are expected to support these keys for cross-runtime compatibility.
 
 | Default key | CLI flag | Description |
 |---|---|---|
 | `port` | `--port` | Serve port |
+| `host` | `-o host=X` | Bind address |
 | `tensor_parallel` | `--tp` | Tensor parallelism degree |
 | `gpu_memory_utilization` | `--gpu-mem` | GPU memory fraction (0.0–1.0) |
+| `max_model_len` | `--max-model-len` | Maximum sequence length |
+| `served_model_name` | `--served-model-name` | Model name exposed by the API (works for all runtimes) |
+
+Any other key can appear in defaults — there is no fixed schema. Runtime-specific parameters (like `tool_call_parser`, `attention_backend`, etc.) are passed through as `{placeholder}` values for use in the command template.
 
 **Config chain precedence** (highest wins):
-1. CLI overrides (`--port 9000`, `-o key=value`)
+1. CLI overrides (`--port 9000`, `--served-model-name my-model`, `-o key=value`)
 2. Recipe defaults
 
 ### `env`
@@ -288,9 +299,8 @@ See the [benchmark command](/cli/benchmark/) for details on how benchmark config
 
 sparkrun searches for recipes in this order:
 1. **Exact/relative file path** — if the argument is an existing file
-2. **Bundled recipes** — shipped with sparkrun
-3. **Registry paths** — from configured registries
-4. **Registry stem matching** — searches by filename stem
+2. **Registry paths** — from configured registries
+3. **Registry stem matching** — searches by filename stem
 
 Filenames are matched with or without `.yaml`/`.yml` extensions.
 

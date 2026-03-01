@@ -5,7 +5,7 @@ Stop a running inference workload.
 ## Usage
 
 ```
-/sparkrun:stop <recipe> [options]
+/sparkrun:stop [recipe] [options]
 ```
 
 ## Examples
@@ -14,13 +14,14 @@ Stop a running inference workload.
 /sparkrun:stop qwen3-1.7b-vllm
 /sparkrun:stop nemotron3-nano-30b-nvfp4-vllm --tp 2
 /sparkrun:stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+/sparkrun:stop --all --cluster mylab
 ```
 
 ## Behavior
 
 When this command is invoked:
 
-1. If no recipe is specified, run `sparkrun cluster status` first to see what's running and ask the user which job to stop.
+1. If no recipe is specified and `--all` is not used, run `sparkrun cluster status` first to see what's running and ask the user which job to stop.
 2. Stop the workload:
 
 ```bash
@@ -37,6 +38,7 @@ sparkrun stop <recipe> [options]
 | `--hosts, -H` | Comma-separated host list |
 | `--cluster` | Use a saved cluster |
 | `--tp N` | Must match the value used in `run` |
+| `--all, -a` | Stop all sparkrun containers (no recipe needed) |
 | `--dry-run` | Show what would be done |
 
 ## Notes
@@ -44,3 +46,4 @@ sparkrun stop <recipe> [options]
 - The stop command identifies containers by a hash derived from runtime + model + sorted hosts
 - If `--tp` was used during `run`, it must also be passed to `stop`
 - Use `sparkrun status` to see the exact stop commands for running jobs
+- Use `--all` to discover and stop all sparkrun containers without specifying a recipe

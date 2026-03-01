@@ -4,7 +4,7 @@ description: "ALWAYS invoke this skill before running any sparkrun CLI commands.
 ---
 
 <Purpose>
-Provides complete reference for launching, monitoring, and stopping LLM inference workloads using sparkrun on NVIDIA DGX Spark systems. Covers the full lifecycle: browse recipes, check VRAM fit, launch jobs, view logs, check status, and stop workloads.
+Provides complete reference for launching, monitoring, and stopping LLM inference workloads using sparkrun on NVIDIA DGX Spark systems. Covers the full lifecycle: browse recipes, check VRAM fit, launch jobs, view logs, check status, stop workloads, and run benchmarks.
 </Purpose>
 
 <Use_When>
@@ -13,6 +13,7 @@ Provides complete reference for launching, monitoring, and stopping LLM inferenc
 - User wants to stop a running inference job
 - User wants to view logs from a running workload
 - User wants to preview VRAM requirements before launching
+- User wants to benchmark an inference workload
 - User asks "how do I run", "start", "launch", "deploy" a model
 </Use_When>
 
@@ -78,6 +79,10 @@ sparkrun stop <recipe> --cluster <name>
 sparkrun stop <recipe> --hosts <ip1>,<ip2>,...
 sparkrun stop <recipe> --tp <N>
 sparkrun stop <recipe> --dry-run
+
+# Stop all sparkrun containers (no recipe needed)
+sparkrun stop --all --cluster <name>
+sparkrun stop --all --hosts <ip1>,<ip2>,...
 ```
 
 ## Browse and Inspect Recipes
@@ -86,8 +91,14 @@ sparkrun stop <recipe> --dry-run
 # List all available recipes (no filter)
 sparkrun list
 
+# List with filters
+sparkrun list --all                         # include hidden registry recipes
+sparkrun list --registry <name>             # filter by registry
+sparkrun list --runtime vllm                # filter by runtime
+
 # Search for recipes by name, model, runtime, or description (contains-match)
 sparkrun recipe search <query>
+sparkrun recipe search <query> --registry <name> --runtime sglang
 
 # Inspect a specific known recipe (by exact name or file path)
 sparkrun recipe show <recipe>
@@ -99,6 +110,30 @@ sparkrun recipe vram <recipe> --tp <N> --max-model-len 32768
 ```
 
 Use `sparkrun recipe search` as the first attempt when looking for a particular recipe. Use `sparkrun recipe show` when given a specific recipe name or file -- it may not appear in search results.
+
+## Benchmark
+
+```bash
+# Full flow: launch inference -> benchmark -> stop
+sparkrun benchmark <recipe> --solo
+sparkrun benchmark <recipe> --cluster <name>
+sparkrun benchmark <recipe> --tp 2 --profile <profile_name>
+
+# Benchmark an already-running instance (skip launch)
+sparkrun benchmark <recipe> --skip-run --solo
+
+# Keep inference running after benchmark completes
+sparkrun benchmark <recipe> --no-stop --solo
+
+# Override benchmark args
+sparkrun benchmark <recipe> -o depth=0,2048,4096 -o tg=32,128
+
+# Specify framework and timeout
+sparkrun benchmark <recipe> --framework llama-benchy --timeout 3600
+
+# Dry-run
+sparkrun benchmark <recipe> --dry-run
+```
 
 </Steps>
 
@@ -125,11 +160,15 @@ When running workloads:
 | `--port` | Override serve port |
 | `--gpu-mem` | GPU memory utilization (0.0-1.0) |
 | `--image` | Override container image |
+| `--cache-dir` | HuggingFace cache directory |
 | `-o KEY=VALUE` | Override any recipe default |
+| `--ray-port` | Ray GCS port for vllm-ray (default: 46379) |
+| `--init-port` | vllm/SGLang distributed init port (default: 25000) |
+| `--dashboard` | Enable Ray dashboard on head node |
+| `--dashboard-port` | Ray dashboard port (default: 8265) |
 | `--dry-run, -n` | Show what would be done |
 | `--no-follow` | Don't attach to logs after launch |
 | `--foreground` | Run in foreground (blocking) |
-| `--skip-ib` | Skip InfiniBand detection |
 
 </Key_Options>
 
@@ -141,6 +180,7 @@ When running workloads:
 - Use `sparkrun show <recipe> --tp N` to preview VRAM estimates before running
 - Container names follow the pattern `sparkrun_{hash}_{role}` where the hash is derived from runtime + model + sorted hosts
 - Ctrl+C while following logs detaches safely -- it never kills the inference job
+- Use `sparkrun stop --all` to stop all sparkrun containers without specifying a recipe
 </Important_Notes>
 
 Task: {{ARGUMENTS}}

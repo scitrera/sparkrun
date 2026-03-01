@@ -46,6 +46,8 @@ sparkrun run <recipe> [options] --no-follow
 | `--tp N` | Tensor parallelism (= number of nodes) |
 | `--port N` | Override serve port |
 | `--gpu-mem F` | GPU memory utilization (0.0-1.0) |
+| `--image` | Override container image |
+| `--cache-dir` | HuggingFace cache directory |
 | `-o KEY=VALUE` | Override any recipe default |
 | `--dry-run` | Show what would be done |
 

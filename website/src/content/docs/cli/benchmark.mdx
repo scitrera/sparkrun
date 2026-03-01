@@ -89,7 +89,7 @@ sparkrun registry show-benchmark-profile spark-arena-v1
 sparkrun benchmark my-recipe --profile spark-arena-v1
 ```
 
-Profiles from registries use `@registry/name` syntax:
+Profiles from registries can use `@registry/name` syntax:
 
 ```bash
 sparkrun benchmark my-recipe --profile @sparkrun-testing/spark-arena-v1
@@ -97,7 +97,7 @@ sparkrun benchmark my-recipe --profile @sparkrun-testing/spark-arena-v1
 
 ### Recipe benchmark blocks
 
-Recipes can embed default benchmark configuration:
+Recipes can embed model/recipe-specific default benchmark configuration:
 
 ```yaml
 model: Qwen/Qwen3-1.7B
@@ -110,6 +110,10 @@ benchmark:
   depth: [0, 4096]
   prefix_caching: true
 ```
+
+:::tip[Prefer explicit profiles]
+Embedded benchmark blocks can be convenient for quick personal testing, but for reproducible and shareable benchmarks, prefer using explicit profiles via `--profile`. Profiles are versioned in registries and can be updated independently of recipes.
+:::
 
 ## Results
 
@@ -162,3 +166,7 @@ sparkrun benchmark my-recipe --solo \
   -o concurrency=1,2,5,10 \
   -o prefix_caching=true
 ```
+
+:::note
+You can always run benchmarking tools like llama-benchy independently outside of sparkrun. The purpose of integrating benchmarking into sparkrun is to make the process more accessible and to help drive standardization through shared benchmark profiles.
+:::

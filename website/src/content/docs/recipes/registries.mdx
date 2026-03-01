@@ -38,6 +38,10 @@ sparkrun registry add https://github.com/myorg/spark-recipes.git
 
 The repository will be cloned using a sparse checkout for efficiency. If recipes live in a subdirectory, they will be discovered automatically.
 
+:::note
+The repository must contain a `.sparkrun/registry.yaml` manifest file — see [Creating a registry](#creating-a-registry) below.
+:::
+
 ## Remove a registry
 
 ```bash
@@ -83,18 +87,105 @@ Searches by name, model, and description across all enabled registries.
 
 ## Creating a registry
 
-A recipe registry is any git repository containing YAML files:
+A recipe registry is a git repository containing YAML recipe files and a `.sparkrun/registry.yaml` manifest that tells sparkrun where to find them.
+
+Example manifest format:
+```yaml
+# .sparkrun/registry.yaml
+registries:
+  - name: my-recipes
+    subpath: recipes
+    description: My custom recipes
+```
+
+### Repository layout
 
 ```
 my-recipes/
+├── .sparkrun/
+│   └── registry.yaml          # ← manifest (required for auto-discovery)
 ├── recipes/
 │   ├── my-model-vllm.yaml
 │   ├── my-model-sglang.yaml
 │   └── experimental-model.yaml
+├── tuning/                     # optional — Triton kernel tuning configs
+│   └── sglang/
+│       └── ...
+├── benchmarking/               # optional — benchmark profiles
+│   └── my-model-bench.yaml
 └── README.md
 ```
 
-Each YAML file should follow the [recipe format](/recipes/format/). Anyone who adds your registry can use your recipes by name.
+Each YAML recipe file should follow the [recipe format](/recipes/format/).
+
+### The `.sparkrun/registry.yaml` manifest
+
+When a user runs `sparkrun registry add <url>`, sparkrun clones the repository and reads `.sparkrun/registry.yaml` to discover all registries declared in the repo. **Without this file, auto-discovery will fail.**
+
+A manifest declares one or more registries under the `registries` key:
+
+```yaml
+# .sparkrun/registry.yaml
+registries:
+  - name: my-team
+    description: My team's curated recipes
+    recipes: recipes              # path to recipe YAML files
+    tuning: tuning                # path to tuning configs (optional)
+    benchmarks: benchmarking      # path to benchmark profiles (optional)
+```
+
+#### Manifest fields
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `name` | yes | — | Unique registry name. Used in `@name/recipe` syntax and CLI commands. |
+| `description` | no | `""` | Human-readable description shown in `sparkrun registry list`. |
+| `recipes` | no | `"recipes"` | Subdirectory containing recipe YAML files. |
+| `tuning` | no | `""` | Subdirectory containing Triton kernel tuning configs. |
+| `benchmarks` | no | `""` | Subdirectory containing benchmark profile YAML files. |
+| `enabled` | no | `true` | Whether the registry is active on first add. |
+| `visible` | no | `true` | If `false`, recipes are hidden from default listings but still usable by name. |
+
+### Multiple registries per repo
+
+A single git repository can host multiple registries. This is useful when you want to separate stable recipes from experimental ones:
+
+```yaml
+# .sparkrun/registry.yaml
+registries:
+  - name: my-team
+    description: Production-ready recipes
+    recipes: stable/recipes
+    tuning: stable/tuning
+    benchmarks: stable/benchmarking
+
+  - name: my-team-experimental
+    description: Experimental recipes — use at your own risk
+    recipes: experimental/recipes
+    visible: false
+```
+
+sparkrun uses a sparse checkout, so only the declared subdirectories are fetched — the rest of the repo is not downloaded.
+
+### Reserved name prefixes
+
+Certain name prefixes (`sparkrun`, `official`, `arena`, `spark-arena`, etc.) are reserved for repositories hosted under approved GitHub organizations. If you use a reserved prefix from an unauthorized URL, `sparkrun registry add` will reject it.
+
+Choose a name that identifies your team or project (e.g., `my-team`, `acme-llm`, `lab-recipes`).
+
+### Example: adding your registry
+
+Once you've pushed your repository with a `.sparkrun/registry.yaml` manifest, anyone can add it:
+
+```bash
+sparkrun registry add https://github.com/myorg/spark-recipes.git
+```
+
+sparkrun clones the repo, reads the manifest, and registers all declared entries. Your recipes then appear in `sparkrun list` and can be run by name:
+
+```bash
+sparkrun run @my-team/my-model-vllm -H 192.168.11.13
+```
 
 ## Recipe discovery order
 

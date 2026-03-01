@@ -9,7 +9,7 @@ description: Install sparkrun, configure networking, permissions, and cluster pr
 sparkrun setup install
 ```
 
-Installs sparkrun as a managed uv tool with a shell alias and tab completion. This is the recommended installation method.
+Installs sparkrun on PATH as a managed uv tool with tab completion. This is the recommended installation method.
 
 ## Shell tab-completion
 
@@ -43,6 +43,7 @@ Set up passwordless SSH across your cluster hosts. See the [SSH Setup](/getting-
 | Option | Description |
 |---|---|
 | `--hosts` / `-H` | Comma-separated host list |
+| `--hosts-file` | File with hosts (one per line, `#` comments) |
 | `--cluster` | Use a saved cluster |
 | `--user` | SSH user (default: current OS user) |
 | `--extra-hosts` | Additional hosts beyond the cluster |

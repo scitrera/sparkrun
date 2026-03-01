@@ -66,10 +66,20 @@ command: |
 
 ## Sharing recipes
 
-Create a git repository with your YAML files and register it:
+Create a git repository with your YAML files and a `.sparkrun/registry.yaml` manifest:
+
+```yaml
+# .sparkrun/registry.yaml
+registries:
+  - name: my-team
+    description: My team's recipes for DGX Spark
+    recipes: recipes
+```
+
+Then anyone can add your registry:
 
 ```bash
 sparkrun registry add https://github.com/myorg/spark-recipes.git
 ```
 
-Anyone who adds your registry can use your recipes by name.
+See [Registries — Creating a registry](/recipes/registries/#creating-a-registry) for the full manifest format, including optional tuning and benchmark paths.

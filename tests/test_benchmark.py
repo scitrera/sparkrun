@@ -38,7 +38,7 @@ def test_benchmark_load_valid(tmp_path: Path):
             "framework": "llama-benchy",
             "args": {
                 "pp": [2048],
-                "enable_prefix_caching": True,
+                "prefix_caching": True,
                 "format": "json",
             },
         },
@@ -89,7 +89,7 @@ def test_benchmark_load_flat_format(tmp_path: Path):
             "framework": "llama-benchy",
             "pp": [2048],
             "depth": [0],
-            "enable_prefix_caching": True,
+            "prefix_caching": True,
         },
     })
 

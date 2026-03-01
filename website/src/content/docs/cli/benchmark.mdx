@@ -108,12 +108,12 @@ benchmark:
   framework: llama-benchy
   pp: [2048]
   depth: [0, 4096]
-  enable_prefix_caching: true
+  prefix_caching: true
 ```
 
 ## Results
 
-Results are saved as YAML (and optionally CSV) with full metadata:
+Results are saved as YAML (and JSON when available) with full metadata:
 
 ```yaml
 sparkrun_benchmark:
@@ -140,7 +140,7 @@ The output filename is auto-generated as `benchmark_<recipe>_<profile>.yaml` unl
 
 ## llama-benchy framework
 
-The default benchmarking framework is [llama-benchy](https://github.com/meta-llama/llama-benchy), invoked via `uvx llama-benchy`. It benchmarks OpenAI-compatible inference endpoints with configurable prompt sizes, token generation counts, and concurrency levels.
+The default benchmarking framework is [llama-benchy](https://github.com/eugr/llama-benchy), invoked via `uvx llama-benchy`. It benchmarks OpenAI-compatible inference endpoints with configurable prompt sizes, token generation counts, and concurrency levels.
 
 Common benchmark args:
 
@@ -151,7 +151,7 @@ Common benchmark args:
 | `depth` | list[int] | Context depths (default: `[0]`) |
 | `concurrency` | list[int] | Concurrent requests per test (default: `[1]`) |
 | `runs` | int | Runs per test (default: `3`) |
-| `enable_prefix_caching` | bool | Enable prefix caching measurement |
+| `prefix_caching` | bool | Enable prefix caching measurement |
 
 ```bash
 # Example: comprehensive benchmark
@@ -160,5 +160,5 @@ sparkrun benchmark my-recipe --solo \
   -o tg=32,128 \
   -o depth=0,4096,16384,65536 \
   -o concurrency=1,2,5,10 \
-  -o enable_prefix_caching=true
+  -o prefix_caching=true
 ```

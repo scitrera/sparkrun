@@ -173,10 +173,10 @@ is available at [sparkrun.dev/cli](https://sparkrun.dev/cli/overview/).
 | Command | Description |
 |---------|-------------|
 | `sparkrun run <recipe>` | Launch an inference workload |
-| `sparkrun stop <recipe>` | Stop a running workload |
+| `sparkrun stop [recipe]` | Stop a running workload (or all with `--all`) |
 | `sparkrun logs <recipe>` | Re-attach to workload logs |
 | `sparkrun status` | Show running containers and cluster status |
-| `sparkrun benchmark <recipe>` | Run → benchmark → stop (auto flow) |
+| `sparkrun benchmark <recipe>` | Run → benchmark → stop (auto flow); use `--profile` for registry benchmark profiles, `--skip-run` to benchmark already-running instance, `--no-stop` to keep running after benchmark |
 
 Common options: `--hosts` / `-H`, `--cluster`, `--tp`, `--port`, `--gpu-mem`, `-o key=value`, `--dry-run`.
 
@@ -199,6 +199,8 @@ Common options: `--hosts` / `-H`, `--cluster`, `--tp`, `--port`, `--gpu-mem`, `-
 | `sparkrun registry remove <name>` | Remove a registry |
 | `sparkrun registry enable/disable <name>` | Toggle a registry |
 | `sparkrun registry update [name]` | Update registries from git |
+| `sparkrun registry list-benchmark-profiles` | List benchmark profiles across registries |
+| `sparkrun registry show-benchmark-profile <profile>` | Show detailed benchmark profile info |
 
 ### Cluster commands
 
@@ -208,6 +210,10 @@ Common options: `--hosts` / `-H`, `--cluster`, `--tp`, `--port`, `--gpu-mem`, `-
 | `sparkrun cluster list` | List all saved clusters |
 | `sparkrun cluster show <name>` | Show cluster details |
 | `sparkrun cluster set-default <name>` | Set the default cluster |
+| `sparkrun cluster default` | Show the current default cluster |
+| `sparkrun cluster unset-default` | Remove the default cluster setting |
+| `sparkrun cluster update <name>` | Update an existing cluster's hosts, description, or SSH user |
+| `sparkrun cluster delete <name>` | Delete a saved cluster |
 | `sparkrun cluster status` | Show running workloads on a cluster |
 
 ### Tune commands

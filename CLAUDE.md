@@ -123,7 +123,6 @@ All remote operations use **SSH stdin piping** — scripts are generated as Pyth
 - **`networking.py`** — ConnectX-7 NIC detection, IP assignment planning, CX7 configuration script generation, host key distribution
 - **`primitives.py`** — Higher-level composition: `build_ssh_kwargs()`, `build_volumes()`, `merge_env()`, `detect_infiniband()`, `run_script_on_host()`, `cleanup_containers()`
 - **`job_metadata.py`** — Persistent job metadata (cluster_id → recipe mapping) stored in `~/.cache/sparkrun/jobs/`
-- **`scripts.py`** — Script file loader (`read_script()`) for embedded bash scripts in `scripts/`
 
 ### Recipe System
 

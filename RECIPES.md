@@ -129,7 +129,7 @@ Which inference engine to use. Determines how sparkrun launches and manages the 
 | `vllm-distributed` | vLLM | Native | Default vLLM variant. Uses vLLM's built-in distributed backend. |
 | `vllm-ray` | vLLM | Ray | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Native | First-class. Solo and multi-node via SGLang's built-in distribution. |
-| `llama-cpp` | llama.cpp | N/A | Solo mode. GGUF quantized models via `llama-server`. |
+| `llama-cpp` | llama.cpp | RPC (experimental) | Solo mode by default. Multi-node support via llama.cpp RPC (experimental). |
 | `eugr-vllm` | vLLM (eugr) | Ray | Extends vLLM with eugr container builds and mod support. |
 
 Explicitly setting `runtime` is **recommended** for clarity and forward-compatibility. However, this field is
@@ -305,9 +305,9 @@ metadata:
 
 | Field | Purpose |
 |-------|---------|
-| `description` | Human-readable summary shown in `sparkrun list` and `sparkrun show`. |
+| `description` | Human-readable summary shown in `sparkrun list` and `sparkrun show`. Also accepted as a top-level key (takes precedence over `metadata.description`). |
 | `maintainer` | Contact info for the recipe author. |
-| `name` | Override the recipe display name (defaults to filename stem). |
+| `name` | Override the recipe display name (defaults to filename stem) — (not currently implemented — recipe name always uses the filename stem). |
 
 ##### VRAM estimation fields
 
@@ -378,14 +378,14 @@ benchmark:
     tg: [32, 128]
     depth: [0, 4096, 16384]
     concurrency: [1, 2, 5]
-    enable_prefix_caching: true
+    prefix_caching: true
 
 # Flat format (unknown keys swept into args automatically)
 benchmark:
   framework: llama-benchy
   pp: [2048]
   depth: [0]
-  enable_prefix_caching: true
+  prefix_caching: true
 ```
 
 | Field | Type | Description |
@@ -400,17 +400,25 @@ When `sparkrun benchmark <recipe>` is run without `--profile`, the recipe's `ben
 
 ### Version Fields [NOT FINALIZED]
 
-#### `sparkrun_version` / `recipe_version`
+#### `recipe_version`
 
 Declares the recipe format version. The current format is version `2` (the default).
 
 ```yaml
-sparkrun_version: "2"   # current format
-recipe_version: "1"     # eugr v1 format — triggers eugr-vllm runtime
+recipe_version: "2"   # current format
+recipe_version: "1"     # eugr v1 format — also automatically resolves runtime to eugr-vllm runtime
 ```
 
 Version `1` recipes are automatically migrated: the runtime is set to `eugr-vllm` and eugr-specific fields are
 preserved in `runtime_config`.
+
+#### `runtime_version`
+
+Runtime-specific version identifier (optional). Used to track version differences within a specific runtime implementation.
+
+```yaml
+runtime_version: "0.5.8"
+```
 
 ## GGUF Recipes (llama.cpp)
 
@@ -539,11 +547,12 @@ sparkrun detects `sglang serve` and automatically sets the runtime to `sglang` �
 
 sparkrun searches for recipes in this order:
 
-1. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly.
-2. **Exact/relative file path** — if the argument is a path to an existing file.
-3. **Bundled recipes** — shipped with sparkrun in the `recipes/` directory.
-4. **Registry paths** — from configured custom registries.
-5. **Registry stem matching** — searches registry files by filename stem.
+1. **`@spark-arena/` shortcut** — `@spark-arena/UUID` expands to a Spark Arena URL.
+2. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly and cached.
+3. **`@registry/recipe-name` scoped lookup** — disambiguate recipes across registries using scoped syntax.
+4. **Exact/relative file path** — if the argument is a path to an existing file.
+5. **Current working directory** — sparkrun scans `.yaml`/`.yml` files in the CWD that are valid recipes (must have `model`, `container`, and a resolvable `runtime`).
+6. **Registry search** — flat name lookup in configured custom registries, then recursive glob.
 
 Filenames are matched with or without `.yaml`/`.yml` extensions, so `sparkrun run my-recipe` finds
 `my-recipe.yaml`.
@@ -552,7 +561,7 @@ Filenames are matched with or without `.yaml`/`.yml` extensions, so `sparkrun ru
 
 Run `sparkrun recipe validate <recipe>` to check a recipe for issues:
 
-- Missing required fields (`model`)
+- Missing required fields (`name`, `model`, `runtime`)
 - Invalid `mode` values
 - `min_nodes` / `max_nodes` consistency
 - `metadata.model_params` is a valid parameter count

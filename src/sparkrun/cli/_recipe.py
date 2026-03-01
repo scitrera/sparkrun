@@ -39,11 +39,15 @@ def recipe_list(ctx, registry, runtime, show_all, query, config_path=None):
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
 
+    # When a specific registry is requested, include hidden registries so the
+    # user can list recipes from a non-visible registry without needing --all.
+    include_hidden = show_all or (registry is not None)
+
     if query:
-        recipes = registry_mgr.search_recipes(query, include_hidden=show_all)
+        recipes = registry_mgr.search_recipes(query, include_hidden=include_hidden)
     else:
         from sparkrun.core.recipe import discover_cwd_recipes
-        recipes = list_recipes(registry_manager=registry_mgr, include_hidden=show_all,
+        recipes = list_recipes(registry_manager=registry_mgr, include_hidden=include_hidden,
                                local_files=discover_cwd_recipes())
 
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
@@ -65,7 +69,8 @@ def recipe_search(ctx, registry, runtime, show_all, query, config_path=None):
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
 
-    recipes = registry_mgr.search_recipes(query, include_hidden=show_all)
+    include_hidden = show_all or (registry is not None)
+    recipes = registry_mgr.search_recipes(query, include_hidden=include_hidden)
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
 
     if not recipes:
@@ -177,7 +182,7 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
     _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
 
 
-@recipe.command("update")
+@recipe.command("update", hidden=True)
 @click.option("--registry", default=None, help="Update specific registry")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context

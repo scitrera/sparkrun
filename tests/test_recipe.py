@@ -30,7 +30,7 @@ def test_load_v2_recipe(tmp_recipe_dir: Path):
     assert recipe.runtime == "vllm-distributed"
     assert recipe.mode == "auto"
     assert recipe.container == "scitrera/dgx-spark-vllm:latest"
-    assert recipe.sparkrun_version == "2"
+    assert recipe.recipe_version == "2"
 
     # Verify defaults
     assert recipe.defaults["port"] == 8000
@@ -56,7 +56,7 @@ def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
 
     assert recipe.name == "test-eugr"  # name is always the filename stem
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
-    assert recipe.sparkrun_version == "1"
+    assert recipe.recipe_version == "1"
 
     # Should migrate to eugr-vllm because of build_args and mods
     assert recipe.runtime == "eugr-vllm"
@@ -78,7 +78,7 @@ def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
 
     assert recipe.name == "test-plain-v1"  # name is always the filename stem
     assert recipe.model == "meta-llama/Llama-2-7b-hf"
-    assert recipe.sparkrun_version == "1"
+    assert recipe.recipe_version == "1"
 
     # v1 format always maps to eugr-vllm
     assert recipe.runtime == "eugr-vllm"

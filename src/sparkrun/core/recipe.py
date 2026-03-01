@@ -97,7 +97,7 @@ def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
 
 def _resolve_v1_migration(recipe: Recipe) -> None:
     """v1 format recipes -> eugr-vllm runtime."""
-    if recipe.sparkrun_version != "1":
+    if recipe.recipe_version != "1":
         return
     if recipe.runtime in ("vllm", ""):
         recipe.runtime = "eugr-vllm"
@@ -240,7 +240,7 @@ class Recipe:
         self.source_registry_url: str | None = None  # set by _load_recipe after resolution
 
         # Detect version
-        self.sparkrun_version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
+        self.recipe_version = str(data.get("recipe_version", "2"))
 
         # Core fields — name defaults to source filename stem if not provided
         default_name = Path(source_path).stem if source_path else "unnamed"
@@ -526,6 +526,7 @@ class Recipe:
     # or fnmatch-style patterns (e.g. "model*" matches "model", "model_revision").
     # Keys not listed here are appended alphabetically after the last group.
     EXPORT_KEY_ORDER: list[str] = [
+        'recipe_version',
         "model*",
         "runtime*",
         "min_nodes", "max_nodes",
@@ -550,10 +551,12 @@ class Recipe:
         - Drops v1-only and internal keys (``recipe_version``, ``sparkrun_version``,
           ``name``, ``mode``, ``runtime_config``, unknown sweep keys).
         """
-        d: dict[str, Any] = {}
+        d: dict[str, Any] = {
+            'recipe_version': self.recipe_version,
+            "model": self.model
+        }
 
         # -- Core fields (always present) --
-        d["model"] = self.model
         if self.model_revision:
             d["model_revision"] = self.model_revision
         d["runtime"] = self._raw.get('runtime', self.runtime)  # use bare original if given
@@ -570,7 +573,7 @@ class Recipe:
         if self.container:
             d["container"] = self.container
 
-        # -- Preserve Raw Topology flags --
+        # -- Preserve Raw Topology flags from v1 --
         if self._raw.get("solo_only"):
             d["solo_only"] = True
         if self._raw.get("cluster_only"):

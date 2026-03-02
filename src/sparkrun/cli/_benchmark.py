@@ -554,14 +554,22 @@ def _run_benchmark(
             )
             click.echo("Results saved to: %s" % output_file)
 
-            # Write raw JSON alongside the YAML when available
-            json_data = results.get("json", {})
-            if json_data:
-                import json
-                from pathlib import Path
-                json_path = Path(output_file).with_suffix(".json")
-                json_path.write_text(json.dumps(json_data, indent=2))
-                click.echo("JSON results saved to: %s" % json_path)
+            # Write framework output formats alongside the YAML.
+            # Frameworks return keyed outputs (e.g. "json", "csv") in results;
+            # each is written to a file with the matching extension.
+            from pathlib import Path
+            _OUTPUT_WRITERS = {
+                "json": lambda data, path: path.write_text(
+                    __import__("json").dumps(data, indent=2)),
+                "csv": lambda data, path: path.write_text(data),
+            }
+            for fmt, writer in _OUTPUT_WRITERS.items():
+                content = results.get(fmt)
+                if not content:
+                    continue
+                fmt_path = Path(output_file).with_suffix(".%s" % fmt)
+                writer(content, fmt_path)
+                click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 

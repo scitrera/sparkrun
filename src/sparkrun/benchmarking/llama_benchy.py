@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import shutil
@@ -176,8 +178,157 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         # # Extract benchmark rows for summary display
         # rows = json_data.get("benchmarks", [])
 
+        # Build CSV from JSON when benchmark data is available
+        csv_text = ""
+        if json_data.get("benchmarks"):
+            csv_text = json_to_csv(json_data)
+
         return {
             # "rows": rows,
             "json": json_data,
+            "csv": csv_text,
             "stdout": stdout,
         }
+
+
+# -- CSV headers matching llama-benchy's save_report(format="csv") --
+_CSV_HEADERS = [
+    "model", "test_name",
+    "t_s_mean", "t_s_std", "t_s_req_mean", "t_s_req_std",
+    "peak_ts_mean", "peak_ts_std", "peak_ts_req_mean", "peak_ts_req_std",
+    "ttfr_mean", "ttfr_std", "est_ppt_mean", "est_ppt_std",
+    "e2e_ttft_mean", "e2e_ttft_std",
+]
+
+
+def json_to_csv(json_data: dict[str, Any]) -> str:
+    """Convert llama-benchy JSON results to a CSV string.
+
+    Replicates the exact row-generation and column layout that llama-benchy
+    uses when invoked with ``--format csv``.
+
+    Args:
+        json_data: Parsed JSON dict from llama-benchy (the top-level object
+            containing ``benchmarks``, ``model``, ``max_concurrency``, etc.).
+
+    Returns:
+        CSV string with header row and one data row per metric per benchmark run.
+    """
+    benchmarks = json_data.get("benchmarks", [])
+    model_name = json_data.get("model", "Unknown")
+    max_concurrency = json_data.get("max_concurrency", 1)
+
+    rows = _generate_csv_rows(benchmarks, model_name, max_concurrency)
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_CSV_HEADERS)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def _generate_csv_rows(
+        benchmarks: list[dict],
+        model_name: str,
+        max_concurrency: int,
+) -> list[dict[str, Any]]:
+    """Replicate llama-benchy's ``_generate_rows()`` → CSV row mapping.
+
+    Each BenchmarkRun in the JSON produces up to two display rows:
+    one for prompt-processing (PP) metrics and one for token-generation (TG).
+    """
+    rows: list[dict[str, Any]] = []
+
+    def _mean(metric: dict | None) -> float | None:
+        return metric["mean"] if metric else None
+
+    def _std(metric: dict | None) -> float | None:
+        return metric["std"] if metric else None
+
+    def _csv_row(
+            model: str,
+            test_name: str,
+            t_s: dict | None,
+            t_s_req: dict | None,
+            peak_ts: dict | None,
+            peak_ts_req: dict | None,
+            ttfr: dict | None,
+            est_ppt: dict | None,
+            e2e_ttft: dict | None,
+    ) -> dict[str, Any]:
+        return {
+            "model": model,
+            "test_name": test_name,
+            "t_s_mean": _mean(t_s),
+            "t_s_std": _std(t_s),
+            "t_s_req_mean": _mean(t_s_req),
+            "t_s_req_std": _std(t_s_req),
+            "peak_ts_mean": _mean(peak_ts),
+            "peak_ts_std": _std(peak_ts),
+            "peak_ts_req_mean": _mean(peak_ts_req),
+            "peak_ts_req_std": _std(peak_ts_req),
+            "ttfr_mean": _mean(ttfr),
+            "ttfr_std": _std(ttfr),
+            "est_ppt_mean": _mean(est_ppt),
+            "est_ppt_std": _std(est_ppt),
+            "e2e_ttft_mean": _mean(e2e_ttft),
+            "e2e_ttft_std": _std(e2e_ttft),
+        }
+
+    for run in benchmarks:
+        concurrency = run.get("concurrency", 1)
+        context_size = run.get("context_size", 0)
+        prompt_size = run.get("prompt_size", 0)
+        response_size = run.get("response_size", 0)
+        is_context_phase = run.get("is_context_prefill_phase", False)
+
+        c_suffix = " (c%d)" % concurrency if max_concurrency > 1 else ""
+
+        pp_tp = run.get("pp_throughput")
+        pp_req_tp = run.get("pp_req_throughput")
+        tg_tp = run.get("tg_throughput")
+        tg_req_tp = run.get("tg_req_throughput")
+        peak_tp = run.get("peak_throughput")
+        peak_req_tp = run.get("peak_req_throughput")
+        ttfr = run.get("ttfr")
+        est_ppt = run.get("est_ppt")
+        e2e_ttft = run.get("e2e_ttft")
+
+        if is_context_phase:
+            # Context prefill — PP row
+            if pp_tp:
+                rows.append(_csv_row(
+                    model_name, "ctx_pp @ d%d%s" % (context_size, c_suffix),
+                    t_s=pp_tp, t_s_req=pp_req_tp,
+                    peak_ts=None, peak_ts_req=None,
+                    ttfr=ttfr, est_ppt=est_ppt, e2e_ttft=e2e_ttft,
+                ))
+            # Context prefill — TG row
+            if tg_tp:
+                rows.append(_csv_row(
+                    model_name, "ctx_tg @ d%d%s" % (context_size, c_suffix),
+                    t_s=tg_tp, t_s_req=tg_req_tp,
+                    peak_ts=peak_tp, peak_ts_req=peak_req_tp,
+                    ttfr=None, est_ppt=None, e2e_ttft=None,
+                ))
+        else:
+            d_suffix = " @ d%d" % context_size if context_size > 0 else ""
+
+            # Standard — PP row
+            if pp_tp:
+                rows.append(_csv_row(
+                    model_name, "pp%d%s%s" % (prompt_size, d_suffix, c_suffix),
+                    t_s=pp_tp, t_s_req=pp_req_tp,
+                    peak_ts=None, peak_ts_req=None,
+                    ttfr=ttfr, est_ppt=est_ppt, e2e_ttft=e2e_ttft,
+                ))
+            # Standard — TG row
+            if tg_tp:
+                rows.append(_csv_row(
+                    model_name, "tg%d%s%s" % (response_size, d_suffix, c_suffix),
+                    t_s=tg_tp, t_s_req=tg_req_tp,
+                    peak_ts=peak_tp, peak_ts_req=peak_req_tp,
+                    ttfr=None, est_ppt=None, e2e_ttft=None,
+                ))
+
+    return rows

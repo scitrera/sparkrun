@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
     "huggingface_hub>=0.20",
+    "textual>=1.0.0",
 ]
 
 [project.optional-dependencies]

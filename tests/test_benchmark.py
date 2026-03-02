@@ -354,6 +354,32 @@ def test_llama_benchy_build_command_list_args():
     assert cmd[tg_idx + 2] == "64"
 
 
+def test_llama_benchy_build_command_exit_on_first_fail():
+    """Test --exit-on-first-fail renders as a bare flag."""
+    fw = LlamaBenchyFramework()
+    args = {"pp": [2048], "exit_on_first_fail": True}
+    cmd = fw.build_benchmark_command(
+        target_url="http://localhost:8000/v1",
+        model="org/model",
+        args=args,
+    )
+
+    assert "--exit-on-first-fail" in cmd
+
+
+def test_llama_benchy_build_command_exit_on_first_fail_false():
+    """Test exit_on_first_fail=False omits the flag."""
+    fw = LlamaBenchyFramework()
+    args = {"pp": [2048], "exit_on_first_fail": False}
+    cmd = fw.build_benchmark_command(
+        target_url="http://localhost:8000/v1",
+        model="org/model",
+        args=args,
+    )
+
+    assert "--exit-on-first-fail" not in cmd
+
+
 def test_llama_benchy_interpret_arg_list():
     """Test comma-separated value for list arg becomes list."""
     fw = LlamaBenchyFramework()

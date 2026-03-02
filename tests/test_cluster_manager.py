@@ -277,7 +277,7 @@ class TestParseMonitorLine:
     """Tests for sparkrun.core.monitoring.parse_monitor_line."""
 
     def test_parse_valid_line(self):
-        """Valid CSV line with all 26 fields parses to MonitorSample."""
+        """Valid CSV line with all 27 fields parses to MonitorSample."""
         from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
 
         fields = [
@@ -288,7 +288,7 @@ class TestParseMonitorLine:
             "8192", "100",
             "NVIDIA GH200", "85.0", "60000", "131072", "45.8",
             "62", "180.5", "300.0", "1500", "5001",
-            "3",
+            "3", "sparkrun_abc|sparkrun_def|sparkrun_ghi",
         ]
         assert len(fields) == len(MONITOR_COLUMNS)
         line = ",".join(fields)
@@ -305,6 +305,7 @@ class TestParseMonitorLine:
         assert sample.gpu_temp_c == "62"
         assert sample.gpu_power_w == "180.5"
         assert sample.sparkrun_jobs == "3"
+        assert sample.sparkrun_job_names == "sparkrun_abc|sparkrun_def|sparkrun_ghi"
 
     def test_parse_missing_gpu_fields(self):
         """CSV line with empty GPU fields parses correctly."""
@@ -318,7 +319,7 @@ class TestParseMonitorLine:
             "4096", "0",
             "", "", "", "", "",
             "", "", "", "", "",
-            "0",
+            "0", "",
         ]
         assert len(fields) == len(MONITOR_COLUMNS)
         line = ",".join(fields)

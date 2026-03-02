@@ -632,6 +632,7 @@ class TestClusterMonitor:
         assert "--cluster" in result.output
         assert "--interval" in result.output
         assert "--dry-run" in result.output
+        assert "--simple" in result.output
 
     def test_cluster_monitor_dry_run(self, runner, cluster_setup):
         """--dry-run shows what would be monitored without SSH."""
@@ -687,6 +688,38 @@ class TestClusterMonitor:
             mock_stream.assert_called_once()
             call_kwargs = mock_stream.call_args
             assert call_kwargs.kwargs.get("interval") == 5 or call_kwargs[1].get("interval") == 5
+
+    def test_cluster_monitor_simple_flag(self, runner, cluster_setup):
+        """--simple bypasses TUI and uses plain-text fallback."""
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+                "--simple",
+            ])
+            assert result.exit_code == 0
+            assert "Monitoring" in result.output
+            mock_stream.assert_called_once()
+
+    def test_cluster_monitor_tui_fallback_on_import_error(self, runner, cluster_setup, monkeypatch):
+        """Falls back to simple mode when Textual is not importable."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "sparkrun.cli._monitor_tui":
+                raise ImportError("no textual")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+            ])
+            assert result.exit_code == 0
+            assert "falling back" in result.output.lower() or "Monitoring" in result.output
+            mock_stream.assert_called_once()
 
 
 class TestRunWithCluster:

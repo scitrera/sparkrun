@@ -37,6 +37,7 @@ def generate_container_launch_script(
     volumes: dict[str, str] | None = None,
     nccl_env: dict[str, str] | None = None,
     detach: bool = True,
+    extra_docker_opts: list[str] | None = None,
 ) -> str:
     """Generate a script that launches a Docker container.
 
@@ -51,6 +52,7 @@ def generate_container_launch_script(
         volumes: Volume mounts (host_path -> container_path).
         nccl_env: NCCL-specific environment variables.
         detach: Run in detached mode.
+        extra_docker_opts: Additional ``docker run`` options.
 
     Returns:
         Complete bash script as a string.
@@ -65,6 +67,7 @@ def generate_container_launch_script(
         detach=detach,
         env=all_env,
         volumes=volumes,
+        extra_opts=extra_docker_opts,
     )
 
     template = read_script("container_launch.sh")

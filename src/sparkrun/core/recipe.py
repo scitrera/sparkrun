@@ -30,6 +30,7 @@ _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
 _CMD_VLLM_RE = re.compile(r"^vllm\s+serve\b")
 _CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_server)\b")
 _CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
+_CMD_TRTLLM_RE = re.compile(r"^(?:trtllm-serve|mpirun\b.*trtllm)")
 
 _KNOWN_KEYS = {
     "sparkrun_version", "recipe_version", "name", "description", "model",
@@ -91,6 +92,8 @@ def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
         recipe.runtime = "sglang"
     elif _CMD_LLAMA_CPP_RE.match(cmd):
         recipe.runtime = "llama-cpp"
+    elif _CMD_TRTLLM_RE.match(cmd):
+        recipe.runtime = "trtllm"
 
     return
 
@@ -149,6 +152,8 @@ def resolve_runtime(data: dict[str, Any]) -> str:
             return "sglang"
         if _CMD_LLAMA_CPP_RE.match(cmd):
             return "llama-cpp"
+        if _CMD_TRTLLM_RE.match(cmd):
+            return "trtllm"
         # vllm serve or unrecognised → fall through to vllm variant resolution
 
     # v1 migration and eugr detection (mirror _resolve_v1_migration and _resolve_eugr_signals)

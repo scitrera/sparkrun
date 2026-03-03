@@ -48,6 +48,7 @@ vllm-ray = "sparkrun.runtimes.vllm_ray:VllmRayRuntime"
 sglang = "sparkrun.runtimes.sglang:SglangRuntime"
 eugr-vllm = "sparkrun.runtimes.eugr_vllm_ray:EugrVllmRayRuntime"
 llama-cpp = "sparkrun.runtimes.llama_cpp:LlamaCppRuntime"
+trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"

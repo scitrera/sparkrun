@@ -57,9 +57,10 @@ def test_list_runtimes_discovers_all():
     assert "eugr-vllm" in runtimes
     assert "llama-cpp" in runtimes
     assert "sglang" in runtimes
+    assert "trtllm" in runtimes
     assert "vllm-ray" in runtimes
     assert "vllm-distributed" in runtimes
-    assert len(runtimes) == 5
+    assert len(runtimes) == 6
 
 
 def test_get_runtime_vllm_ray():

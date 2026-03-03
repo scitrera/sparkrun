@@ -609,6 +609,119 @@ class TestClusterCommands:
         assert "/mnt/models" in result.output
 
 
+class TestClusterMonitor:
+    """Test cluster monitor subcommand."""
+
+    @pytest.fixture
+    def cluster_setup(self, tmp_path, monkeypatch):
+        """Set up a config root with a test cluster."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("monitor-cluster", ["10.0.0.1", "10.0.0.2"])
+        return config_root
+
+    def test_cluster_monitor_help(self, runner):
+        """cluster monitor --help shows expected options."""
+        result = runner.invoke(main, ["cluster", "monitor", "--help"])
+        assert result.exit_code == 0
+        assert "--hosts" in result.output
+        assert "--cluster" in result.output
+        assert "--interval" in result.output
+        assert "--dry-run" in result.output
+        assert "--simple" in result.output
+
+    def test_cluster_monitor_dry_run(self, runner, cluster_setup):
+        """--dry-run shows what would be monitored without SSH."""
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            assert "dry-run" in result.output.lower()
+            assert "10.0.0.1" in result.output
+            assert "10.0.0.2" in result.output
+            # stream_cluster_monitor should be called with dry_run=True
+            mock_stream.assert_called_once()
+            call_kwargs = mock_stream.call_args
+            assert call_kwargs.kwargs.get("dry_run") or call_kwargs[1].get("dry_run")
+
+    def test_cluster_monitor_host_resolution(self, runner, cluster_setup):
+        """--cluster resolves hosts from cluster definition."""
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor"):
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            # Both hosts should appear in the dry-run output
+            assert "10.0.0.1" in result.output
+            assert "10.0.0.2" in result.output
+
+    def test_cluster_monitor_no_hosts_error(self, runner, tmp_path, monkeypatch):
+        """Monitor with no hosts exits with error."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["cluster", "monitor"])
+        assert result.exit_code != 0
+        assert "hosts" in result.output.lower() or "Error" in result.output
+
+    def test_cluster_monitor_custom_interval(self, runner, cluster_setup):
+        """--interval is passed through to stream_cluster_monitor."""
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+                "--interval", "5",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            mock_stream.assert_called_once()
+            call_kwargs = mock_stream.call_args
+            assert call_kwargs.kwargs.get("interval") == 5 or call_kwargs[1].get("interval") == 5
+
+    def test_cluster_monitor_simple_flag(self, runner, cluster_setup):
+        """--simple bypasses TUI and uses plain-text fallback."""
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+                "--simple",
+            ])
+            assert result.exit_code == 0
+            assert "Monitoring" in result.output
+            mock_stream.assert_called_once()
+
+    def test_cluster_monitor_tui_fallback_on_import_error(self, runner, cluster_setup, monkeypatch):
+        """Falls back to simple mode when Textual is not importable."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "sparkrun.cli._monitor_tui":
+                raise ImportError("no textual")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        with mock.patch("sparkrun.core.monitoring.stream_cluster_monitor") as mock_stream:
+            result = runner.invoke(main, [
+                "cluster", "monitor",
+                "--cluster", "monitor-cluster",
+            ])
+            assert result.exit_code == 0
+            assert "falling back" in result.output.lower() or "Monitoring" in result.output
+            mock_stream.assert_called_once()
+
+
 class TestRunWithCluster:
     """Test run command with --cluster and --hosts-file options."""
 
@@ -2497,3 +2610,53 @@ class TestClusterUserInCLICommands:
         ])
         assert result.exit_code == 0
         assert captured_config.get("ssh_user") == "labadmin"
+
+
+# ---------------------------------------------------------------------------
+# Top-level 'update' alias tests
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCommand:
+    """Test the top-level 'sparkrun update' command."""
+
+    def test_update_no_uv(self, runner, monkeypatch):
+        """update skips self-upgrade when uv is not on PATH and runs registry update."""
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        with mock.patch("sparkrun.cli._registry.registry_update") as mock_reg:
+            # Make the Click command callable via ctx.invoke by wrapping
+            mock_reg.return_value = None
+            result = runner.invoke(main, ["update"])
+        assert result.exit_code == 0
+        assert "uv not found" in result.output
+
+    def test_update_not_uv_tool_install(self, runner, monkeypatch):
+        """update skips self-upgrade when sparkrun is not a uv tool install."""
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+        with mock.patch("subprocess.run") as mock_run:
+            # uv tool list succeeds but sparkrun not listed
+            mock_run.return_value = mock.Mock(returncode=0, stdout="some-other-tool\n", stderr="")
+            result = runner.invoke(main, ["update"])
+        assert result.exit_code == 0
+        assert "not installed via uv" in result.output
+
+    def test_update_uv_upgrade_succeeds(self, runner, monkeypatch):
+        """update performs uv upgrade and shells out for registry update."""
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[1:3] == ["tool", "list"]:
+                return mock.Mock(returncode=0, stdout="sparkrun v1.0.0\n", stderr="")
+            if cmd[1:3] == ["tool", "upgrade"]:
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["sparkrun", "--version"]:
+                return mock.Mock(returncode=0, stdout="sparkrun, version 1.1.0", stderr="")
+            if cmd == ["sparkrun", "registry", "update"]:
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            result = runner.invoke(main, ["update"])
+        assert result.exit_code == 0
+        assert "-> 1.1.0" in result.output
+        assert "Updating recipe registries" in result.output

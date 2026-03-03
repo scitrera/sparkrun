@@ -168,9 +168,13 @@ class VllmTuner(BaseTuner):
         elapsed = time.monotonic() - t0
         if not result.success:
             logger.error(
-                "  Tuning for TP=%d failed (exit %d, %.1fs): %s",
-                tp_size, result.returncode, elapsed, result.stderr[:300],
+                "  Tuning for TP=%d failed (exit %d, %.1fs)",
+                tp_size, result.returncode, elapsed,
             )
+            if result.stdout and result.stdout.strip():
+                logger.error("  stdout:\n%s", result.stdout.rstrip())
+            if result.stderr and result.stderr.strip():
+                logger.error("  stderr:\n%s", result.stderr.rstrip())
             return result.returncode
 
         logger.info("  TP=%d tuning complete (%.1fs)", tp_size, elapsed)

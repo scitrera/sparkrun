@@ -5,13 +5,25 @@ description: Common issues and practical tips for running sparkrun on DGX Spark 
 
 ## HuggingFace cache owned by root
 
-DGX Spark inference containers typically run as **root** inside rootful Docker. If a container downloads a model from HuggingFace — either intentionally or because a file wasn't pre-cached (e.g., a tokenizer config) — the downloaded files in `~/.cache/huggingface` end up **owned by root**. This causes permission errors on subsequent runs when your non-root user can't read or update the cache.
+DGX Spark inference containers typically run as **root** inside rootful Docker. If a container downloads a model from HuggingFace — either intentionally or because a file wasn't pre-cached (e.g., a tokenizer config) — the downloaded files in the HuggingFace cache end up **owned by root**. This causes permission errors on subsequent runs when your non-root user can't read or update the cache.
+
+:::note[Cache directory resolution]
+sparkrun uses the same cache directory as `huggingface_hub`, resolved in this order:
+
+1. `--cache-dir` CLI flag or `hf_cache_dir` in `~/.config/sparkrun/config.yaml` (sparkrun-specific override)
+2. `HF_HUB_CACHE` environment variable
+3. `HUGGINGFACE_HUB_CACHE` environment variable (legacy alias)
+4. `HF_HOME` environment variable + `/hub`
+5. `~/.cache/huggingface` (default)
+
+If you've set `HF_HOME` or `HF_HUB_CACHE`, sparkrun respects those automatically — no sparkrun-specific configuration needed.
+:::
 
 sparkrun avoids this by downloading models **as your user** on the host and syncing them to cluster nodes before launching containers. But if models were previously downloaded inside a container (or you ran a container manually that pulled a model), you may already have root-owned files.
 
 **Symptoms:**
 
-- `Permission denied` or `OSError: [Errno 13]` errors referencing paths under `~/.cache/huggingface`
+- `Permission denied` or `OSError: [Errno 13]` errors referencing paths under your HuggingFace cache (typically `~/.cache/huggingface`)
 - A model that worked before suddenly fails on launch
 - sparkrun's model sync step fails with permission errors
 
@@ -33,7 +45,7 @@ sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
 sparkrun setup fix-permissions --cluster mylab --dry-run
 ```
 
-This runs `chown` on `~/.cache/huggingface` across all target hosts. It tries passwordless sudo first; if that fails, it prompts for a password once.
+This runs `chown` on the HuggingFace cache directory across all target hosts. It tries passwordless sudo first; if that fails, it prompts for a password once.
 
 **Automatic fix on every run:**
 
@@ -53,7 +65,7 @@ This installs a minimal sudoers rule on each host that permits **only** `chown -
 sparkrun setup fix-permissions --cluster mylab --save-sudo --dry-run
 ```
 
-Alternatively, you can fix a single machine manually:
+Alternatively, you can fix a single machine manually (adjust the path if you've set `HF_HOME`):
 
 ```bash
 sudo chown -R $USER:$USER ~/.cache/huggingface

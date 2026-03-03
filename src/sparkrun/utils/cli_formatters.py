@@ -1,8 +1,13 @@
 """Presentation layer formatting functions for sparkrun CLI."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import click
+
+if TYPE_CHECKING:
+    from sparkrun.core.monitoring import HostMonitorState
 
 
 def format_recipe_table(
@@ -187,3 +192,65 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
 
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
+
+
+def format_monitor_table(
+    data: dict[str, HostMonitorState],
+    hosts: list[str],
+) -> str:
+    """Format cluster monitor data as a text table.
+
+    Args:
+        data: Mapping of host -> HostMonitorState with latest sample/error.
+        hosts: Ordered list of hosts (determines row order).
+
+    Returns:
+        Formatted multi-line string.
+    """
+    # Widths are minimums; host column expands to fit longest hostname.
+    host_w = max(16, *(len(h) for h in hosts)) + 2
+
+    header = (
+        f"{'HOST':<{host_w}}"
+        f"{'Jobs':>6}"
+        f"{'CPU%':>8}"
+        f"{'RAM%':>8}"
+        f"{'GPU%':>8}"
+        f"{'CPU Temp':>10}"
+        f"{'GPU Temp':>10}"
+        f"{'GPU Power':>11}"
+    )
+    separator = "-" * len(header)
+
+    lines = [header, separator]
+    for host in hosts:
+        state = data.get(host)
+        if state is None or (state.latest is None and state.error is None):
+            lines.append(f"{host:<{host_w}}{'(connecting...)':>6}")
+            continue
+
+        if state.error and state.latest is None:
+            lines.append(f"{host:<{host_w}}{state.error}")
+            continue
+
+        s = state.latest
+        jobs = s.sparkrun_jobs if s.sparkrun_jobs else "-"
+        cpu_pct = s.cpu_usage_pct if s.cpu_usage_pct else "-"
+        ram_pct = "%s%%" % s.mem_used_pct if s.mem_used_pct else "-"
+        gpu_util = "%s" % s.gpu_util_pct if s.gpu_util_pct else "-"
+        cpu_temp = "%s C" % s.cpu_temp_c if s.cpu_temp_c else "-"
+        gpu_temp = "%s C" % s.gpu_temp_c if s.gpu_temp_c else "-"
+        gpu_power = "%s W" % s.gpu_power_w if s.gpu_power_w else "-"
+
+        lines.append(
+            f"{host:<{host_w}}"
+            f"{jobs:>6}"
+            f"{cpu_pct:>8}"
+            f"{ram_pct:>8}"
+            f"{gpu_util:>8}"
+            f"{cpu_temp:>10}"
+            f"{gpu_temp:>10}"
+            f"{gpu_power:>11}"
+        )
+
+    return "\n".join(lines)

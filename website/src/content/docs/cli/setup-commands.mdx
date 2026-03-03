@@ -88,7 +88,7 @@ sparkrun setup cx7 --cluster mylab --force
 sparkrun setup fix-permissions [options]
 ```
 
-Fix file ownership in the HuggingFace cache (`~/.cache/huggingface`) on cluster hosts. Docker containers create cache files as root, leaving the normal user unable to manage them. This command runs `chown` across all target hosts to restore ownership.
+Fix file ownership in the HuggingFace cache on cluster hosts. Docker containers create cache files as root, leaving the normal user unable to manage them. This command runs `chown` across all target hosts to restore ownership.
 
 Tries non-interactive sudo first on all hosts in parallel, then falls back to password-based sudo for any that fail. Use `--save-sudo` to avoid password prompts on subsequent runs.
 
@@ -105,7 +105,7 @@ sparkrun setup fix-permissions --cluster mylab --dry-run
 | `--hosts-file` | File with hosts (one per line, `#` comments) |
 | `--cluster` | Use a saved cluster definition |
 | `--user` / `-u` | Target owner for chown (default: SSH user) |
-| `--cache-dir` | Cache directory path (default: `~/.cache/huggingface`) |
+| `--cache-dir` | Cache directory path (default: `HF_HOME`, typically `~/.cache/huggingface`) |
 | `--save-sudo` | Install a scoped sudoers entry for passwordless chown (requires sudo once) |
 | `--dry-run` / `-n` | Show what would be done without executing |
 

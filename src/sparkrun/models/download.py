@@ -30,12 +30,22 @@ def _hub_cache(cache_dir: str | None = None) -> str:
     ``huggingface-cli download --cache-dir``) to keep downloads consistent
     with the default HF cache layout.
 
-    Our volume mount maps ``DEFAULT_HF_CACHE_DIR`` (``~/.cache/huggingface``)
-    to ``/root/.cache/huggingface`` inside containers, so the ``hub/``
+    When no explicit *cache_dir* is provided, defers to
+    ``huggingface_hub.constants.HF_HUB_CACHE`` which already resolves the
+    full env-var priority chain (``HF_HUB_CACHE`` > ``HUGGINGFACE_HUB_CACHE``
+    > ``HF_HOME/hub`` > ``~/.cache/huggingface/hub``).
+
+    Our volume mount maps the HF cache root (``HF_HOME``) to
+    ``/root/.cache/huggingface`` inside containers, so the ``hub/``
     subdirectory is preserved on both sides.
     """
-    base = resolve_cache_dir(cache_dir)
-    return base + "/hub"
+    if cache_dir:
+        return cache_dir + "/hub"
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return HF_HUB_CACHE
+    except ImportError:  # pragma: no cover
+        return resolve_cache_dir(None) + "/hub"
 
 
 # ---------------------------------------------------------------------------

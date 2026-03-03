@@ -17,14 +17,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "sparkrun"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparkrun"
-DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
+
+# Defer to huggingface_hub's own resolution of the cache root, which
+# respects HF_HOME, HF_HUB_CACHE, and HUGGINGFACE_HUB_CACHE env vars.
+try:
+    from huggingface_hub.constants import HF_HOME as _HF_HOME
+    DEFAULT_HF_CACHE_DIR = Path(_HF_HOME)
+except ImportError:  # pragma: no cover — huggingface_hub is a required dep
+    DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
 
 
 def resolve_cache_dir(cache_dir: str | None) -> str:
     """Resolve an optional cache directory override to a concrete path.
 
-    Returns *cache_dir* if provided, otherwise the default HuggingFace
-    cache directory.
+    Returns *cache_dir* if provided, otherwise the HuggingFace cache
+    directory as resolved by ``huggingface_hub`` (respecting ``HF_HOME``
+    and related env vars).
     """
     return cache_dir or str(DEFAULT_HF_CACHE_DIR)
 

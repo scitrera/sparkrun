@@ -1,4 +1,4 @@
-"""Tests for sparkrun.cluster_manager module."""
+"""Tests for sparkrun.cluster_manager and sparkrun.core.monitoring modules."""
 
 from __future__ import annotations
 
@@ -266,3 +266,101 @@ def test_update_cluster_clear_cache_dir(tmp_path: Path):
 
     cluster = manager.get("test")
     assert cluster.cache_dir is None
+
+
+# ---------------------------------------------------------------------------
+# Monitoring parse tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseMonitorLine:
+    """Tests for sparkrun.core.monitoring.parse_monitor_line."""
+
+    def test_parse_valid_line(self):
+        """Valid CSV line with all 27 fields parses to MonitorSample."""
+        from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
+
+        fields = [
+            "2026-03-02T10:00:00Z", "spark-01", "12345",
+            "1.2", "0.8", "0.5",
+            "23.4", "2400", "55.0",
+            "128000", "45120", "82880", "35.2",
+            "8192", "100",
+            "NVIDIA GH200", "85.0", "60000", "131072", "45.8",
+            "62", "180.5", "300.0", "1500", "5001",
+            "3", "sparkrun_abc|sparkrun_def|sparkrun_ghi",
+        ]
+        assert len(fields) == len(MONITOR_COLUMNS)
+        line = ",".join(fields)
+        sample = parse_monitor_line(line)
+
+        assert sample is not None
+        assert sample.timestamp == "2026-03-02T10:00:00Z"
+        assert sample.hostname == "spark-01"
+        assert sample.cpu_usage_pct == "23.4"
+        assert sample.mem_total_mb == "128000"
+        assert sample.mem_used_mb == "45120"
+        assert sample.gpu_name == "NVIDIA GH200"
+        assert sample.gpu_util_pct == "85.0"
+        assert sample.gpu_temp_c == "62"
+        assert sample.gpu_power_w == "180.5"
+        assert sample.sparkrun_jobs == "3"
+        assert sample.sparkrun_job_names == "sparkrun_abc|sparkrun_def|sparkrun_ghi"
+
+    def test_parse_missing_gpu_fields(self):
+        """CSV line with empty GPU fields parses correctly."""
+        from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
+
+        fields = [
+            "2026-03-02T10:00:00Z", "spark-02", "12345",
+            "0.5", "0.3", "0.2",
+            "5.1", "2400", "45.0",
+            "64000", "12000", "52000", "18.7",
+            "4096", "0",
+            "", "", "", "", "",
+            "", "", "", "", "",
+            "0", "",
+        ]
+        assert len(fields) == len(MONITOR_COLUMNS)
+        line = ",".join(fields)
+        sample = parse_monitor_line(line)
+
+        assert sample is not None
+        assert sample.hostname == "spark-02"
+        assert sample.cpu_usage_pct == "5.1"
+        assert sample.gpu_name == ""
+        assert sample.gpu_util_pct == ""
+        assert sample.gpu_temp_c == ""
+        assert sample.gpu_power_w == ""
+
+    def test_parse_malformed_too_few_fields(self):
+        """CSV line with too few fields returns None."""
+        from sparkrun.core.monitoring import parse_monitor_line
+
+        assert parse_monitor_line("a,b,c") is None
+
+    def test_parse_malformed_too_many_fields(self):
+        """CSV line with too many fields returns None."""
+        from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
+
+        line = ",".join(["x"] * (len(MONITOR_COLUMNS) + 1))
+        assert parse_monitor_line(line) is None
+
+    def test_parse_empty_line(self):
+        """Empty string returns None."""
+        from sparkrun.core.monitoring import parse_monitor_line
+
+        assert parse_monitor_line("") is None
+        assert parse_monitor_line("   ") is None
+
+    def test_parse_strips_whitespace(self):
+        """Leading/trailing whitespace in fields is stripped."""
+        from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
+
+        fields = [" 2026-03-02T10:00:00Z "] + [" val "] * (len(MONITOR_COLUMNS) - 1)
+        line = ",".join(fields)
+        sample = parse_monitor_line(line)
+
+        assert sample is not None
+        assert sample.timestamp == "2026-03-02T10:00:00Z"
+        assert sample.hostname == "val"

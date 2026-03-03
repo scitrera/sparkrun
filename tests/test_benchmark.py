@@ -354,6 +354,32 @@ def test_llama_benchy_build_command_list_args():
     assert cmd[tg_idx + 2] == "64"
 
 
+def test_llama_benchy_build_command_exit_on_first_fail():
+    """Test --exit-on-first-fail renders as a bare flag."""
+    fw = LlamaBenchyFramework()
+    args = {"pp": [2048], "exit_on_first_fail": True}
+    cmd = fw.build_benchmark_command(
+        target_url="http://localhost:8000/v1",
+        model="org/model",
+        args=args,
+    )
+
+    assert "--exit-on-first-fail" in cmd
+
+
+def test_llama_benchy_build_command_exit_on_first_fail_false():
+    """Test exit_on_first_fail=False omits the flag."""
+    fw = LlamaBenchyFramework()
+    args = {"pp": [2048], "exit_on_first_fail": False}
+    cmd = fw.build_benchmark_command(
+        target_url="http://localhost:8000/v1",
+        model="org/model",
+        args=args,
+    )
+
+    assert "--exit-on-first-fail" not in cmd
+
+
 def test_llama_benchy_interpret_arg_list():
     """Test comma-separated value for list arg becomes list."""
     fw = LlamaBenchyFramework()
@@ -390,16 +416,234 @@ def test_llama_benchy_interpret_arg_scalar():
     assert result == 8
 
 
+def test_llama_benchy_estimate_test_count():
+    """Test estimate_test_count calculates cartesian product correctly."""
+    fw = LlamaBenchyFramework()
+
+    count = fw.estimate_test_count({"pp": [2048, 4096], "tg": [32], "depth": [0], "concurrency": [1], "runs": 3})
+    assert count == 2 * 1 * 1 * 1 * 3
+
+    count = fw.estimate_test_count({"pp": [2048], "tg": [32, 64], "depth": [0, 1024], "concurrency": [1, 2], "runs": 2})
+    assert count == 1 * 2 * 2 * 2 * 2
+
+
+# ========== json_to_csv Tests ==========
+
+
+def test_json_to_csv_standard_run():
+    """Test CSV conversion for a standard (non-context-prefill) benchmark run."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    json_data = {
+        "model": "org/model",
+        "max_concurrency": 1,
+        "benchmarks": [
+            {
+                "concurrency": 1,
+                "context_size": 0,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 1500.0, "std": 50.0, "values": [1450, 1500, 1550]},
+                "pp_req_throughput": {"mean": 1500.0, "std": 50.0, "values": [1450, 1500, 1550]},
+                "tg_throughput": {"mean": 45.0, "std": 2.0, "values": [43, 45, 47]},
+                "tg_req_throughput": {"mean": 45.0, "std": 2.0, "values": [43, 45, 47]},
+                "peak_throughput": {"mean": 48.0, "std": 1.5, "values": [46.5, 48, 49.5]},
+                "peak_req_throughput": {"mean": 48.0, "std": 1.5, "values": [46.5, 48, 49.5]},
+                "ttfr": {"mean": 120.0, "std": 5.0, "values": [115, 120, 125]},
+                "est_ppt": {"mean": 100.0, "std": 4.0, "values": [96, 100, 104]},
+                "e2e_ttft": {"mean": 130.0, "std": 6.0, "values": [124, 130, 136]},
+            },
+        ],
+    }
+
+    csv_text = json_to_csv(json_data)
+    lines = csv_text.strip().splitlines()
+
+    # Header + 2 data rows (PP and TG)
+    assert len(lines) == 3
+
+    # Check header
+    assert lines[0].startswith("model,test_name,")
+
+    # Parse CSV back to verify values
+    import csv as csv_mod
+    import io
+    reader = csv_mod.DictReader(io.StringIO(csv_text))
+    rows = list(reader)
+    assert len(rows) == 2
+
+    # PP row
+    assert rows[0]["model"] == "org/model"
+    assert rows[0]["test_name"] == "pp2048"
+    assert float(rows[0]["t_s_mean"]) == 1500.0
+    assert float(rows[0]["t_s_std"]) == 50.0
+    assert rows[0]["peak_ts_mean"] == ""  # PP rows have no peak
+    assert float(rows[0]["ttfr_mean"]) == 120.0
+
+    # TG row
+    assert rows[1]["test_name"] == "tg32"
+    assert float(rows[1]["t_s_mean"]) == 45.0
+    assert float(rows[1]["peak_ts_mean"]) == 48.0
+    assert rows[1]["ttfr_mean"] == ""  # TG rows have no ttfr
+
+
+def test_json_to_csv_with_depth():
+    """Test CSV test_name includes depth suffix when context_size > 0."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    json_data = {
+        "model": "org/model",
+        "max_concurrency": 1,
+        "benchmarks": [
+            {
+                "concurrency": 1,
+                "context_size": 4096,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 1200.0, "std": 40.0, "values": []},
+                "tg_throughput": {"mean": 40.0, "std": 1.0, "values": []},
+                "peak_throughput": {"mean": 42.0, "std": 1.0, "values": []},
+            },
+        ],
+    }
+
+    csv_text = json_to_csv(json_data)
+    import csv as csv_mod
+    import io
+    rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
+
+    assert rows[0]["test_name"] == "pp2048 @ d4096"
+    assert rows[1]["test_name"] == "tg32 @ d4096"
+
+
+def test_json_to_csv_with_concurrency():
+    """Test CSV test_name includes concurrency suffix when max_concurrency > 1."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    json_data = {
+        "model": "org/model",
+        "max_concurrency": 4,
+        "benchmarks": [
+            {
+                "concurrency": 2,
+                "context_size": 0,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 3000.0, "std": 100.0, "values": []},
+                "tg_throughput": {"mean": 80.0, "std": 3.0, "values": []},
+                "peak_throughput": {"mean": 85.0, "std": 2.0, "values": []},
+            },
+        ],
+    }
+
+    csv_text = json_to_csv(json_data)
+    import csv as csv_mod
+    import io
+    rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
+
+    assert rows[0]["test_name"] == "pp2048 (c2)"
+    assert rows[1]["test_name"] == "tg32 (c2)"
+
+
+def test_json_to_csv_context_prefill():
+    """Test CSV rows for context prefill phase use ctx_pp/ctx_tg test names."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    json_data = {
+        "model": "org/model",
+        "max_concurrency": 1,
+        "benchmarks": [
+            {
+                "concurrency": 1,
+                "context_size": 8192,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": True,
+                "pp_throughput": {"mean": 900.0, "std": 30.0, "values": []},
+                "tg_throughput": {"mean": 35.0, "std": 1.0, "values": []},
+                "peak_throughput": {"mean": 38.0, "std": 1.0, "values": []},
+                "ttfr": {"mean": 200.0, "std": 10.0, "values": []},
+                "est_ppt": {"mean": 180.0, "std": 8.0, "values": []},
+                "e2e_ttft": {"mean": 210.0, "std": 12.0, "values": []},
+            },
+        ],
+    }
+
+    csv_text = json_to_csv(json_data)
+    import csv as csv_mod
+    import io
+    rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
+
+    assert len(rows) == 2
+    assert rows[0]["test_name"] == "ctx_pp @ d8192"
+    assert float(rows[0]["ttfr_mean"]) == 200.0
+    assert rows[0]["peak_ts_mean"] == ""  # ctx_pp has no peak
+
+    assert rows[1]["test_name"] == "ctx_tg @ d8192"
+    assert float(rows[1]["peak_ts_mean"]) == 38.0
+    assert rows[1]["ttfr_mean"] == ""  # ctx_tg has no ttfr
+
+
+def test_json_to_csv_empty_benchmarks():
+    """Test CSV conversion with no benchmarks produces header only."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    csv_text = json_to_csv({"model": "org/model", "benchmarks": []})
+    lines = csv_text.strip().splitlines()
+    assert len(lines) == 1  # header only
+    assert lines[0].startswith("model,test_name,")
+
+
+def test_json_to_csv_missing_metrics():
+    """Test CSV handles runs with only PP or only TG metrics."""
+    from sparkrun.benchmarking.llama_benchy import json_to_csv
+
+    json_data = {
+        "model": "org/model",
+        "max_concurrency": 1,
+        "benchmarks": [
+            {
+                "concurrency": 1,
+                "context_size": 0,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 1500.0, "std": 50.0, "values": []},
+                # No tg_throughput — only PP row should be emitted
+            },
+        ],
+    }
+
+    csv_text = json_to_csv(json_data)
+    import csv as csv_mod
+    import io
+    rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
+    assert len(rows) == 1
+    assert rows[0]["test_name"] == "pp2048"
+
+
 def test_llama_benchy_parse_results_json(tmp_path):
-    """Test JSON file parsed into structured results."""
+    """Test JSON file parsed into structured results with csv output."""
     fw = LlamaBenchyFramework()
     import json
     json_data = {
         "version": "0.1.0",
         "model": "org/model",
+        "max_concurrency": 1,
         "benchmarks": [
-            {"concurrency": 1, "context_size": 2048, "pp_throughput": {"mean": 100.0}},
-            {"concurrency": 1, "context_size": 4096, "pp_throughput": {"mean": 200.0}},
+            {
+                "concurrency": 1, "context_size": 2048, "prompt_size": 2048,
+                "response_size": 32, "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 100.0, "std": 5.0, "values": [95, 100, 105]},
+            },
+            {
+                "concurrency": 1, "context_size": 4096, "prompt_size": 4096,
+                "response_size": 32, "is_context_prefill_phase": False,
+                "pp_throughput": {"mean": 200.0, "std": 10.0, "values": [190, 200, 210]},
+            },
         ],
     }
     result_file = tmp_path / "results.json"
@@ -415,13 +659,20 @@ def test_llama_benchy_parse_results_json(tmp_path):
     assert results["json"]["benchmarks"][1]["context_size"] == 4096
     assert "stdout" in results
 
+    # CSV output should be populated when benchmarks exist
+    assert "csv" in results
+    csv_lines = results["csv"].strip().splitlines()
+    assert len(csv_lines) >= 2  # header + at least one data row
+    assert csv_lines[0].startswith("model,test_name,")
+
 
 def test_llama_benchy_parse_results_empty():
-    """Test empty input returns empty json."""
+    """Test empty input returns empty json and empty csv."""
     fw = LlamaBenchyFramework()
     results = fw.parse_results("", "", result_file=None)
 
     assert results["json"] == {}
+    assert results["csv"] == ""
     assert "stdout" in results
 
 

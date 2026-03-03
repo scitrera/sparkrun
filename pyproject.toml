@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.1.1"
+version = "0.1.2"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
 license = "Apache-2.0"
@@ -29,6 +29,7 @@ dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
     "huggingface_hub>=0.20",
+    "textual>=1.0.0",
 ]
 
 [project.optional-dependencies]

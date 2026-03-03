@@ -216,6 +216,82 @@ def cluster_default(ctx):
         click.echo(f"  - {h}")
 
 
+@cluster.command("monitor")
+@host_options
+@dry_run_option
+@click.option("--interval", "-i", default=2, type=int, help="Sampling interval in seconds")
+@click.option("--simple", is_flag=True, default=False, help="Use plain-text output instead of TUI")
+@click.pass_context
+def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, simple):
+    """Live-monitor CPU, RAM, and GPU metrics across cluster hosts.
+
+    Streams host_monitor.sh on each host via SSH and displays a refreshing
+    table with key metrics.  By default launches an interactive Textual TUI;
+    pass --simple for plain-text output.  Press q (TUI) or Ctrl-C to stop.
+
+    Examples:
+
+      sparkrun cluster monitor --hosts 192.168.11.13,192.168.11.14
+
+      sparkrun cluster monitor --cluster mylab
+
+      sparkrun cluster monitor --cluster mylab --interval 5
+
+      sparkrun cluster monitor --cluster mylab --simple
+    """
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.monitoring import ClusterMonitor, stream_cluster_monitor
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    config = SparkrunConfig()
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    if dry_run:
+        click.echo("[dry-run] Would monitor %d host(s) every %ds:" % (len(host_list), interval))
+        for h in host_list:
+            click.echo("  %s" % h)
+        stream_cluster_monitor(host_list, ssh_kwargs, interval=interval, dry_run=True)
+        return
+
+    # Try the Textual TUI unless --simple was requested.
+    if not simple:
+        try:
+            from sparkrun.cli._monitor_tui import ClusterMonitorApp
+
+            monitor = ClusterMonitor(host_list, ssh_kwargs, interval)
+            app = ClusterMonitorApp(monitor, cache_dir=str(config.cache_dir))
+            app.run()
+            return
+        except ImportError:
+            click.echo("Textual not installed — falling back to simple mode.\n", err=True)
+
+    # ---- simple plain-text fallback ----
+    from sparkrun.utils.cli_formatters import format_monitor_table
+
+    click.echo("Monitoring %d host(s) every %ds (Ctrl-C to stop)...\n" % (len(host_list), interval))
+
+    # Number of lines the table occupies: header + separator + one row per host
+    table_lines = len(host_list) + 2
+
+    def _render(states):
+        """Move cursor back to table start and redraw."""
+        table = format_monitor_table(states, host_list)
+        click.echo("\033[%dA\033[J" % table_lines, nl=False)
+        click.echo(table)
+
+    click.echo(format_monitor_table({}, host_list))
+
+    stream_cluster_monitor(
+        host_list,
+        ssh_kwargs,
+        interval=interval,
+        on_update=_render,
+    )
+
+    click.echo("\nMonitoring stopped.")
+
+
 @cluster.command("status")
 @host_options
 @dry_run_option

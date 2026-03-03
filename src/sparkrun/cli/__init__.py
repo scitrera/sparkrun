@@ -16,7 +16,7 @@ from ._common import (
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
-from ._registry import registry
+from ._registry import registry, registry_update
 from ._run import run
 from ._setup import setup
 from ._stop_logs import logs_cmd, stop
@@ -92,3 +92,73 @@ def status(ctx, hosts, hosts_file, cluster_name, dry_run):
     """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
     ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file,
                cluster_name=cluster_name, dry_run=dry_run)
+
+
+@main.command("update")
+@click.pass_context
+def update(ctx):
+    """Update sparkrun and recipe registries.
+
+    Attempts to upgrade sparkrun via ``uv tool upgrade`` if it was
+    installed that way, then always updates recipe registries from git.
+
+    If sparkrun was not installed via uv (e.g. pip, pipx, editable
+    install), the self-upgrade step is skipped and only registries
+    are updated.
+    """
+    import shutil
+    import subprocess
+
+    from sparkrun import __version__ as old_version
+
+    # --- Step 1: Try self-upgrade via uv (best-effort) ---
+    uv = shutil.which("uv")
+    upgraded = False
+    if uv:
+        check = subprocess.run(
+            [uv, "tool", "list"],
+            capture_output=True, text=True,
+        )
+        if check.returncode == 0 and "sparkrun" in check.stdout:
+            click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
+            result = subprocess.run(
+                [uv, "tool", "upgrade", "sparkrun"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                ver_result = subprocess.run(
+                    ["sparkrun", "--version"],
+                    capture_output=True, text=True,
+                )
+                if ver_result.returncode == 0:
+                    new_version = ver_result.stdout.strip().rsplit(None, 1)[-1]
+                    if new_version == old_version:
+                        click.echo("sparkrun %s is already the latest version." % old_version)
+                    else:
+                        click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
+                else:
+                    click.echo("sparkrun updated (could not determine new version).")
+                upgraded = True
+            else:
+                click.echo("Warning: sparkrun upgrade failed: %s" % result.stderr.strip(), err=True)
+                click.echo("Continuing with registry update...", err=True)
+        else:
+            click.echo("sparkrun not installed via uv tool — skipping self-upgrade.")
+    else:
+        click.echo("uv not found — skipping self-upgrade.")
+
+    # --- Step 2: Always update registries ---
+    if upgraded:
+        # After uv upgrade, the running process has stale code — shell out
+        # to the newly installed binary for registry update.
+        click.echo()
+        click.echo("Updating recipe registries...")
+        reg_result = subprocess.run(
+            ["sparkrun", "registry", "update"],
+            capture_output=False,
+        )
+        if reg_result.returncode != 0:
+            click.echo("Warning: registry update failed.", err=True)
+    else:
+        click.echo()
+        ctx.invoke(registry_update)

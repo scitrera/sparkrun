@@ -40,7 +40,7 @@ On subsequent `sparkrun run` invocations, tuning configs are automatically detec
 | `--cluster` | Use a saved cluster by name |
 | `--tp` | TP size(s) to tune (repeatable; default: 1,2,4,8) |
 | `--image` | Override container image |
-| `--cache-dir` | HuggingFace cache directory |
+| `--cache-dir` | HuggingFace cache directory (default: `HF_HOME`, typically `~/.cache/huggingface`) |
 | `--output-dir` | Override tuning config output directory |
 | `--skip-clone` | Skip cloning benchmark scripts (if already in image) |
 | `--parallel` / `-j` | Run N tuning jobs concurrently (default: 1 = sequential) |

@@ -268,6 +268,7 @@ def test_llama_benchy_framework_name():
     assert fw.framework_name == "llama-benchy"
 
 
+
 def test_llama_benchy_default_args():
     """Test default args include pp, depth, enable_prefix_caching."""
     fw = LlamaBenchyFramework()

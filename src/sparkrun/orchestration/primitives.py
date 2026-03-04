@@ -300,16 +300,17 @@ def cleanup_containers(
 ) -> None:
     """Stop and remove named containers on every host.
 
+    Uses local execution when a host is localhost, SSH otherwise.
+
     Args:
         hosts: Target hosts.
         container_names: Container names to remove on each host.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
     """
-    kw = ssh_kwargs or {}
     cmds = "; ".join(docker_stop_cmd(name) for name in container_names)
     for host in hosts:
-        run_remote_command(host, cmds, timeout=30, dry_run=dry_run, **kw)
+        run_command_on_host(host, cmds, ssh_kwargs=ssh_kwargs, timeout=30, dry_run=dry_run)
 
 
 def cleanup_containers_local(
@@ -384,19 +385,20 @@ def is_container_running(
         container_name: str,
         ssh_kwargs: dict | None = None,
 ) -> bool:
-    """Check whether a Docker container is running on a remote host.
+    """Check whether a Docker container is running on a host.
+
+    Uses local execution when *host* is localhost, SSH otherwise.
 
     Args:
-        host: Remote hostname.
+        host: Hostname (local or remote).
         container_name: Docker container name.
         ssh_kwargs: SSH connection parameters.
 
     Returns:
         True if the container is currently running.
     """
-    kw = ssh_kwargs or {}
     cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % container_name
-    result = run_remote_command(host, cmd, timeout=10, **kw)
+    result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=10)
     return result.success and "true" in result.stdout.lower()
 
 
@@ -411,8 +413,9 @@ def find_available_port(
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
 ) -> int:
-    """Find an available TCP port on a remote host, starting from *port*.
+    """Find an available TCP port on a host, starting from *port*.
 
+    Uses local execution when *host* is localhost, SSH otherwise.
     Checks if *port* is free using ``nc -z``.  If occupied, increments
     and retries up to *max_attempts* times.
 
@@ -422,11 +425,10 @@ def find_available_port(
     if dry_run:
         return port
 
-    kw = ssh_kwargs or {}
     original = port
 
     for _ in range(max_attempts):
-        result = run_remote_command(host, "nc -z localhost %d" % port, timeout=5, **kw)
+        result = run_command_on_host(host, "nc -z localhost %d" % port, ssh_kwargs=ssh_kwargs, timeout=5)
         if not result.success:
             # nc failed → port is free
             if port != original:
@@ -454,10 +456,12 @@ def wait_for_port(
         dry_run: bool = False,
         container_name: str | None = None,
 ) -> bool:
-    """Poll until a TCP port is listening on a remote host.
+    """Poll until a TCP port is listening on a host.
+
+    Uses local execution when *host* is localhost, SSH otherwise.
 
     Args:
-        host: Remote hostname.
+        host: Hostname (local or remote).
         port: Port to check.
         max_retries: Maximum number of retries.
         retry_interval: Seconds between retries.
@@ -474,19 +478,18 @@ def wait_for_port(
     if dry_run:
         return True
 
-    kw = ssh_kwargs or {}
     check_cmd = "nc -z localhost %d" % port
     for attempt in range(1, max_retries + 1):
         # Check container liveness before polling the port
         if container_name and attempt > 1:
-            if not is_container_running(host, container_name, ssh_kwargs=kw):
+            if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
                 logger.error(
                     "  Container %s is no longer running on %s — aborting wait",
                     container_name, host,
                 )
                 return False
 
-        result = run_remote_command(host, check_cmd, timeout=5, **kw)
+        result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5)
         if result.success:
             logger.info("  Port %d ready after %ds", port, attempt * retry_interval)
             return True

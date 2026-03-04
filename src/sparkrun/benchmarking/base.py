@@ -52,6 +52,7 @@ class BenchmarkingPlugin(Plugin):
     eager = False
     framework_name: str = ""
     default_args: dict[str, Any] = {}
+    passthrough_args: set[str] = set()
 
     # --- SAF Plugin interface ---
 

@@ -110,13 +110,16 @@ class LlamaCppRuntime(RuntimePlugin):
             # One > 1 and the other == 1: the 1 is a no-op, use the active one
             if tp_val > 1:
                 return "row"
-            # pp > 1, or both are 1 — layer is the default
-            return "layer"
+            if pp_val > 1:
+                return "layer"
+            # Both are 1 — no override needed (falls through to _LLAMA_CPP_DEFAULTS)
+            return None
 
-        if tp is not None and int(tp) > 1:
-            return "row"
-        # pp set, or neither set — default to layer
-        return "layer"
+        if tp is not None:
+            return "row" if int(tp) > 1 else None
+        if pp is not None:
+            return "layer" if int(pp) > 1 else None
+        return None
 
     def compute_required_nodes(self, recipe, overrides=None):
         """Compute required nodes from TP or PP (mutually exclusive).

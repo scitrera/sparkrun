@@ -34,6 +34,10 @@ _ARG_ALIASES: dict[str, str] = {
     "prefix_caching": "enable_prefix_caching",
 }
 
+_PASSTHROUGH_ARGS = {
+    'tokenizer',  # tokenizer value configured in a recipe can pass-thru to benchmark profile definitions
+}
+
 
 class LlamaBenchyFramework(BenchmarkingPlugin):
     """llama-benchy benchmarking framework.
@@ -46,8 +50,9 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     default_args: dict[str, Any] = {
         "pp": [2048],
         "depth": [0],
-        "enable_prefix_caching": True,
+        "prefix_caching": True,
     }
+    passthrough_args = _PASSTHROUGH_ARGS
 
     def initialize(self, v: Variables, logger_arg: Logger) -> LlamaBenchyFramework:
         return self

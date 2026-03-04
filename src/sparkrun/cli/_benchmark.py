@@ -166,9 +166,21 @@ def _run_benchmark(
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
-    # If no args from profile or recipe, use framework defaults
-    if not bench_args:
-        bench_args = fw.get_default_args()
+    # Build layered bench args with cascading precedence (highest → lowest):
+    #   1. -o CLI overrides        (applied below)
+    #   2. Profile / recipe bench  (bench_args from above)
+    #   3. Recipe benchmark block passthrough keys (e.g. tokenizer)
+    #   4. Framework defaults      (lowest)
+    passthrough_layer: dict = {}
+    if fw.passthrough_args:
+        recipe_bench_block = recipe._raw.get("benchmark", {}) if hasattr(recipe, '_raw') else {}
+        if isinstance(recipe_bench_block, dict):
+            for key in fw.passthrough_args:
+                if key in recipe_bench_block:
+                    passthrough_layer[key] = recipe_bench_block[key]
+
+    # Merge layers: defaults < passthrough < profile/recipe bench args
+    bench_args = {**fw.get_default_args(), **passthrough_layer, **bench_args}
 
     # Apply -o overrides on top
     for opt_str in options:

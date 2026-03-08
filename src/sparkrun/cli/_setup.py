@@ -562,8 +562,7 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
       sparkrun setup fix-permissions --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback
-    from sparkrun.orchestration.ssh import run_remote_sudo_script
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -597,8 +596,8 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
             sudoers_ok = 0
             sudoers_fail = 0
             for h in host_list:
-                r = run_remote_sudo_script(
-                    h, sudoers_script, sudo_password, timeout=300, dry_run=False, **ssh_kwargs,
+                r = run_sudo_script_on_host(
+                    h, sudoers_script, sudo_password, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=False,
                 )
                 if r.success:
                     sudoers_ok += 1
@@ -648,8 +647,8 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
             click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
             for fhost in still_failed:
                 per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = run_remote_sudo_script(
-                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                retry_result = run_sudo_script_on_host(
+                    fhost, fallback_script, per_host_pw, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=dry_run,
                 )
                 result_map[fhost] = retry_result
 
@@ -719,8 +718,7 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
       sparkrun setup clear-cache --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback
-    from sparkrun.orchestration.ssh import run_remote_sudo_script
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -747,8 +745,8 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
             sudoers_ok = 0
             sudoers_fail = 0
             for h in host_list:
-                r = run_remote_sudo_script(
-                    h, sudoers_script, sudo_password, timeout=300, dry_run=False, **ssh_kwargs,
+                r = run_sudo_script_on_host(
+                    h, sudoers_script, sudo_password, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=False,
                 )
                 if r.success:
                     sudoers_ok += 1
@@ -787,8 +785,8 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
             click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
             for fhost in still_failed:
                 per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = run_remote_sudo_script(
-                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                retry_result = run_sudo_script_on_host(
+                    fhost, fallback_script, per_host_pw, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=dry_run,
                 )
                 result_map[fhost] = retry_result
 
@@ -907,8 +905,7 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
       sparkrun setup earlyoom --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback
-    from sparkrun.orchestration.ssh import run_remote_sudo_script
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -964,8 +961,8 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
         remaining = list(still_failed)
         for h in remaining:
             click.echo("  %-20s ..." % h, nl=False)
-            r = run_remote_sudo_script(
-                h, fallback_script, sudo_password, timeout=300, dry_run=dry_run, **ssh_kwargs,
+            r = run_sudo_script_on_host(
+                h, fallback_script, sudo_password, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=dry_run,
             )
             result_map[h] = r
             if r.success:
@@ -982,8 +979,8 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
             for fhost in still_failed:
                 per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
                 click.echo("  %-20s ..." % fhost, nl=False)
-                retry_result = run_remote_sudo_script(
-                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                retry_result = run_sudo_script_on_host(
+                    fhost, fallback_script, per_host_pw, ssh_kwargs=ssh_kwargs, timeout=300, dry_run=dry_run,
                 )
                 result_map[fhost] = retry_result
                 if retry_result.success:

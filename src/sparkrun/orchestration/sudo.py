@@ -63,6 +63,40 @@ def _run_local_sudo_script(
         )
 
 
+def run_sudo_script_on_host(
+    host: str,
+    script: str,
+    password: str,
+    ssh_kwargs: dict | None = None,
+    timeout: int = 300,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Run a sudo script on a single host, dispatching local vs SSH.
+
+    For local hosts (localhost, 127.0.0.1), executes via ``sudo -S bash -s``
+    directly.  For remote hosts, delegates to
+    :func:`~sparkrun.orchestration.ssh.run_remote_sudo_script`.
+
+    Args:
+        host: Target hostname or IP.
+        script: Bash script content to execute as root.
+        password: Sudo password (fed via stdin).
+        ssh_kwargs: SSH connection parameters (forwarded for remote hosts).
+        timeout: Execution timeout in seconds.
+        dry_run: If True, skip actual execution.
+
+    Returns:
+        RemoteResult with the original host label preserved.
+    """
+    from sparkrun.core.hosts import is_local_host
+
+    if is_local_host(host):
+        r = _run_local_sudo_script(script, password=password, timeout=timeout, dry_run=dry_run)
+        return RemoteResult(host=host, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    kw = ssh_kwargs or {}
+    return _ssh.run_remote_sudo_script(host, script, password, timeout=timeout, dry_run=dry_run, **kw)
+
+
 def run_with_sudo_fallback(
     host_list: list[str],
     script: str,

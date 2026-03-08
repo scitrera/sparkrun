@@ -609,10 +609,11 @@ class TestEngineLifecycle:
         from sparkrun.proxy.engine import ProxyEngine
 
         engine = ProxyEngine(state_dir=state_dir)
-        rc = engine.start(
-            config_path=state_dir / "fake.yaml",
-            dry_run=True,
-        )
+        with patch("shutil.which", return_value="/usr/bin/uvx"):
+            rc = engine.start(
+                config_path=state_dir / "fake.yaml",
+                dry_run=True,
+            )
         assert rc == 0
 
     def test_start_no_uvx(self, state_dir: Path):

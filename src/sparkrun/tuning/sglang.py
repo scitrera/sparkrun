@@ -98,6 +98,42 @@ class SglangTuner(BaseTuner):
     def _default_output_dir(self) -> Path:
         return get_sglang_tuning_dir()
 
+    def _apply_patches(self) -> None:
+        """Patch known issues in cloned SGLang benchmark scripts.
+
+        Pipes ``sglang_patch_common_utils.py`` into the container to fix:
+
+        * ``config.architectures`` being ``None`` (Qwen3.5 MoE /
+          transformers >= 5.x).
+        * MoE attribute name variations (``num_experts`` vs
+          ``num_local_experts`` etc.) across model families.
+        """
+        import logging
+        from sparkrun.scripts import read_script
+        from sparkrun.orchestration.primitives import run_script_on_host
+
+        logger = logging.getLogger(__name__)
+
+        patch_py = read_script("sglang_patch_common_utils.py")
+
+        # Pipe the Python patch script into docker exec -i via heredoc
+        # to avoid all shell quoting issues.
+        patch_script = (
+            "#!/bin/bash\n"
+            "docker exec -i %s python3 << 'PYEOF'\n"
+            "%s\n"
+            "PYEOF\n"
+        ) % (self.container_name, patch_py)
+
+        result = run_script_on_host(
+            self.host, patch_script,
+            ssh_kwargs=self.ssh_kwargs, timeout=15, dry_run=self.dry_run,
+        )
+        if result.success or self.dry_run:
+            logger.debug("  Patched common_utils.py for MoE config compatibility")
+        else:
+            logger.debug("  Patch skipped (file may not need it): %s", result.stderr[:100])
+
     def _pre_check_tp(self, tp_size: int, triton_version: str) -> bool:
         """Check if SGLang tuning configs already exist for this TP size.
 

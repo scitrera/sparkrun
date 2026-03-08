@@ -809,6 +809,81 @@ def run_pipeline_to_remotes_parallel(
     return results
 
 
+def run_rsync_from_remote(
+        host: str,
+        source_path: str,
+        dest_path: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        rsync_options: list[str] | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
+) -> RemoteResult:
+    """Rsync a remote path to the local machine.
+
+    Inverse of :func:`run_rsync` — pulls ``user@host:source/`` to local
+    *dest_path*.
+
+    Args:
+        host: Remote hostname or IP.
+        source_path: Remote source directory.
+        dest_path: Local destination directory.
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        connect_timeout: SSH connection timeout in seconds.
+        rsync_options: Override rsync flags (default ``["-az", "--mkpath", "--partial", "--links"]``).
+        timeout: Overall execution timeout in seconds.
+        dry_run: If True, log the command but don't execute.
+
+    Returns:
+        RemoteResult with returncode, stdout, stderr.
+    """
+    if rsync_options is None:
+        rsync_options = ["-az", "--mkpath", "--partial", "--links"]
+
+    ssh_opts = build_ssh_opts_string(
+        ssh_user=ssh_user, ssh_key=ssh_key,
+        ssh_options=ssh_options, connect_timeout=connect_timeout,
+    )
+
+    # Ensure trailing slash so rsync copies directory contents
+    remote_src = source_path.rstrip("/") + "/"
+    remote = f"{ssh_user}@{host}:{remote_src}" if ssh_user else f"{host}:{remote_src}"
+
+    cmd = ["rsync"] + rsync_options + ["-e", f"ssh {ssh_opts}", remote, dest_path]
+
+    if dry_run:
+        logger.info("[dry-run] Would rsync from %s: %s", host, " ".join(cmd))
+        return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
+
+    logger.info("  Rsync <- %s%s", host, f" [timeout={timeout}s]" if timeout else "")
+    logger.debug("Rsync command: %s", " ".join(cmd))
+
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        elapsed = time.monotonic() - t0
+        result = RemoteResult(
+            host=host, returncode=proc.returncode,
+            stdout=proc.stdout, stderr=proc.stderr,
+        )
+        if result.success:
+            logger.info("  Rsync <- %s OK (%.1fs)", host, elapsed)
+        else:
+            logger.warning(
+                "  Rsync <- %s FAILED rc=%d (%.1fs): %s",
+                host, proc.returncode, elapsed, proc.stderr.strip()[:200],
+            )
+        return result
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        logger.error("  Rsync <- %s TIMEOUT after %.0fs", host, elapsed)
+        return RemoteResult(host=host, returncode=-1, stdout="", stderr="Execution timed out")
+
+
 def run_rsync_parallel(
         source_path: str,
         hosts: list[str],

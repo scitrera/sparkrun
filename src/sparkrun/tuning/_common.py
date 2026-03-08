@@ -162,6 +162,7 @@ class BaseTuner:
                 rc = self._clone_benchmarks()
                 if rc != 0:
                     return rc
+                self._apply_patches()
             else:
                 logger.info("Step 2/5: Skipping clone (--skip-clone)")
 
@@ -180,6 +181,9 @@ class BaseTuner:
 
             if rc != 0:
                 return rc
+
+            # Step 5: Sync configs back to control node (remote hosts only)
+            self._sync_back_configs()
 
             logger.info("Step 5/5: Tuning complete!")
             total_elapsed = time.monotonic() - t_total
@@ -385,6 +389,13 @@ class BaseTuner:
 
         return version
 
+    def _apply_patches(self) -> None:
+        """Apply post-clone patches to benchmark scripts.
+
+        Called after cloning benchmark scripts into the container.
+        Subclasses override to fix known upstream issues.
+        """
+
     def _pre_check_tp(self, tp_size: int, triton_version: str) -> bool:
         """Check if tuning configs already exist for this TP size.
 
@@ -427,6 +438,47 @@ class BaseTuner:
             "invocations for %s recipes.", self.runtime_label,
         )
         logger.info("=" * 60)
+
+    def _sync_back_configs(self) -> None:
+        """Sync tuning configs from remote host back to the control node.
+
+        After tuning on a remote host, the configs exist only on that
+        host's filesystem.  This step rsyncs them back to the local
+        ``output_dir`` so they can be reviewed, exported, and
+        distributed to other hosts in future ``sparkrun run`` invocations.
+
+        No-op when the host is localhost (same filesystem).
+        """
+        from sparkrun.core.hosts import is_local_host
+
+        if is_local_host(self.host):
+            return
+
+        if self.dry_run:
+            logger.info("  [dry-run] Would sync configs back from %s:%s",
+                        self.host, self.output_dir)
+            return
+
+        from sparkrun.orchestration.ssh import run_rsync_from_remote
+
+        logger.info("  Syncing tuning configs back from %s...", self.host)
+        result = run_rsync_from_remote(
+            host=self.host,
+            source_path=self.output_dir,
+            dest_path=self.output_dir,
+            ssh_user=self.ssh_kwargs.get("ssh_user"),
+            ssh_key=self.ssh_kwargs.get("ssh_key"),
+            ssh_options=self.ssh_kwargs.get("ssh_options"),
+            rsync_options=["-az", "--mkpath", "--partial", "--links"],
+            timeout=120,
+        )
+        if result.success:
+            logger.info("  Tuning configs synced to local %s", self.output_dir)
+        else:
+            logger.warning(
+                "  Failed to sync tuning configs back from %s: %s",
+                self.host, result.stderr[:200],
+            )
 
     def _cleanup_container(self) -> None:
         """Step 5: Remove the tuning container."""

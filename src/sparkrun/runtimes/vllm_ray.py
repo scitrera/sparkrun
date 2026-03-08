@@ -319,11 +319,12 @@ class VllmRayRuntime(RuntimePlugin):
         else:
             logger.info("Step 4/5: No worker hosts, skipping")
 
-        # Pre-serve hook (e.g., apply mods to containers)
+        # Pre-serve hook (e.g., apply mods to containers, run pre_exec)
         all_containers = [(head_host, head_container)]
         for worker in worker_hosts:
             all_containers.append((worker, worker_container))
-        self._pre_serve(all_containers, ssh_kwargs, dry_run)
+        config_chain = recipe.build_config_chain(overrides) if recipe else None
+        self._pre_serve(all_containers, ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
 
         # Step 5: Execute serve command on head
         t0 = time.monotonic()

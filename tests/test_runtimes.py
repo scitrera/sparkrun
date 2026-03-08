@@ -647,12 +647,13 @@ def test_eugr_validate_recipe():
 
 
 class TestEugrPrepare:
-    """Test EugrVllmRuntime.prepare() — container build and mod caching."""
+    """Test EugrBuilder.prepare_image() — container build and mod injection."""
 
     @pytest.fixture
-    def eugr_runtime(self, tmp_path):
-        """Create runtime with a fake repo containing build-and-copy.sh."""
-        runtime = EugrVllmRayRuntime()
+    def eugr_builder(self, tmp_path):
+        """Create builder with a fake repo containing build-and-copy.sh."""
+        from sparkrun.builders.eugr import EugrBuilder
+        builder = EugrBuilder()
         repo_dir = tmp_path / "eugr-repo"
         repo_dir.mkdir()
         (repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 0\n")
@@ -661,20 +662,20 @@ class TestEugrPrepare:
         mod_dir = repo_dir / "mods" / "flash-attn"
         mod_dir.mkdir(parents=True)
         (mod_dir / "run.sh").write_text("#!/bin/bash\necho applied\n")
-        return runtime, repo_dir
+        return builder, repo_dir
 
-    def test_prepare_with_build_args(self, eugr_runtime):
-        """prepare() calls build-and-copy.sh when build_args present."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_with_build_args(self, eugr_builder):
+        """prepare_image() calls build-and-copy.sh when build_args present."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "container": "my-image",
             "runtime_config": {"build_args": ["--some-flag"]},
         })
-        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
-                runtime.prepare(recipe, ["10.0.0.1"])
+                builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
                 # Should call build-and-copy.sh with -t and build_args
                 cmd = mock_run.call_args[0][0]
@@ -683,142 +684,139 @@ class TestEugrPrepare:
                 assert "my-image" in cmd
                 assert "--some-flag" in cmd
 
-    def test_prepare_without_build_args_or_mods_image_exists(self, eugr_runtime):
-        """prepare() is a no-op when no build_args/mods and image exists locally."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_without_build_args_or_mods_image_exists(self, eugr_builder):
+        """prepare_image() is a no-op when no build_args/mods and image exists."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
         })
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(runtime, "ensure_repo") as mock_ensure:
-                runtime.prepare(recipe, ["10.0.0.1"])
+            with mock.patch.object(builder, "ensure_repo") as mock_ensure:
+                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
                 # ensure_repo should not be called when nothing to prepare
                 mock_ensure.assert_not_called()
 
-    def test_prepare_builds_when_image_missing(self, eugr_runtime):
-        """prepare() triggers a build when no build_args/mods but image is missing."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_builds_when_image_missing(self, eugr_builder):
+        """prepare_image() triggers a build when image is missing locally."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "container": "my-image",
         })
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
-            with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
                     mock_run.return_value = mock.Mock(returncode=0)
-                    runtime.prepare(recipe, ["10.0.0.1"])
+                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
                     mock_run.assert_called_once()
                     cmd = mock_run.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
                     assert "-t" in cmd
                     assert "my-image" in cmd
 
-    def test_prepare_dry_run(self, eugr_runtime):
-        """prepare() in dry-run does not execute the build."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_dry_run(self, eugr_builder):
+        """prepare_image() in dry-run does not execute the build."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "runtime_config": {"build_args": ["--flag"]},
         })
-        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
-                runtime.prepare(recipe, ["10.0.0.1"], dry_run=True)
+                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
                 # subprocess.run should not be called in dry-run
                 mock_run.assert_not_called()
 
-    def test_prepare_caches_mods(self, eugr_runtime):
-        """prepare() caches mod list for later _pre_serve() call."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_injects_mod_pre_exec(self, eugr_builder):
+        """prepare_image() injects mod entries into recipe.pre_exec."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "runtime_config": {"mods": ["mods/flash-attn"]},
         })
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
-                runtime.prepare(recipe, ["10.0.0.1"])
-                assert runtime._mods == ["mods/flash-attn"]
-                assert runtime._repo_dir == repo_dir
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                # Should have injected copy + exec entries
+                assert len(recipe.pre_exec) == 2
+                assert isinstance(recipe.pre_exec[0], dict)
+                assert "copy" in recipe.pre_exec[0]
+                assert "run.sh" in recipe.pre_exec[1]
 
-    def test_prepare_build_failure_raises(self, eugr_runtime):
-        """prepare() raises RuntimeError on build failure."""
-        runtime, repo_dir = eugr_runtime
+    def test_prepare_build_failure_raises(self, eugr_builder):
+        """prepare_image() raises RuntimeError on build failure."""
+        builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "runtime_config": {"build_args": ["--flag"]},
         })
-        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=1)
                 with pytest.raises(RuntimeError, match="eugr container build failed"):
-                    runtime.prepare(recipe, ["10.0.0.1"])
+                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
 
 
 class TestEugrPreServe:
-    """Test EugrVllmRuntime._pre_serve() — mod application."""
+    """Test base RuntimePlugin._pre_serve() with pre_exec from recipe."""
 
-    @pytest.fixture
-    def eugr_runtime_with_mods(self, tmp_path):
-        """Create runtime with repo and mod directory."""
-        runtime = EugrVllmRayRuntime()
-        repo_dir = tmp_path / "eugr-repo"
-        mod_dir = repo_dir / "mods" / "my-mod"
-        mod_dir.mkdir(parents=True)
-        (mod_dir / "run.sh").write_text("#!/bin/bash\necho ok\n")
-        runtime._repo_dir = repo_dir
-        runtime._mods = ["mods/my-mod"]
-        return runtime
-
-    def test_pre_serve_with_mods_local(self, eugr_runtime_with_mods):
-        """_pre_serve() applies mods to local containers via docker cp/exec."""
-        runtime = eugr_runtime_with_mods
-        with mock.patch("sparkrun.core.hosts.is_local_host", return_value=True):
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=0)
-                runtime._pre_serve(
-                    [("localhost", "sparkrun_abc_solo")],
-                    ssh_kwargs={}, dry_run=False,
-                )
-                # Should have 3 subprocess calls: mkdir, cp, exec run.sh
-                assert mock_run.call_count == 3
-                # Verify docker exec mkdir
-                assert "mkdir" in mock_run.call_args_list[0][0][0]
-                # Verify docker cp
-                assert "docker" in mock_run.call_args_list[1][0][0][0]
-                assert "cp" in mock_run.call_args_list[1][0][0][1]
-
-    def test_pre_serve_without_mods(self):
-        """_pre_serve() is a no-op when no mods cached."""
-        runtime = EugrVllmRayRuntime()
-        # _mods defaults to empty, _repo_dir defaults to None
-        with mock.patch("subprocess.run") as mock_run:
+    def test_pre_serve_with_pre_exec(self):
+        """_pre_serve() runs pre_exec commands from recipe."""
+        from sparkrun.runtimes.base import RuntimePlugin
+        runtime = RuntimePlugin()
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "vllm",
+            "pre_exec": ["echo hello"],
+        })
+        with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
                 ssh_kwargs={}, dry_run=False,
+                recipe=recipe, config_chain=None,
             )
-            mock_run.assert_not_called()
+            mock_hook.assert_called_once()
 
-    def test_pre_serve_dry_run(self, eugr_runtime_with_mods):
-        """_pre_serve() in dry-run does not execute mod commands."""
-        runtime = eugr_runtime_with_mods
-        with mock.patch("subprocess.run") as mock_run:
+    def test_pre_serve_without_pre_exec(self):
+        """_pre_serve() is a no-op when recipe has no pre_exec."""
+        runtime = EugrVllmRayRuntime()
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+        })
+        with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
+            runtime._pre_serve(
+                [("localhost", "sparkrun_abc_solo")],
+                ssh_kwargs={}, dry_run=False,
+                recipe=recipe,
+            )
+            mock_hook.assert_not_called()
+
+    def test_pre_serve_dry_run(self):
+        """_pre_serve() passes dry_run through to hooks."""
+        from sparkrun.runtimes.base import RuntimePlugin
+        runtime = RuntimePlugin()
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model",
+            "pre_exec": ["echo hello"],
+        })
+        with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
                 ssh_kwargs={}, dry_run=True,
+                recipe=recipe, config_chain=None,
             )
-            mock_run.assert_not_called()
+            mock_hook.assert_called_once()
+            # Verify dry_run was passed through
+            assert mock_hook.call_args[1]["dry_run"] is True
 
-    def test_pre_serve_missing_mod_warns(self, tmp_path):
-        """_pre_serve() warns and skips if mod directory is missing."""
+    def test_pre_serve_no_recipe(self):
+        """_pre_serve() is a no-op when no recipe provided (backward compat)."""
         runtime = EugrVllmRayRuntime()
-        runtime._repo_dir = tmp_path / "empty-repo"
-        runtime._repo_dir.mkdir()
-        runtime._mods = ["nonexistent-mod"]
-        with mock.patch("subprocess.run") as mock_run:
+        with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
                 ssh_kwargs={}, dry_run=False,
             )
-            mock_run.assert_not_called()
+            mock_hook.assert_not_called()
 
 
 # --- Base RuntimePlugin Tests ---

@@ -272,7 +272,7 @@ def _run_benchmark(
 
     # Derive cluster_id
     from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
-    cluster_id = generate_cluster_id(recipe, host_list)
+    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
 
     container_image = runtime.resolve_container(recipe, overrides)
     cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)

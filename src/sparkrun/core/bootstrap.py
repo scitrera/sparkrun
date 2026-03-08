@@ -11,11 +11,13 @@ from scitrera_app_framework.util import find_types_in_modules
 if TYPE_CHECKING:
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.benchmarking.base import BenchmarkingPlugin
+    from sparkrun.builders.base import BuilderPlugin
 
 logger = logging.getLogger(__name__)
 
 EXT_RUNTIME = "sparkrun.runtime"
 EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
+EXT_BUILDER = "sparkrun.builder"
 
 # Module-level singleton for the sparkrun Variables instance
 _variables: Variables | None = None
@@ -71,6 +73,16 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
             logger.debug("Registered benchmarking framework: %s", bench_cls.__name__)
         except (ValueError, TypeError) as e:
             logger.debug("Skipping benchmarking framework %s: %s", bench_cls.__name__, e)
+
+    # Auto-discover all BuilderPlugin subclasses in sparkrun.builders
+    from sparkrun.builders.base import BuilderPlugin as _BuilderPlugin
+    discovered_builders = list(find_types_in_modules("sparkrun.builders", _BuilderPlugin))
+    for builder_cls in discovered_builders:
+        try:
+            register_plugin(builder_cls, v=v)
+            logger.debug("Registered builder: %s", builder_cls.__name__)
+        except (ValueError, TypeError) as e:
+            logger.debug("Skipping builder %s: %s", builder_cls.__name__, e)
 
     return v
 
@@ -143,3 +155,34 @@ def list_benchmarking_frameworks(v: Variables | None = None) -> list[str]:
 
     all_frameworks = get_extensions(EXT_BENCHMARKING_FRAMEWORKS, v=v)
     return sorted(r.framework_name for r in all_frameworks.values())
+
+
+def get_builder(name: str, v: Variables | None = None) -> 'BuilderPlugin':
+    """Get a specific builder by name.
+
+    Args:
+        name: Builder name (e.g. "docker-pull", "eugr")
+        v: Optional Variables instance; uses singleton if not provided
+
+    Raises:
+        ValueError: If the builder is not found
+    """
+    if v is None:
+        v = get_variables()
+
+    all_builders = get_extensions(EXT_BUILDER, v=v)
+    for _plugin_name, builder in all_builders.items():
+        if builder.builder_name == name:
+            return builder
+
+    available = [b.builder_name for b in all_builders.values()]
+    raise ValueError("Unknown builder: %r. Available: %s" % (name, available))
+
+
+def list_builders(v: Variables | None = None) -> list[str]:
+    """List all registered builder names."""
+    if v is None:
+        v = get_variables()
+
+    all_builders = get_extensions(EXT_BUILDER, v=v)
+    return sorted(b.builder_name for b in all_builders.values())

@@ -1,0 +1,385 @@
+"""LiteLLM proxy engine — config generation, subprocess lifecycle, management API.
+
+Launches ``uvx litellm`` as a subprocess and manages its lifecycle.
+Uses the litellm management API for runtime model add/query operations.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import signal
+import shutil
+import subprocess
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from sparkrun.proxy import DEFAULT_PROXY_HOST, DEFAULT_PROXY_PORT, DEFAULT_MASTER_KEY
+from sparkrun.proxy.discovery import DiscoveredEndpoint
+
+logger = logging.getLogger(__name__)
+
+
+def build_litellm_config(
+    endpoints: list[DiscoveredEndpoint],
+    aliases: dict[str, str] | None = None,
+    master_key: str | None = DEFAULT_MASTER_KEY,
+) -> dict[str, Any]:
+    """Generate a litellm proxy config dict from discovered endpoints.
+
+    Args:
+        endpoints: Discovered inference endpoints.
+        aliases: Alias -> model group name mapping.
+        master_key: Master key for litellm management API.  When None,
+            no authentication is required (avoids LiteLLM DB dependency).
+
+    Returns:
+        Dict suitable for writing as litellm YAML config.
+    """
+    model_list: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for ep in endpoints:
+        if not ep.healthy:
+            continue
+
+        # Use actual served models from /v1/models if available
+        model_names = ep.actual_models if ep.actual_models else [ep.model]
+
+        for model_name in model_names:
+            # Deduplicate: same model name on same host:port
+            dedup_key = "%s@%s:%d" % (model_name, ep.host, ep.port)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            model_list.append({
+                "model_name": model_name,
+                "litellm_params": {
+                    "model": "openai/%s" % model_name,
+                    "api_base": "http://%s:%d/v1" % (ep.host, ep.port),
+                    "api_key": "not-needed",
+                },
+            })
+
+    general_settings: dict[str, Any] = {}
+    if master_key:
+        general_settings["master_key"] = master_key
+
+    config: dict[str, Any] = {
+        "model_list": model_list,
+        "litellm_settings": {
+            "drop_params": True,
+        },
+    }
+
+    if general_settings:
+        config["general_settings"] = general_settings
+
+    # Add model group aliases
+    if aliases:
+        config["router_settings"] = {
+            "model_group_alias": dict(aliases),
+        }
+
+    return config
+
+
+def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -> Path:
+    """Write litellm config to disk.
+
+    Args:
+        config_dict: Config dict from ``build_litellm_config()``.
+        config_path: Output path (default: ``~/.cache/sparkrun/proxy/litellm_config.yaml``).
+
+    Returns:
+        Path to the written config file.
+    """
+    if config_path is None:
+        from sparkrun.core.config import DEFAULT_CACHE_DIR
+        config_path = DEFAULT_CACHE_DIR / "proxy" / "litellm_config.yaml"
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w") as f:
+        yaml.safe_dump(config_dict, f, default_flow_style=False, sort_keys=False)
+
+    logger.debug("Wrote litellm config to %s", config_path)
+    return config_path
+
+
+class ProxyEngine:
+    """Manages the litellm proxy subprocess and its management API."""
+
+    def __init__(
+        self,
+        host: str = DEFAULT_PROXY_HOST,
+        port: int = DEFAULT_PROXY_PORT,
+        master_key: str | None = DEFAULT_MASTER_KEY,
+        state_dir: Path | None = None,
+    ):
+        self.host = host
+        self.port = port
+        self.master_key = master_key
+
+        if state_dir is None:
+            from sparkrun.core.config import DEFAULT_CACHE_DIR
+            state_dir = DEFAULT_CACHE_DIR / "proxy"
+        self.state_dir = state_dir
+        self.state_file = state_dir / "state.yaml"
+        self.config_path = state_dir / "litellm_config.yaml"
+
+    def start(self, config_path: Path | None = None, foreground: bool = False, dry_run: bool = False) -> int:
+        """Launch the LiteLLM proxy server via uvx.
+
+        Uses ``uvx --from 'litellm[proxy]' litellm`` to run the
+        LiteLLM proxy server without requiring a permanent install.
+
+        Note: ``litellm`` is the server command; ``litellm-proxy`` is the
+        separate management CLI for interacting with a running proxy.
+
+        Args:
+            config_path: Path to litellm config YAML.
+            foreground: Run in foreground (blocking).
+            dry_run: Print command without executing.
+
+        Returns:
+            0 on success, non-zero on failure.
+        """
+        uvx = shutil.which("uvx")
+        if not uvx:
+            logger.error(
+                "uvx not found on PATH. Install uv: "
+                "https://docs.astral.sh/uv/getting-started/installation/"
+            )
+            return 1
+
+        if config_path is None:
+            config_path = self.config_path
+
+        cmd = [
+            uvx, "--from", "litellm[proxy]", "litellm",
+            "--config", str(config_path),
+            "--host", self.host,
+            "--port", str(self.port),
+        ]
+
+        if dry_run:
+            logger.info("[dry-run] Would run: %s", " ".join(cmd))
+            return 0
+
+        if self.is_running():
+            logger.warning("Proxy already running (PID %s)", self._read_pid())
+            return 1
+
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+
+        # LiteLLM requires a database when master_key is set.
+        if self.master_key:
+            db_path = self.state_dir / "litellm.db"
+            env["DATABASE_URL"] = "sqlite:///%s" % db_path
+
+        if foreground:
+            try:
+                proc = subprocess.run(cmd, env=env)
+                return proc.returncode
+            except KeyboardInterrupt:
+                return 130
+        else:
+            # Redirect output to log file so startup errors are visible
+            log_path = self.state_dir / "litellm.log"
+            log_file = open(log_path, "w")
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=env,
+            )
+
+            # Wait briefly and verify the process survived startup
+            import time
+            time.sleep(2)
+            poll = proc.poll()
+            if poll is not None:
+                log_file.close()
+                # Process already exited — show error
+                try:
+                    tail = log_path.read_text()[-2000:]
+                except OSError:
+                    tail = ""
+                logger.error(
+                    "Proxy exited immediately (code %d). Log tail:\n%s",
+                    poll, tail,
+                )
+                return poll or 1
+
+            self._save_state(proc.pid)
+            logger.info("Proxy started (PID %d) on %s:%d", proc.pid, self.host, self.port)
+            logger.info("Log: %s", log_path)
+            return 0
+
+    def stop(self, dry_run: bool = False) -> bool:
+        """Stop the running proxy (SIGTERM via PID).
+
+        Returns:
+            True if a process was stopped.
+        """
+        pid = self._read_pid()
+        if pid is None:
+            logger.info("No proxy PID found in state file")
+            return False
+
+        if dry_run:
+            logger.info("[dry-run] Would send SIGTERM to PID %d", pid)
+            return True
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Sent SIGTERM to proxy PID %d", pid)
+            self._clear_state()
+            return True
+        except ProcessLookupError:
+            logger.info("Proxy PID %d not running (stale state)", pid)
+            self._clear_state()
+            return False
+        except PermissionError:
+            logger.error("Permission denied sending signal to PID %d", pid)
+            return False
+
+    def is_running(self) -> bool:
+        """Check if the proxy process is alive."""
+        pid = self._read_pid()
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    def reload(
+        self,
+        endpoints: list[DiscoveredEndpoint],
+        aliases: dict[str, str] | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Regenerate config and restart the proxy.
+
+        Used for alias changes and model removals that require a restart.
+
+        Returns:
+            0 on success, non-zero on failure.
+        """
+        config_dict = build_litellm_config(endpoints, aliases, self.master_key)
+        if not dry_run:
+            write_config(config_dict, self.config_path)
+
+        self.stop(dry_run=dry_run)
+        return self.start(config_path=self.config_path, dry_run=dry_run)
+
+    # -- Management API client --
+
+    def add_model_via_api(self, endpoint: DiscoveredEndpoint) -> bool:
+        """Add a model to the running proxy via POST /model/new.
+
+        Returns:
+            True if the model was added successfully.
+        """
+        model_names = endpoint.actual_models if endpoint.actual_models else [endpoint.model]
+
+        success = True
+        for model_name in model_names:
+            payload = {
+                "model_name": model_name,
+                "litellm_params": {
+                    "model": "openai/%s" % model_name,
+                    "api_base": "http://%s:%d/v1" % (endpoint.host, endpoint.port),
+                    "api_key": "not-needed",
+                },
+            }
+
+            try:
+                self._api_request("POST", "/model/new", payload)
+            except Exception:
+                logger.debug(
+                    "Failed to add model %s via management API",
+                    model_name, exc_info=True,
+                )
+                success = False
+
+        return success
+
+    def list_models_via_api(self) -> list[dict[str, Any]]:
+        """Query registered models via GET /model/info.
+
+        Returns:
+            List of model info dicts from litellm.
+        """
+        try:
+            data = self._api_request("GET", "/model/info")
+            return data.get("data", [])
+        except Exception:
+            logger.debug("Failed to list models via management API", exc_info=True)
+            return []
+
+    def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        """Make an HTTP request to the litellm management API."""
+        url = "http://localhost:%d%s" % (self.port, path)
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+        }
+        if self.master_key:
+            headers["Authorization"] = "Bearer %s" % self.master_key
+
+        data = json.dumps(payload).encode() if payload else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    # -- State management --
+
+    def _save_state(self, pid: int) -> None:
+        """Save proxy state to disk."""
+        import datetime
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        state = {
+            "pid": pid,
+            "port": self.port,
+            "host": self.host,
+            "master_key": self.master_key,
+            "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        with open(self.state_file, "w") as f:
+            yaml.safe_dump(state, f, default_flow_style=False)
+
+    def _read_pid(self) -> int | None:
+        """Read PID from state file."""
+        if not self.state_file.exists():
+            return None
+        try:
+            with open(self.state_file) as f:
+                state = yaml.safe_load(f)
+            return int(state["pid"]) if state and "pid" in state else None
+        except Exception:
+            return None
+
+    def _clear_state(self) -> None:
+        """Remove state file."""
+        self.state_file.unlink(missing_ok=True)
+
+    def get_state(self) -> dict[str, Any] | None:
+        """Read full proxy state. Returns None if not found."""
+        if not self.state_file.exists():
+            return None
+        try:
+            with open(self.state_file) as f:
+                return yaml.safe_load(f)
+        except Exception:
+            return None

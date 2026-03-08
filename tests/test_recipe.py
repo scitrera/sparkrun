@@ -1379,3 +1379,230 @@ class TestFindRecipeLocalFiles:
         }))
         result = find_recipe(str(direct), local_files=[other])
         assert result == direct
+
+
+class TestLifecycleHookFields:
+    """Test pre_exec, post_exec, post_commands, stop_after_post recipe fields."""
+
+    def test_pre_exec_string_list(self):
+        """pre_exec parses as list of strings."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "pre_exec": ["pip install transformers", "echo hello"],
+        })
+        assert recipe.pre_exec == ["pip install transformers", "echo hello"]
+
+    def test_pre_exec_dict_entries(self):
+        """pre_exec supports dict entries for copy commands."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "pre_exec": [
+                {"copy": "/path/to/mod", "dest": "/workspace/mods/mod"},
+                "cd /workspace/mods/mod && ./run.sh",
+            ],
+        })
+        assert len(recipe.pre_exec) == 2
+        assert isinstance(recipe.pre_exec[0], dict)
+        assert recipe.pre_exec[0]["copy"] == "/path/to/mod"
+        assert isinstance(recipe.pre_exec[1], str)
+
+    def test_pre_exec_default_empty(self):
+        """pre_exec defaults to empty list."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.pre_exec == []
+
+    def test_post_exec_string_list(self):
+        """post_exec parses as list of strings."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "post_exec": ["echo 'Server ready'"],
+        })
+        assert recipe.post_exec == ["echo 'Server ready'"]
+
+    def test_post_exec_default_empty(self):
+        """post_exec defaults to empty list."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.post_exec == []
+
+    def test_post_commands_string_list(self):
+        """post_commands parses as list of strings."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "post_commands": [
+                "curl http://{head_host}:{port}/v1/models",
+                "echo done",
+            ],
+        })
+        assert len(recipe.post_commands) == 2
+
+    def test_post_commands_default_empty(self):
+        """post_commands defaults to empty list."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.post_commands == []
+
+    def test_stop_after_post_true(self):
+        """stop_after_post parses as bool True."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "stop_after_post": True,
+        })
+        assert recipe.stop_after_post is True
+
+    def test_stop_after_post_default_false(self):
+        """stop_after_post defaults to False."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.stop_after_post is False
+
+    def test_hook_fields_not_in_runtime_config(self):
+        """Hook fields should not leak into runtime_config."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "pre_exec": ["echo hello"],
+            "post_exec": ["echo done"],
+            "post_commands": ["curl localhost"],
+            "stop_after_post": True,
+        })
+        assert "pre_exec" not in recipe.runtime_config
+        assert "post_exec" not in recipe.runtime_config
+        assert "post_commands" not in recipe.runtime_config
+        assert "stop_after_post" not in recipe.runtime_config
+
+    def test_pre_exec_in_export(self):
+        """pre_exec appears in export dict when set."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "pre_exec": ["echo hello"],
+        })
+        export = recipe._build_export_dict()
+        assert "pre_exec" in export
+        assert export["pre_exec"] == ["echo hello"]
+
+    def test_post_commands_in_export(self):
+        """post_commands appears in export dict when set."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "post_commands": ["curl localhost"],
+        })
+        export = recipe._build_export_dict()
+        assert "post_commands" in export
+
+    def test_stop_after_post_in_export(self):
+        """stop_after_post appears in export dict when True."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "stop_after_post": True,
+        })
+        export = recipe._build_export_dict()
+        assert "stop_after_post" in export
+        assert export["stop_after_post"] is True
+
+    def test_empty_hooks_not_in_export(self):
+        """Empty hook lists and False stop_after_post don't appear in export."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+        })
+        export = recipe._build_export_dict()
+        assert "pre_exec" not in export
+        assert "post_exec" not in export
+        assert "post_commands" not in export
+        assert "stop_after_post" not in export
+
+
+class TestBuilderFields:
+    """Test builder and builder_config recipe fields."""
+
+    def test_builder_field(self):
+        """builder field is parsed from recipe data."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "builder": "eugr",
+        })
+        assert recipe.builder == "eugr"
+
+    def test_builder_default_empty(self):
+        """builder defaults to empty string."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.builder == ""
+
+    def test_builder_config_field(self):
+        """builder_config field is parsed from recipe data."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "builder": "eugr",
+            "builder_config": {"repo": "https://example.com/repo.git"},
+        })
+        assert recipe.builder_config == {"repo": "https://example.com/repo.git"}
+
+    def test_builder_config_default_empty(self):
+        """builder_config defaults to empty dict."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.builder_config == {}
+
+    def test_builder_not_in_runtime_config(self):
+        """builder field should not leak into runtime_config."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "builder": "eugr",
+            "builder_config": {"repo": "url"},
+        })
+        assert "builder" not in recipe.runtime_config
+        assert "builder_config" not in recipe.runtime_config
+
+    def test_builder_in_export(self):
+        """builder appears in export dict when set."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "builder": "eugr",
+        })
+        export = recipe._build_export_dict()
+        assert "builder" in export
+        assert export["builder"] == "eugr"
+
+    def test_builder_config_in_export(self):
+        """builder_config appears in export dict when set."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "builder": "eugr",
+            "builder_config": {"repo": "url"},
+        })
+        export = recipe._build_export_dict()
+        assert "builder_config" in export
+
+    def test_empty_builder_not_in_export(self):
+        """Empty builder string does NOT appear in export dict."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+        })
+        export = recipe._build_export_dict()
+        assert "builder" not in export
+        assert "builder_config" not in export

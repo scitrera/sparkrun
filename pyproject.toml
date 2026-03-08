@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.1.5"
+version = "0.1.6"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
 license = "Apache-2.0"
@@ -52,6 +52,10 @@ trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"
+
+[project.entry-points."sparkrun.builders"]
+docker-pull = "sparkrun.builders.docker_pull:DockerPullBuilder"
+eugr = "sparkrun.builders.eugr:EugrBuilder"
 
 [tool.setuptools.packages.find]
 where = ["src"]

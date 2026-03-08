@@ -163,18 +163,26 @@ class RuntimePlugin(Plugin):
             hosts_containers: list[tuple[str, str]],
             ssh_kwargs: dict,
             dry_run: bool,
+            recipe: Recipe | None = None,
+            config_chain=None,
     ) -> None:
         """Hook called after containers are launched but before serve command.
 
-        Override in subclasses to apply modifications (e.g., eugr mods)
-        to containers before the inference server starts.
+        Processes ``pre_exec`` commands from the recipe (if any) by running
+        them inside each container via ``docker exec``.  Subclasses can
+        override to add additional pre-serve logic (call ``super()`` to
+        preserve pre_exec processing).
 
         Args:
             hosts_containers: List of (host, container_name) pairs.
             ssh_kwargs: SSH connection kwargs.
             dry_run: Dry-run mode.
+            recipe: The loaded recipe (for pre_exec commands).
+            config_chain: Config chain for template substitution.
         """
-        pass
+        if recipe and recipe.pre_exec:
+            from sparkrun.orchestration.hooks import run_pre_exec
+            run_pre_exec(hosts_containers, recipe.pre_exec, config_chain, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     def get_extra_volumes(self) -> dict[str, str]:
         """Return additional volume mounts for this runtime.
@@ -517,6 +525,8 @@ class RuntimePlugin(Plugin):
                 dry_run=dry_run,
                 detached=detached,
                 nccl_env=nccl_env,
+                recipe=recipe,
+                overrides=overrides,
             )
         return self._run_cluster(
             hosts=hosts,
@@ -616,6 +626,8 @@ class RuntimePlugin(Plugin):
             dry_run: bool = False,
             detached: bool = True,
             nccl_env: dict[str, str] | None = None,
+            recipe: Recipe | None = None,
+            overrides: dict[str, Any] | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -683,8 +695,9 @@ class RuntimePlugin(Plugin):
             return 1
         logger.info("Step 2/3: Container launched (%.1fs)", time.monotonic() - t0)
 
-        # Pre-serve hook (e.g., apply mods to container)
-        self._pre_serve([(host, container_name)], ssh_kwargs, dry_run)
+        # Pre-serve hook (e.g., apply mods to container, run pre_exec)
+        config_chain = recipe.build_config_chain(overrides) if recipe else None
+        self._pre_serve([(host, container_name)], ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
 
         # Step 3: Execute serve command
         t0 = time.monotonic()

@@ -15,6 +15,7 @@ from ._common import (
 )
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
+from ._proxy import proxy
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
 from ._registry import registry, registry_update
 from ._run import run
@@ -44,6 +45,7 @@ main.add_command(cluster)
 main.add_command(recipe)
 main.add_command(registry)
 main.add_command(benchmark)
+main.add_command(proxy)
 
 
 # ---------------------------------------------------------------------------
@@ -65,13 +67,15 @@ def list_cmd(ctx, registry, runtime, query):
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--gpu-mem", type=float, default=None,
+              help="Override GPU memory utilization (0.0-1.0)")
 @click.option("--save", "save_path", default=None, type=click.Path(),
               help="Save a copy of the recipe YAML to a file")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, tensor_parallel, save_path):
+def show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, save_path):
     """Show detailed recipe information (alias for 'recipe show')."""
     ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram,
-               tensor_parallel=tensor_parallel, save_path=save_path)
+               tensor_parallel=tensor_parallel, gpu_mem=gpu_mem, save_path=save_path)
 
 
 @main.command("search")

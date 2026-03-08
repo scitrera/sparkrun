@@ -20,16 +20,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def generate_cluster_id(recipe: "Recipe", hosts: list[str]) -> str:
-    """Deterministic cluster identifier from recipe and host set.
+def generate_cluster_id(recipe: "Recipe", hosts: list[str], overrides: dict | None = None) -> str:
+    """Deterministic cluster identifier from recipe, host set, and overrides.
 
-    Takes the full Recipe and host list so the hash inputs can be
-    expanded later (e.g. adding port, tensor_parallel) without
-    changing the function signature.
-
-    Currently hashes: runtime + model + sorted hosts.
+    Hashes: runtime + model + sorted hosts + port + served_model_name.
+    Port and served_model_name are resolved from overrides -> recipe defaults
+    so that two instances of the same model on different ports get distinct IDs.
     """
+    # Resolve effective port
+    port = None
+    if overrides:
+        port = overrides.get("port")
+    if port is None and recipe.defaults:
+        port = recipe.defaults.get("port")
+
+    # Resolve effective served_model_name
+    served_name = None
+    if overrides:
+        served_name = overrides.get("served_model_name")
+    if served_name is None and recipe.defaults:
+        served_name = recipe.defaults.get("served_model_name")
+
     parts = [recipe.runtime, recipe.model] + sorted(hosts)
+    if port is not None:
+        parts.append("port=%s" % port)
+    if served_name is not None:
+        parts.append("name=%s" % served_name)
     key = "\0".join(parts)
     digest = hashlib.sha256(key.encode()).hexdigest()[:12]
     return "sparkrun_%s" % digest
@@ -75,6 +91,24 @@ def save_job_metadata(
         meta["recipe_ref"] = recipe_ref
     if tp is not None:
         meta["tensor_parallel"] = int(tp)
+    # Persist port for proxy discovery
+    port = None
+    if overrides:
+        port = overrides.get("port")
+    if port is None and recipe.defaults:
+        port = recipe.defaults.get("port")
+    if port is not None:
+        meta["port"] = int(port)
+
+    # Persist served_model_name for proxy discovery
+    served_name = None
+    if overrides:
+        served_name = overrides.get("served_model_name")
+    if served_name is None and recipe.defaults:
+        served_name = recipe.defaults.get("served_model_name")
+    if served_name is not None:
+        meta["served_model_name"] = str(served_name)
+
     if ib_ip_map:
         meta["ib_ip_map"] = ib_ip_map
     if mgmt_ip_map:

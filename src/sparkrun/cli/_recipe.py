@@ -85,12 +85,14 @@ def recipe_search(ctx, registry, runtime, show_all, query, config_path=None):
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--gpu-mem", type=float, default=None,
+              help="Override GPU memory utilization (0.0-1.0)")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory for model lookups")
 @click.option("--save", "save_path", default=None, type=click.Path(),
               help="Save a copy of the recipe YAML to a file")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, cache_dir=None, save_path=None, config_path=None):
+def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, cache_dir=None, save_path=None, config_path=None):
     """Show detailed recipe information."""
     import shutil
 
@@ -100,6 +102,8 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, cache_dir=None, save
     cli_overrides = {}
     if tensor_parallel is not None:
         cli_overrides["tensor_parallel"] = tensor_parallel
+    if gpu_mem is not None:
+        cli_overrides["gpu_memory_utilization"] = gpu_mem
 
     reg_name = registry_mgr.registry_for_path(recipe_path) if registry_mgr else None
     _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name,

@@ -63,8 +63,9 @@ class ProxyConfig:
         return str(self._data.get("proxy", {}).get("host", DEFAULT_PROXY_HOST))
 
     @property
-    def master_key(self) -> str:
-        return str(self._data.get("proxy", {}).get("master_key", DEFAULT_MASTER_KEY))
+    def master_key(self) -> str | None:
+        val = self._data.get("proxy", {}).get("master_key", DEFAULT_MASTER_KEY)
+        return str(val) if val is not None else None
 
     @property
     def auto_discover(self) -> bool:

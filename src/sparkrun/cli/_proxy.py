@@ -62,7 +62,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
 
     effective_port = port or proxy_cfg.port
     effective_host = bind_host or proxy_cfg.host
-    effective_key = master_key or proxy_cfg.master_key
+    effective_key = master_key if master_key is not None else proxy_cfg.master_key
 
     # Resolve host filter
     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
@@ -117,7 +117,9 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
 
     if not foreground:
         click.echo("Proxy started. API: http://localhost:%d/v1" % effective_port)
-        click.echo("Management API key: %s" % effective_key)
+        if effective_key:
+            click.echo("Management API key: %s" % effective_key)
+        click.echo("Log: %s" % (engine.state_dir / "litellm.log"))
 
 
 # ---------------------------------------------------------------------------

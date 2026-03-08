@@ -28,14 +28,15 @@ logger = logging.getLogger(__name__)
 def build_litellm_config(
     endpoints: list[DiscoveredEndpoint],
     aliases: dict[str, str] | None = None,
-    master_key: str = DEFAULT_MASTER_KEY,
+    master_key: str | None = DEFAULT_MASTER_KEY,
 ) -> dict[str, Any]:
     """Generate a litellm proxy config dict from discovered endpoints.
 
     Args:
         endpoints: Discovered inference endpoints.
         aliases: Alias -> model group name mapping.
-        master_key: Master key for litellm management API.
+        master_key: Master key for litellm management API.  When None,
+            no authentication is required (avoids LiteLLM DB dependency).
 
     Returns:
         Dict suitable for writing as litellm YAML config.
@@ -66,15 +67,19 @@ def build_litellm_config(
                 },
             })
 
+    general_settings: dict[str, Any] = {}
+    if master_key:
+        general_settings["master_key"] = master_key
+
     config: dict[str, Any] = {
         "model_list": model_list,
-        "general_settings": {
-            "master_key": master_key,
-        },
         "litellm_settings": {
             "drop_params": True,
         },
     }
+
+    if general_settings:
+        config["general_settings"] = general_settings
 
     # Add model group aliases
     if aliases:
@@ -114,7 +119,7 @@ class ProxyEngine:
         self,
         host: str = DEFAULT_PROXY_HOST,
         port: int = DEFAULT_PROXY_PORT,
-        master_key: str = DEFAULT_MASTER_KEY,
+        master_key: str | None = DEFAULT_MASTER_KEY,
         state_dir: Path | None = None,
     ):
         self.host = host
@@ -129,7 +134,13 @@ class ProxyEngine:
         self.config_path = state_dir / "litellm_config.yaml"
 
     def start(self, config_path: Path | None = None, foreground: bool = False, dry_run: bool = False) -> int:
-        """Launch ``uvx litellm`` proxy.
+        """Launch the LiteLLM proxy server via uvx.
+
+        Uses ``uvx --from 'litellm[proxy]' litellm`` to run the
+        LiteLLM proxy server without requiring a permanent install.
+
+        Note: ``litellm`` is the server command; ``litellm-proxy`` is the
+        separate management CLI for interacting with a running proxy.
 
         Args:
             config_path: Path to litellm config YAML.
@@ -151,7 +162,7 @@ class ProxyEngine:
             config_path = self.config_path
 
         cmd = [
-            uvx, "litellm",
+            uvx, "--from", "litellm[proxy]", "litellm",
             "--config", str(config_path),
             "--host", self.host,
             "--port", str(self.port),
@@ -165,21 +176,52 @@ class ProxyEngine:
             logger.warning("Proxy already running (PID %s)", self._read_pid())
             return 1
 
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+
+        # LiteLLM requires a database when master_key is set.
+        if self.master_key:
+            db_path = self.state_dir / "litellm.db"
+            env["DATABASE_URL"] = "sqlite:///%s" % db_path
+
         if foreground:
             try:
-                proc = subprocess.run(cmd)
+                proc = subprocess.run(cmd, env=env)
                 return proc.returncode
             except KeyboardInterrupt:
                 return 130
         else:
+            # Redirect output to log file so startup errors are visible
+            log_path = self.state_dir / "litellm.log"
+            log_file = open(log_path, "w")
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
+                env=env,
             )
+
+            # Wait briefly and verify the process survived startup
+            import time
+            time.sleep(2)
+            poll = proc.poll()
+            if poll is not None:
+                log_file.close()
+                # Process already exited — show error
+                try:
+                    tail = log_path.read_text()[-2000:]
+                except OSError:
+                    tail = ""
+                logger.error(
+                    "Proxy exited immediately (code %d). Log tail:\n%s",
+                    poll, tail,
+                )
+                return poll or 1
+
             self._save_state(proc.pid)
             logger.info("Proxy started (PID %d) on %s:%d", proc.pid, self.host, self.port)
+            logger.info("Log: %s", log_path)
             return 0
 
     def stop(self, dry_run: bool = False) -> bool:
@@ -289,10 +331,11 @@ class ProxyEngine:
     def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """Make an HTTP request to the litellm management API."""
         url = "http://localhost:%d%s" % (self.port, path)
-        headers = {
-            "Authorization": "Bearer %s" % self.master_key,
+        headers: dict[str, str] = {
             "Content-Type": "application/json",
         }
+        if self.master_key:
+            headers["Authorization"] = "Bearer %s" % self.master_key
 
         data = json.dumps(payload).encode() if payload else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)

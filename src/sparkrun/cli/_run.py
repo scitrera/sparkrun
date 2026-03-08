@@ -211,7 +211,22 @@ def run(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
-    # Pre-launch preparation (e.g., eugr container builds)
+    # Builder phase: resolve and run builder plugin before distribution.
+    # The builder ensures the container image is available locally.
+    # For recipes with an explicit builder field, use that builder.
+    # For eugr-vllm runtime, runtime.prepare() delegates to EugrBuilder.
+    # For all other runtimes without a builder field, docker-pull is a no-op.
+    if recipe.builder:
+        from sparkrun.core.bootstrap import get_builder
+        try:
+            builder = get_builder(recipe.builder, v)
+            container_image = builder.prepare_image(
+                container_image, recipe, host_list, config=config, dry_run=dry_run,
+            )
+        except ValueError:
+            click.echo("Warning: builder '%s' not found, skipping" % recipe.builder, err=True)
+
+    # Pre-launch preparation (e.g., eugr container builds via legacy runtime path)
     runtime.prepare(recipe, host_list, config=config, dry_run=dry_run)
 
     # Distribution phase: ensure image/model locally, distribute to hosts,
@@ -358,6 +373,104 @@ def run(
         dashboard=dashboard,
         init_port=init_port,
     )
+
+    # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
+    has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
+    if rc == 0 and has_post_hooks and not foreground:
+        from sparkrun.orchestration.hooks import (
+            build_hook_context,
+            run_post_exec,
+            run_post_commands,
+        )
+        from sparkrun.orchestration.primitives import (
+            build_ssh_kwargs as _build_ssh,
+            detect_host_ip,
+            wait_for_port,
+            wait_for_healthy,
+        )
+        from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
+
+        head_host = host_list[0] if host_list else "localhost"
+        _ssh_kw = _build_ssh(config)
+
+        # Determine head container name
+        if is_solo:
+            head_container = generate_container_name(cluster_id, "solo")
+        else:
+            head_container = generate_node_container_name(cluster_id, 0)
+
+        # Detect head IP for health checks
+        from sparkrun.core.hosts import is_local_host
+        if is_local_host(head_host):
+            head_ip = "127.0.0.1"
+        else:
+            try:
+                head_ip = detect_host_ip(head_host, ssh_kwargs=_ssh_kw, dry_run=dry_run)
+            except RuntimeError:
+                head_ip = head_host
+
+        # Determine effective port
+        config_chain = recipe.build_config_chain(overrides)
+        effective_port = config_chain.get("port", 8000)
+
+        click.echo("Waiting for server to become ready...")
+        if not dry_run:
+            # Wait for port to be listening
+            port_ready = wait_for_port(
+                head_host, effective_port,
+                max_retries=120, retry_interval=2,
+                ssh_kwargs=_ssh_kw, dry_run=dry_run,
+                container_name=head_container,
+            )
+            if not port_ready:
+                click.echo("Error: Server port %d never became ready" % effective_port, err=True)
+                sys.exit(1)
+
+            # Wait for HTTP 200 on /v1/models
+            health_url = "http://%s:%s/v1/models" % (head_ip, effective_port)
+            healthy = wait_for_healthy(health_url, max_retries=120, retry_interval=5, dry_run=dry_run)
+            if not healthy:
+                click.echo("Error: Server health check never passed at %s" % health_url, err=True)
+                sys.exit(1)
+
+        # Build hook context with extended variables
+        hook_context = build_hook_context(
+            config_chain,
+            head_host=head_host,
+            head_ip=head_ip,
+            port=effective_port,
+            cluster_id=cluster_id,
+            container_name=head_container,
+            cache_dir=effective_cache_dir,
+        )
+
+        try:
+            # Run post_exec inside head container
+            if recipe.post_exec:
+                click.echo("Running post_exec commands...")
+                run_post_exec(head_host, head_container, recipe.post_exec, hook_context,
+                              ssh_kwargs=_ssh_kw, dry_run=dry_run)
+
+            # Run post_commands on control machine
+            if recipe.post_commands:
+                click.echo("Running post_commands on control machine...")
+                run_post_commands(recipe.post_commands, hook_context, dry_run=dry_run)
+        except RuntimeError as e:
+            click.echo("Error in post hooks: %s" % e, err=True)
+            sys.exit(1)
+
+        click.echo("Post hooks completed successfully.")
+
+        # If stop_after_post, stop the workload and exit
+        if recipe.stop_after_post:
+            click.echo("Stopping workload (stop_after_post=true)...")
+            runtime.stop(
+                hosts=host_list,
+                cluster_id=cluster_id,
+                config=config,
+                dry_run=dry_run,
+            )
+            sys.exit(0)
 
     # Follow container logs after a successful detached launch
     if rc == 0 and not foreground and not dry_run and not no_follow:

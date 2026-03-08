@@ -39,6 +39,8 @@ _KNOWN_KEYS = {
     "container", "defaults", "env", "command", "runtime_config",
     "cluster_only", "solo_only",
     "benchmark", "metadata",
+    "pre_exec", "post_exec", "post_commands", "stop_after_post",
+    "builder", "builder_config",
 }
 
 
@@ -309,6 +311,16 @@ class Recipe:
             if k not in _KNOWN_KEYS and k not in self.runtime_config:
                 self.runtime_config[k] = v
 
+        # Lifecycle hooks
+        self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
+        self.post_exec: list[str] = list(data.get("post_exec", []))
+        self.post_commands: list[str] = list(data.get("post_commands", []))
+        self.stop_after_post: bool = bool(data.get("stop_after_post", False))
+
+        # Builder plugin
+        self.builder: str = data.get("builder", "")
+        self.builder_config: dict[str, Any] = dict(data.get("builder_config", {}))
+
         # Post-init resolver chain — all runtime/migration logic lives here
         for resolver in _RECIPE_RESOLVERS:
             resolver(self)
@@ -536,13 +548,18 @@ class Recipe:
         'recipe_version',
         "model*",
         "runtime*",
+        "builder*",
         "min_nodes", "max_nodes",
         "container",
         "solo_only", "cluster_only",
         "metadata",
         "defaults",
         "env",
+        "pre_exec",
         "command",
+        "post_exec",
+        "post_commands",
+        "stop_after_post",
     ]
 
     # Top-level keys that are folded into metadata on export.
@@ -602,13 +619,29 @@ class Recipe:
         if meta and meta.get('model_params', None) is not None:
             meta['model_params'] = str(meta['model_params'])
 
+        # -- Builder --
+        if self.builder:
+            d["builder"] = self.builder
+        if self.builder_config:
+            d["builder_config"] = dict(self.builder_config)
+
         # -- Configuration --
         if self.defaults:
             d["defaults"] = dict(self.defaults)
         if self.env:
             d["env"] = dict(self.env)
+
+        # -- Lifecycle hooks --
+        if self.pre_exec:
+            d["pre_exec"] = list(self.pre_exec)
         if self.command:
             d["command"] = self.command
+        if self.post_exec:
+            d["post_exec"] = list(self.post_exec)
+        if self.post_commands:
+            d["post_commands"] = list(self.post_commands)
+        if self.stop_after_post:
+            d["stop_after_post"] = True
 
         # TODO: consider if we include embedded benchmarks in export or not!
         #       (currently we do not)

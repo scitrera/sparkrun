@@ -53,6 +53,10 @@ trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"
 
+[project.entry-points."sparkrun.builders"]
+docker-pull = "sparkrun.builders.docker_pull:DockerPullBuilder"
+eugr = "sparkrun.builders.eugr:EugrBuilder"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

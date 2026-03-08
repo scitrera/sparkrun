@@ -357,6 +357,60 @@ class TestDiscovery:
         healthy = [ep for ep in endpoints if ep.healthy]
         assert len(healthy) == 0
 
+    def test_dedup_by_identity(self, jobs_dir: Path):
+        """Endpoints on different IPs serving same models are deduplicated."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        # Two metadata files for the same server on different network interfaces
+        meta_mgmt = {
+            "cluster_id": "sparkrun_mgmt",
+            "recipe": "qwen3-sglang",
+            "model": "Qwen/Qwen3.5-35B",
+            "runtime": "sglang",
+            "hosts": ["192.168.11.14"],
+            "port": 8000,
+            "tensor_parallel": 1,
+        }
+        meta_cx7 = {
+            "cluster_id": "sparkrun_cx7",
+            "recipe": "qwen3-sglang",
+            "model": "Qwen/Qwen3.5-35B",
+            "runtime": "sglang",
+            "hosts": ["10.24.11.14"],
+            "port": 8000,
+            "tensor_parallel": 1,
+        }
+
+        # "aaa_" prefix ensures management IP metadata is sorted first
+        with open(jobs_dir / "aaa_mgmt.yaml", "w") as f:
+            yaml.safe_dump(meta_mgmt, f)
+        with open(jobs_dir / "zzz_cx7.yaml", "w") as f:
+            yaml.safe_dump(meta_cx7, f)
+
+        cache_dir = str(jobs_dir.parent)
+
+        # Mock health checks — both return same models
+        models_response = json.dumps({
+            "data": [{"id": "qwen3.5-35b"}],
+        }).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = models_response
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch(
+            "sparkrun.proxy.discovery.urllib.request.urlopen",
+            return_value=mock_resp,
+        ):
+            endpoints = discover_endpoints(cache_dir=cache_dir, check_health=True)
+
+        # Should be deduplicated to 1 endpoint (same models on same port)
+        assert len(endpoints) == 1
+        # First metadata file wins — management IP kept
+        assert endpoints[0].host == "192.168.11.14"
+
 
 # =====================================================================
 # Tests: ProxyConfig
@@ -372,7 +426,7 @@ class TestProxyConfig:
         cfg = ProxyConfig(proxy_config_path)
         assert cfg.port == 4000
         assert cfg.host == "0.0.0.0"
-        assert cfg.master_key == "sk-sparkrun"
+        assert cfg.master_key is None
         assert cfg.auto_discover is True
         assert cfg.discover_interval == 30
         assert cfg.aliases == {}
@@ -578,9 +632,11 @@ class TestEngineLifecycle:
 
         mock_proc = MagicMock()
         mock_proc.pid = 12345
+        mock_proc.poll.return_value = None  # Process still running
 
         with patch("shutil.which", return_value="/usr/bin/uvx"), \
-             patch("subprocess.Popen", return_value=mock_proc):
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch("time.sleep"):
             rc = engine.start(config_path=state_dir / "fake.yaml")
 
         assert rc == 0

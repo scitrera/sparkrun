@@ -816,3 +816,199 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
 
     if fail_count:
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Earlyoom process patterns — used to build --prefer / --avoid arguments
+# ---------------------------------------------------------------------------
+
+# Processes that should be killed first on OOM (inference workloads).
+# These are the main memory consumers on DGX Spark systems.
+EARLYOOM_PREFER_PATTERNS = [
+    "vllm",
+    "sglang",
+    "llama-server",
+    "llama-cli",
+    "trtllm",
+    "tritonserver",
+    "python3",
+    "python",
+]
+
+# Processes to protect from OOM kill (system services).
+EARLYOOM_AVOID_PATTERNS = [
+    "systemd",
+    "sshd",
+    "dockerd",
+    "containerd",
+    "dbus-daemon",
+    "NetworkManager",
+]
+
+
+def _earlyoom_summary(stdout: str) -> str:
+    """Extract key status lines from earlyoom install output.
+
+    Filters out noisy apt-get progress (Reading database ...) and
+    returns only the meaningful status lines (INSTALLED/PRESENT/CONFIGURED/OK/ERROR).
+    """
+    keywords = ("INSTALLING:", "INSTALLED:", "PRESENT:", "CONFIGURED:", "OK:", "ERROR:")
+    lines = [
+        line.strip() for line in stdout.strip().splitlines()
+        if any(line.strip().startswith(kw) for kw in keywords)
+    ]
+    return "; ".join(lines) if lines else stdout.strip()[:100]
+
+
+def _build_earlyoom_regex(patterns: list[str]) -> str:
+    """Build a regex pattern string for earlyoom --prefer/--avoid.
+
+    earlyoom uses POSIX extended regex matching against ``/proc/pid/comm``.
+    Wraps patterns in ``^(...)`` so matching is anchored to the start of
+    the process name.
+    """
+    return "^(%s)" % "|".join(patterns)
+
+
+@setup.command("earlyoom")
+@host_options
+@click.option("--user", "-u", default=None, help="SSH username (default: from config or current user)")
+@click.option("--prefer", "extra_prefer", default=None,
+              help="Additional comma-separated process patterns to prefer killing on OOM")
+@click.option("--avoid", "extra_avoid", default=None,
+              help="Additional comma-separated process patterns to avoid killing on OOM")
+@dry_run_option
+@click.pass_context
+def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, extra_avoid, dry_run):
+    """Install and configure earlyoom OOM killer on cluster hosts.
+
+    earlyoom monitors available memory and proactively kills processes
+    before the kernel OOM killer triggers. This prevents system hangs
+    when large inference models exhaust memory on DGX Spark.
+
+    By default, sparkrun configures earlyoom to prefer killing inference
+    workload processes (vllm, sglang, llama-server, trtllm, python) and
+    to avoid killing system services (sshd, systemd, dockerd).
+
+    Use --prefer/--avoid to add additional process patterns.
+
+    Requires sudo on target hosts (apt-get install, systemctl).
+
+    Examples:
+
+      sparkrun setup earlyoom --hosts 192.168.11.13,192.168.11.14
+
+      sparkrun setup earlyoom --cluster mylab
+
+      sparkrun setup earlyoom --cluster mylab --prefer "my-app,worker"
+
+      sparkrun setup earlyoom --cluster mylab --dry-run
+    """
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback
+    from sparkrun.orchestration.ssh import run_remote_sudo_script
+
+    config = SparkrunConfig()
+    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+
+    # Build prefer/avoid pattern lists
+    prefer = list(EARLYOOM_PREFER_PATTERNS)
+    if extra_prefer:
+        prefer.extend(p.strip() for p in extra_prefer.split(",") if p.strip())
+
+    avoid = list(EARLYOOM_AVOID_PATTERNS)
+    if extra_avoid:
+        avoid.extend(p.strip() for p in extra_avoid.split(",") if p.strip())
+
+    prefer_regex = _build_earlyoom_regex(prefer)
+    avoid_regex = _build_earlyoom_regex(avoid)
+
+    click.echo("Installing earlyoom on %d host(s)..." % len(host_list))
+    click.echo("  Prefer (kill first): %s" % prefer_regex)
+    click.echo("  Avoid (protect):     %s" % avoid_regex)
+    click.echo()
+    click.echo("Note: first install may take ~1 minute per host (apt-get update + install).")
+    click.echo()
+
+    from sparkrun.scripts import read_script
+
+    # Generate install scripts with the prefer/avoid patterns
+    install_script = read_script("earlyoom_install.sh").format(
+        prefer=prefer_regex, avoid=avoid_regex,
+    )
+    fallback_script = read_script("earlyoom_install_fallback.sh").format(
+        prefer=prefer_regex, avoid=avoid_regex,
+    )
+
+    # Try non-interactive sudo, then password-based fallback
+    result_map, still_failed = run_with_sudo_fallback(
+        host_list, install_script, fallback_script, ssh_kwargs,
+        dry_run=dry_run,
+    )
+
+    # Report hosts that succeeded immediately
+    for h in host_list:
+        r = result_map.get(h)
+        if r and r.success:
+            click.echo("  [OK]   %s: %s" % (h, _earlyoom_summary(r.stdout)))
+
+    # If hosts failed without a password, prompt and retry
+    if still_failed and not dry_run:
+        click.echo("Sudo password required for %d host(s)." % len(still_failed))
+        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+
+        # Run fallback with progress — report each host as it completes
+        click.echo("Configuring %d host(s)..." % len(still_failed))
+        remaining = list(still_failed)
+        for h in remaining:
+            click.echo("  %-20s ..." % h, nl=False)
+            r = run_remote_sudo_script(
+                h, fallback_script, sudo_password, timeout=300, dry_run=dry_run, **ssh_kwargs,
+            )
+            result_map[h] = r
+            if r.success:
+                click.echo(" %s" % _earlyoom_summary(r.stdout))
+            else:
+                click.echo(" FAILED")
+
+        still_failed = [h for h in remaining if not result_map.get(h) or not result_map[h].success]
+
+        # Retry individually on per-host sudo failures
+        if still_failed and sudo_password:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
+            for fhost in still_failed:
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                click.echo("  %-20s ..." % fhost, nl=False)
+                retry_result = run_remote_sudo_script(
+                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                )
+                result_map[fhost] = retry_result
+                if retry_result.success:
+                    click.echo(" %s" % _earlyoom_summary(retry_result.stdout))
+                else:
+                    click.echo(" FAILED")
+
+    # Final summary
+    ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
+    fail_count = sum(1 for h in host_list if result_map.get(h) and not result_map[h].success)
+
+    for h in host_list:
+        r = result_map.get(h)
+        if r and not r.success:
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d configured" % ok_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if ok_count:
+        click.echo()
+        click.echo("Thanks to @shahizat for posting this idea on the DGX forums!")
+
+    if fail_count:
+        sys.exit(1)

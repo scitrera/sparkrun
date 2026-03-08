@@ -2,7 +2,65 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
+
 from sparkrun.orchestration import ssh as _ssh
+from sparkrun.orchestration.ssh import RemoteResult
+
+logger = logging.getLogger(__name__)
+
+
+def _run_local_sudo_script(
+    script: str,
+    password: str | None = None,
+    timeout: int = 300,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Execute a script locally via ``sudo bash -s``.
+
+    When *password* is provided, uses ``sudo -S`` (reads password from stdin).
+    Otherwise uses ``sudo -n`` (non-interactive, relies on NOPASSWD sudoers).
+
+    Args:
+        script: Bash script content to execute as root.
+        password: Optional sudo password.
+        timeout: Execution timeout in seconds.
+        dry_run: If True, log the script but don't execute.
+
+    Returns:
+        RemoteResult with host set to ``"localhost"``.
+    """
+    if dry_run:
+        logger.info("[dry-run] Would execute locally with sudo (%d bytes)", len(script))
+        return RemoteResult(host="localhost", returncode=0, stdout="[dry-run]", stderr="")
+
+    if password is not None:
+        cmd = ["sudo", "-S", "bash", "-s"]
+        full_input = password + "\n" + script
+    else:
+        cmd = ["sudo", "-n", "bash", "-s"]
+        full_input = script
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=full_input,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return RemoteResult(
+            host="localhost",
+            returncode=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    except subprocess.TimeoutExpired:
+        return RemoteResult(
+            host="localhost", returncode=1,
+            stdout="", stderr="Timeout after %ds" % timeout,
+        )
 
 
 def run_with_sudo_fallback(
@@ -15,6 +73,9 @@ def run_with_sudo_fallback(
     timeout: int = 300,
 ) -> tuple[dict[str, object], list[str]]:
     """Run script with sudo fallback. Returns (result_map, still_failed_hosts).
+
+    Local hosts (localhost, 127.0.0.1) are executed directly via
+    ``sudo bash -s`` without SSH.  Remote hosts use SSH as before.
 
     Steps:
     1. Try non-interactive sudo on all hosts in parallel.
@@ -39,26 +100,48 @@ def run_with_sudo_fallback(
         {host: SSHResult} and still_failed_hosts is a list of hosts
         that failed even after password-based sudo.
     """
-    # Step 1: Try non-interactive sudo on all hosts in parallel
-    parallel_results = _ssh.run_remote_scripts_parallel(
-        host_list, script, timeout=timeout, dry_run=dry_run, **ssh_kwargs,
-    )
+    from sparkrun.core.hosts import is_local_host
 
-    # Partition results: successes vs failures needing password
+    # Separate local and remote hosts
+    local_hosts = [h for h in host_list if is_local_host(h)]
+    remote_hosts = [h for h in host_list if not is_local_host(h)]
+
     result_map: dict[str, object] = {}
-    failed_hosts = []
-    for r in parallel_results:
+    failed_hosts: list[str] = []
+
+    # Step 1a: Run locally for local hosts (sudo -n, non-interactive)
+    for h in local_hosts:
+        r = _run_local_sudo_script(script, password=None, timeout=timeout, dry_run=dry_run)
+        # Preserve original host label in the result
+        r = RemoteResult(host=h, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
         if r.success:
-            result_map[r.host] = r
+            result_map[h] = r
         else:
-            failed_hosts.append(r.host)
+            failed_hosts.append(h)
+
+    # Step 1b: Try non-interactive sudo on remote hosts in parallel
+    if remote_hosts:
+        parallel_results = _ssh.run_remote_scripts_parallel(
+            remote_hosts, script, timeout=timeout, dry_run=dry_run, **ssh_kwargs,
+        )
+        for r in parallel_results:
+            if r.success:
+                result_map[r.host] = r
+            else:
+                failed_hosts.append(r.host)
 
     # Step 2: For failed hosts, fall back to password-based sudo
     if failed_hosts and not dry_run and sudo_password is not None:
         for h in failed_hosts:
-            r = _ssh.run_remote_sudo_script(
-                h, fallback_script, sudo_password, timeout=timeout, dry_run=dry_run, **ssh_kwargs,
-            )
+            if is_local_host(h):
+                r = _run_local_sudo_script(
+                    fallback_script, password=sudo_password, timeout=timeout, dry_run=dry_run,
+                )
+                r = RemoteResult(host=h, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+            else:
+                r = _ssh.run_remote_sudo_script(
+                    h, fallback_script, sudo_password, timeout=timeout, dry_run=dry_run, **ssh_kwargs,
+                )
             result_map[h] = r
 
     # Return results and hosts that still failed after fallback

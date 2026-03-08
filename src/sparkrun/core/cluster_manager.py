@@ -356,7 +356,7 @@ def query_cluster_status(
         A :class:`ClusterStatusResult` with all collected data.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from sparkrun.orchestration.ssh import run_remote_command
+    from sparkrun.orchestration.primitives import run_command_on_host
     from sparkrun.orchestration.job_metadata import load_job_metadata
     from sparkrun.core.pending_ops import list_pending_ops
 
@@ -365,11 +365,12 @@ def query_cluster_status(
         "--format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
     )
 
-    # Query all hosts in parallel
+    # Query all hosts in parallel (dispatches local vs SSH automatically)
     with ThreadPoolExecutor(max_workers=len(host_list)) as executor:
         futures = {
             executor.submit(
-                run_remote_command, host, docker_cmd, timeout=15, **ssh_kwargs,
+                run_command_on_host, host, docker_cmd,
+                ssh_kwargs=ssh_kwargs, timeout=15,
             ): host
             for host in host_list
         }

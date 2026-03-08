@@ -2725,3 +2725,153 @@ class TestUpdateCommand:
         assert result.exit_code == 0
         assert "-> 1.1.0" in result.output
         assert "Updating recipe registries" in result.output
+
+
+class TestSetupEarlyoom:
+    """Test the setup earlyoom command."""
+
+    @pytest.fixture
+    def cluster_setup(self, tmp_path, monkeypatch):
+        """Set up a config root with a test cluster."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("oom-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
+        return config_root
+
+    def test_earlyoom_help(self, runner):
+        """Test that sparkrun setup earlyoom --help shows expected options."""
+        result = runner.invoke(main, ["setup", "earlyoom", "--help"])
+        assert result.exit_code == 0
+        assert "--hosts" in result.output
+        assert "--cluster" in result.output
+        assert "--user" in result.output
+        assert "--dry-run" in result.output
+        assert "--prefer" in result.output
+        assert "--avoid" in result.output
+        assert "earlyoom" in result.output.lower()
+
+    def test_earlyoom_no_hosts_error(self, runner, tmp_path, monkeypatch):
+        """Test that earlyoom with no hosts exits with error."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["setup", "earlyoom"])
+        assert result.exit_code != 0
+        assert "hosts" in result.output.lower() or "Error" in result.output
+
+    def test_earlyoom_dry_run(self, runner, cluster_setup):
+        """Test that --dry-run reports without executing."""
+        mock_result_1 = mock.Mock(
+            success=True, stdout="[dry-run]", stderr="", host="10.0.0.1",
+        )
+        mock_result_2 = mock.Mock(
+            success=True, stdout="[dry-run]", stderr="", host="10.0.0.2",
+        )
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+                        return_value=[mock_result_1, mock_result_2]):
+            result = runner.invoke(main, [
+                "setup", "earlyoom",
+                "--cluster", "oom-cluster",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            assert "Installing earlyoom" in result.output
+            assert "Prefer (kill first)" in result.output
+            assert "vllm" in result.output
+
+    def test_earlyoom_all_nopasswd(self, runner, cluster_setup):
+        """Test when all hosts succeed via sudo -n — no password prompt."""
+        mock_result_1 = mock.Mock(
+            success=True, stdout="INSTALLED: earlyoom\nCONFIGURED: /etc/default/earlyoom\nOK: earlyoom running",
+            stderr="", host="10.0.0.1",
+        )
+        mock_result_2 = mock.Mock(
+            success=True, stdout="PRESENT: earlyoom already installed\nCONFIGURED: /etc/default/earlyoom\nOK: earlyoom running",
+            stderr="", host="10.0.0.2",
+        )
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+                        return_value=[mock_result_1, mock_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+            result = runner.invoke(main, [
+                "setup", "earlyoom",
+                "--cluster", "oom-cluster",
+            ])
+            assert result.exit_code == 0
+            mock_sudo.assert_not_called()
+            assert "OK" in result.output
+            assert "2 configured" in result.output
+            assert "@shahizat" in result.output
+
+    def test_earlyoom_mixed_sudo(self, runner, cluster_setup):
+        """Test try-then-fallback: one host succeeds with sudo -n, another needs password."""
+        mock_ok_result = mock.Mock(
+            success=True, stdout="OK: earlyoom running",
+            stderr="", host="10.0.0.1",
+        )
+        mock_fail_result = mock.Mock(
+            success=False, stdout="", stderr="sudo: a password is required",
+            host="10.0.0.2",
+        )
+        mock_password_result = mock.Mock(
+            success=True, stdout="OK: earlyoom running",
+            stderr="", host="10.0.0.2",
+        )
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+                        return_value=[mock_ok_result, mock_fail_result]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_password_result):
+            result = runner.invoke(main, [
+                "setup", "earlyoom",
+                "--cluster", "oom-cluster",
+            ], input="sudopassword\n")
+            assert result.exit_code == 0
+            assert "2 configured" in result.output
+
+    def test_earlyoom_extra_prefer_avoid(self, runner, cluster_setup):
+        """Test that --prefer and --avoid add patterns to the regex."""
+        mock_result_1 = mock.Mock(
+            success=True, stdout="OK: earlyoom running", stderr="", host="10.0.0.1",
+        )
+        mock_result_2 = mock.Mock(
+            success=True, stdout="OK: earlyoom running", stderr="", host="10.0.0.2",
+        )
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+                        return_value=[mock_result_1, mock_result_2]):
+            result = runner.invoke(main, [
+                "setup", "earlyoom",
+                "--cluster", "oom-cluster",
+                "--prefer", "my-worker,my-app",
+                "--avoid", "nginx",
+                "--dry-run",
+            ])
+            assert result.exit_code == 0
+            assert "my-worker" in result.output
+            assert "my-app" in result.output
+            assert "nginx" in result.output
+
+    def test_earlyoom_default_patterns(self, runner):
+        """Test that _build_earlyoom_regex produces expected output."""
+        from sparkrun.cli._setup import _build_earlyoom_regex, EARLYOOM_PREFER_PATTERNS, EARLYOOM_AVOID_PATTERNS
+        prefer_regex = _build_earlyoom_regex(EARLYOOM_PREFER_PATTERNS)
+        assert prefer_regex.startswith("^(")
+        assert prefer_regex.endswith(")")
+        assert "vllm" in prefer_regex
+        assert "sglang" in prefer_regex
+        assert "llama-server" in prefer_regex
+        assert "trtllm" in prefer_regex
+        assert "python" in prefer_regex
+
+        avoid_regex = _build_earlyoom_regex(EARLYOOM_AVOID_PATTERNS)
+        assert avoid_regex.startswith("^(")
+        assert "sshd" in avoid_regex
+        assert "dockerd" in avoid_regex
+        assert "dbus-daemon" in avoid_regex
+        assert "NetworkManager" in avoid_regex

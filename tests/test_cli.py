@@ -18,6 +18,23 @@ from sparkrun.runtimes.sglang import SglangRuntime
 # Name for the test recipe used by CLI integration tests.
 # The original bundled recipe (_TEST_RECIPE_NAME) was removed
 # from the repo (commit 34ece47), so we create a synthetic test recipe.
+_TEST_RECIPE_SOLO_NAME = "test-solo-only"
+
+_TEST_RECIPE_SOLO_DATA = {
+    "recipe_version": "2",
+    "name": "Test Solo Only Recipe",
+    "description": "A test recipe capped at max_nodes=1",
+    "model": "Qwen/Qwen3-1.7B",
+    "runtime": "sglang",
+    "mode": "auto",
+    "max_nodes": 1,
+    "container": "scitrera/dgx-spark-sglang:latest",
+    "defaults": {
+        "port": 30000,
+        "host": "0.0.0.0",
+    },
+}
+
 _TEST_RECIPE_NAME = "test-sglang-cluster"
 
 _TEST_RECIPE_DATA = {
@@ -77,14 +94,18 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
     recipe_file = recipe_dir / f"{_TEST_RECIPE_NAME}.yaml"
     recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
 
-    # Patch discover_cwd_recipes to return our test recipe
+    # Write the solo-only test recipe (max_nodes=1)
+    solo_recipe_file = recipe_dir / f"{_TEST_RECIPE_SOLO_NAME}.yaml"
+    solo_recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_SOLO_DATA))
+
+    # Patch discover_cwd_recipes to return our test recipes
     import sparkrun.core.recipe
     original_discover = sparkrun.core.recipe.discover_cwd_recipes
 
     def _patched_discover(directory=None):
         # Return our test recipes plus any originals
         originals = original_discover(directory)
-        return [recipe_file] + originals
+        return [recipe_file, solo_recipe_file] + originals
 
     monkeypatch.setattr(sparkrun.core.recipe, "discover_cwd_recipes", _patched_discover)
 
@@ -311,6 +332,20 @@ class TestRunCommand:
 
         assert result.exit_code != 0
         assert "Error" in result.output
+
+    def test_run_tp_exceeds_max_nodes_errors(self, runner, reset_bootstrap):
+        """Test that --tp exceeding recipe max_nodes produces an error."""
+        result = runner.invoke(main, [
+            "run",
+            _TEST_RECIPE_SOLO_NAME,
+            "--tp", "2",
+            "--hosts", "10.0.0.1,10.0.0.2",
+            "--dry-run",
+        ])
+
+        assert result.exit_code != 0
+        assert "max_nodes=1" in result.output
+        assert "requires 2 nodes" in result.output
 
 
 class TestStopCommand:

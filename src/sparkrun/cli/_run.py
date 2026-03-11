@@ -179,6 +179,22 @@ def run(
     # Enforce max_nodes: trim host list if recipe caps node count.
     # Must happen before cluster_id derivation so stop/logs match.
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
+        # Check for conflict: if the runtime requires more nodes than
+        # the recipe allows, that's a hard error — the user explicitly
+        # requested parallelism that exceeds the recipe's max_nodes.
+        try:
+            required = runtime.compute_required_nodes(recipe, overrides)
+        except ValueError:
+            required = None
+        if required is not None and required > recipe.max_nodes:
+            click.echo(
+                "Error: runtime requires %d nodes (from parallelism settings), "
+                "but recipe '%s' specifies max_nodes=%d"
+                % (required, recipe.name, recipe.max_nodes),
+                err=True,
+            )
+            sys.exit(1)
+
         click.echo(
             "Note: recipe max_nodes=%d, using %d of %d hosts"
             % (recipe.max_nodes, recipe.max_nodes, len(host_list))
@@ -211,23 +227,37 @@ def run(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
+    # Resolve transfer mode early — the builder needs it for delegated builds.
+    # CLI --transfer-mode > cluster setting > "auto"
+    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
+    cluster_transfer_mode = _resolve_transfer_mode(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_transfer_mode = transfer_mode or cluster_transfer_mode or "auto"
+
     # Builder phase: resolve and run builder plugin before distribution.
-    # The builder ensures the container image is available locally.
+    # The builder ensures the container image is available locally (or on
+    # the head node when transfer_mode is "delegated").
     # For recipes with an explicit builder field, use that builder.
     # For eugr-vllm runtime, runtime.prepare() delegates to EugrBuilder.
     # For all other runtimes without a builder field, docker-pull is a no-op.
     if recipe.builder:
         from sparkrun.core.bootstrap import get_builder
+        from sparkrun.orchestration.primitives import build_ssh_kwargs as _build_ssh_kw
         try:
             builder = get_builder(recipe.builder, v)
             container_image = builder.prepare_image(
                 container_image, recipe, host_list, config=config, dry_run=dry_run,
+                transfer_mode=effective_transfer_mode,
+                ssh_kwargs=_build_ssh_kw(config),
             )
         except ValueError:
             click.echo("Warning: builder '%s' not found, skipping" % recipe.builder, err=True)
 
     # Pre-launch preparation (e.g., eugr container builds via legacy runtime path)
-    runtime.prepare(recipe, host_list, config=config, dry_run=dry_run)
+    runtime.prepare(
+        recipe, host_list, config=config, dry_run=dry_run,
+        transfer_mode=effective_transfer_mode,
+    )
 
     # Distribution phase: ensure image/model locally, distribute to hosts,
     # detect IB for NCCL env + fast transfer routing.
@@ -235,11 +265,6 @@ def run(
     # when resources are already present on all hosts).
     nccl_env = None
     ib_ip_map: dict[str, str] = {}
-    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
-    # Resolve transfer mode: CLI --transfer-mode > cluster setting > "auto"
-    cluster_transfer_mode = _resolve_transfer_mode(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_transfer_mode = transfer_mode or cluster_transfer_mode or "auto"
     if not runtime.is_delegating_runtime():
         from sparkrun.orchestration.distribution import distribute_resources
         nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(

@@ -209,6 +209,9 @@ class LlamaCppRuntime(RuntimePlugin):
             # Override --split-mode when TP/PP forces a specific strategy
             if split_mode is not None:
                 rendered = self._inject_split_mode_in_command(rendered, split_mode)
+            rendered = self._augment_served_model_name(
+                rendered, config, "--alias", skip_keys,
+            )
             if skip_keys:
                 all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
                 rendered = self.strip_flags_from_command(

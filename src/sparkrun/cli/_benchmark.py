@@ -257,6 +257,20 @@ def _run_benchmark(
                 )
 
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
+        # Check for conflict: required nodes > max_nodes is a hard error
+        try:
+            _req = runtime.compute_required_nodes(recipe, overrides)
+        except ValueError:
+            _req = None
+        if _req is not None and _req > recipe.max_nodes:
+            click.echo(
+                "Error: runtime requires %d nodes (from parallelism settings), "
+                "but recipe '%s' specifies max_nodes=%d"
+                % (_req, recipe.name, recipe.max_nodes),
+                err=True,
+            )
+            sys.exit(1)
+
         click.echo(
             "Note: recipe max_nodes=%d, using %d of %d hosts"
             % (recipe.max_nodes, recipe.max_nodes, len(host_list))
@@ -280,12 +294,17 @@ def _run_benchmark(
     ssh_kwargs = build_ssh_kwargs(config)
     head_host = host_list[0]
 
-    # -- Port auto-increment: avoid collisions with running instances --
+    # -- Port resolution --
+    # When --skip-run is set the server is already listening on the desired
+    # port, so auto-increment would mis-target a different (or empty) port.
     config_chain = recipe.build_config_chain(overrides)
     desired_port = int(config_chain.get("port") or 8000)
-    serve_port = find_available_port(head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-    if serve_port != desired_port:
-        click.echo("Note: port %d in use, using %d instead" % (desired_port, serve_port))
+    if skip_run:
+        serve_port = desired_port
+    else:
+        serve_port = find_available_port(head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        if serve_port != desired_port:
+            click.echo("Note: port %d in use, using %d instead" % (desired_port, serve_port))
     # Feed resolved port back so the runtime and downstream code all use it
     overrides["port"] = serve_port
 

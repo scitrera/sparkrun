@@ -66,6 +66,9 @@ class SglangRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            rendered = self._augment_served_model_name(
+                rendered, config, "--served-model-name", skip_keys,
+            )
             if skip_keys:
                 rendered = self.strip_flags_from_command(
                     rendered, skip_keys, _SGLANG_FLAG_MAP, _SGLANG_BOOL_FLAGS,
@@ -96,6 +99,9 @@ class SglangRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            rendered = self._augment_served_model_name(
+                rendered, config, "--served-model-name", skip_keys,
+            )
             if skip_keys:
                 rendered = self.strip_flags_from_command(
                     rendered, skip_keys, _SGLANG_FLAG_MAP, _SGLANG_BOOL_FLAGS,

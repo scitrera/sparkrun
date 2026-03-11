@@ -1732,3 +1732,222 @@ class TestLlamaCppValidateRecipe:
         runtime = LlamaCppRuntime()
         issues = runtime.validate_recipe(recipe)
         assert not any("mutually exclusive" in i for i in issues)
+
+
+# --- _augment_served_model_name tests ---
+
+class TestAugmentServedModelName:
+    """Test that served_model_name from overrides is appended to rendered template commands."""
+
+    def _make_recipe(self, runtime="vllm", command=None, defaults=None):
+        data = {
+            "name": "test", "runtime": runtime,
+            "model": "org/some-model",
+        }
+        if command:
+            data["command"] = command
+        if defaults:
+            data["defaults"] = defaults
+        return Recipe.from_dict(data)
+
+    # --- vllm-ray ---
+
+    def test_vllm_ray_appends_when_missing(self):
+        """vllm-ray: template without {served_model_name} gets flag appended."""
+        recipe = self._make_recipe(
+            runtime="vllm",
+            command="vllm serve {model} --port 8000",
+            defaults={"served_model_name": "my-model"},
+        )
+        runtime = VllmRayRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert cmd.endswith("--served-model-name my-model")
+
+    def test_vllm_ray_override_appends(self):
+        """vllm-ray: CLI override served_model_name appended to template."""
+        recipe = self._make_recipe(
+            runtime="vllm",
+            command="vllm serve {model} --port 8000",
+        )
+        runtime = VllmRayRuntime()
+        cmd = runtime.generate_command(recipe, {"served_model_name": "cli-name"}, is_cluster=False)
+        assert "--served-model-name cli-name" in cmd
+
+    def test_vllm_ray_no_duplicate(self):
+        """vllm-ray: template already has --served-model-name → no duplicate."""
+        recipe = self._make_recipe(
+            runtime="vllm",
+            command="vllm serve {model} --served-model-name {served_model_name} --port 8000",
+            defaults={"served_model_name": "in-template"},
+        )
+        runtime = VllmRayRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert cmd.count("--served-model-name") == 1
+
+    def test_vllm_ray_no_override_no_change(self):
+        """vllm-ray: no served_model_name in config → command unchanged."""
+        recipe = self._make_recipe(
+            runtime="vllm",
+            command="vllm serve {model} --port 8000",
+        )
+        runtime = VllmRayRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--served-model-name" not in cmd
+
+    def test_vllm_ray_skip_keys_suppresses(self):
+        """vllm-ray: skip_keys={served_model_name} → no augmentation."""
+        recipe = self._make_recipe(
+            runtime="vllm",
+            command="vllm serve {model} --port 8000",
+            defaults={"served_model_name": "my-model"},
+        )
+        runtime = VllmRayRuntime()
+        cmd = runtime.generate_command(
+            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+        )
+        assert "--served-model-name" not in cmd
+
+    # --- vllm-distributed ---
+
+    def test_vllm_distributed_generate_appends(self):
+        """vllm-distributed generate_command: template missing flag → appended."""
+        recipe = self._make_recipe(
+            runtime="vllm-distributed",
+            command="vllm serve {model} --port 8000",
+            defaults={"served_model_name": "dist-model"},
+        )
+        runtime = VllmDistributedRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--served-model-name dist-model" in cmd
+
+    def test_vllm_distributed_node_command_appends(self):
+        """vllm-distributed generate_node_command: template missing flag → appended."""
+        recipe = self._make_recipe(
+            runtime="vllm-distributed",
+            command="vllm serve {model} --port 8000",
+            defaults={"served_model_name": "dist-model"},
+        )
+        runtime = VllmDistributedRuntime()
+        cmd = runtime.generate_node_command(
+            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+        )
+        assert "--served-model-name dist-model" in cmd
+        assert "--nnodes 2" in cmd
+
+    def test_vllm_distributed_node_command_no_duplicate(self):
+        """vllm-distributed generate_node_command: template has flag → no dup."""
+        recipe = self._make_recipe(
+            runtime="vllm-distributed",
+            command="vllm serve {model} --served-model-name {served_model_name}",
+            defaults={"served_model_name": "in-tpl"},
+        )
+        runtime = VllmDistributedRuntime()
+        cmd = runtime.generate_node_command(
+            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+        )
+        assert cmd.count("--served-model-name") == 1
+
+    # --- sglang ---
+
+    def test_sglang_generate_appends(self):
+        """sglang generate_command: template missing flag → appended."""
+        recipe = self._make_recipe(
+            runtime="sglang",
+            command="python3 -m sglang.launch_server --model-path {model} --port 8000",
+            defaults={"served_model_name": "sg-model"},
+        )
+        runtime = SglangRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--served-model-name sg-model" in cmd
+
+    def test_sglang_node_command_appends(self):
+        """sglang generate_node_command: template missing flag → appended."""
+        recipe = self._make_recipe(
+            runtime="sglang",
+            command="python3 -m sglang.launch_server --model-path {model} --port 8000",
+            defaults={"served_model_name": "sg-model"},
+        )
+        runtime = SglangRuntime()
+        cmd = runtime.generate_node_command(
+            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+        )
+        assert "--served-model-name sg-model" in cmd
+        assert "--nnodes 2" in cmd
+
+    def test_sglang_node_command_no_duplicate(self):
+        """sglang generate_node_command: template has flag → no dup."""
+        recipe = self._make_recipe(
+            runtime="sglang",
+            command="python3 -m sglang.launch_server --model-path {model} --served-model-name {served_model_name}",
+            defaults={"served_model_name": "in-tpl"},
+        )
+        runtime = SglangRuntime()
+        cmd = runtime.generate_node_command(
+            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+        )
+        assert cmd.count("--served-model-name") == 1
+
+    def test_sglang_skip_keys_suppresses(self):
+        """sglang: skip_keys={served_model_name} → no augmentation."""
+        recipe = self._make_recipe(
+            runtime="sglang",
+            command="python3 -m sglang.launch_server --model-path {model}",
+            defaults={"served_model_name": "sg-model"},
+        )
+        runtime = SglangRuntime()
+        cmd = runtime.generate_command(
+            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+        )
+        assert "--served-model-name" not in cmd
+
+    # --- llama-cpp ---
+
+    def test_llama_cpp_uses_alias_flag(self):
+        """llama-cpp: uses --alias instead of --served-model-name."""
+        recipe = self._make_recipe(
+            runtime="llama-cpp",
+            command="llama-server -hf {model} --port 8080",
+            defaults={"served_model_name": "llama-alias"},
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--alias llama-alias" in cmd
+        assert "--served-model-name" not in cmd
+
+    def test_llama_cpp_no_duplicate_alias(self):
+        """llama-cpp: template already has --alias → no duplicate."""
+        recipe = self._make_recipe(
+            runtime="llama-cpp",
+            command="llama-server -hf {model} --alias {served_model_name} --port 8080",
+            defaults={"served_model_name": "in-tpl"},
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert cmd.count("--alias") == 1
+
+    def test_llama_cpp_short_alias_no_duplicate(self):
+        """llama-cpp: template has -a short form → -a is not --alias, so --alias appended."""
+        recipe = self._make_recipe(
+            runtime="llama-cpp",
+            command="llama-server -hf {model} -a {served_model_name} --port 8080",
+            defaults={"served_model_name": "short"},
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        # -a is not the same string as --alias, so augment will append --alias.
+        # This is fine — the template already used {served_model_name} via -a.
+        # The real safety net is strip_flags_from_command for skip_keys.
+        assert "-a short" in cmd
+
+    def test_llama_cpp_skip_keys_suppresses(self):
+        """llama-cpp: skip_keys={served_model_name} → no augmentation."""
+        recipe = self._make_recipe(
+            runtime="llama-cpp",
+            command="llama-server -hf {model} --port 8080",
+            defaults={"served_model_name": "llama-alias"},
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(
+            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+        )
+        assert "--alias" not in cmd

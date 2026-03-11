@@ -23,7 +23,16 @@ fi
 echo "Downloading model: {model_id}..."
 if command -v huggingface-cli &>/dev/null; then
     huggingface-cli download "{model_id}" {revision_flag}--cache-dir "{cache}/hub"
+elif command -v uvx &>/dev/null; then
+    uvx hf download "{model_id}" {revision_flag}--cache-dir "{cache}/hub"
 else
-    echo "ERROR: huggingface-cli not available on this host" >&2
-    exit 1
+    echo "Installing uv for model download access..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+    if command -v uvx &>/dev/null; then
+        uvx hf download "{model_id}" {revision_flag}--cache-dir "{cache}/hub"
+    else
+        echo "ERROR: failed to install uv; cannot download model on this host" >&2
+        exit 1
+    fi
 fi

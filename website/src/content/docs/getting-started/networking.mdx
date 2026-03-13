@@ -313,6 +313,125 @@ ib_write_lat 192.168.11.14 -d rocep1s0f1 --report_gbits -R --force-link IB
 
 Typical latency between two directly connected Sparks is approximately **1.5 microseconds**.
 
+## Resource transfer modes
+
+When launching multi-node inference, sparkrun needs to distribute container images and model files to all hosts. The **transfer mode** controls how resources flow from the control machine (where you run sparkrun) to the cluster nodes.
+
+### The four modes
+
+#### `auto` (default)
+
+Automatically selects the best mode based on network topology. If the control machine can reach the cluster's CX-7 IPs, it uses `local`. Otherwise, it falls back to `push`.
+
+#### `local`
+
+The control machine distributes directly to all hosts over the high-speed CX-7 network. This is the fastest option when the control machine is on the same CX-7 subnet as the cluster (e.g., the control machine is itself a DGX Spark in the cluster).
+
+```
+┌─────────────┐
+│   Control   │
+│   Machine   │ ◀───▶ Internet
+│  (on CX-7)  │       (registry/HF)
+└──────┬──────┘
+       │ CX-7 (up to 200 Gbps)
+       ├────────────────┐
+       ▼                ▼
+┌─────────────┐  ┌─────────────┐
+│    Head     │  │   Worker    │
+│  (Spark 1)  │  │  (Spark 2)  │
+└─────────────┘  └─────────────┘
+```
+
+#### `push`
+
+The control machine pushes resources to the head node over the management network, then the head node distributes to workers over CX-7. This is the right choice when the control machine is external (e.g., a laptop or desktop not on the CX-7 network).
+
+```
+┌─────────────┐
+│   Control   │
+│   Machine   │ ◀───▶ Internet
+│ (external)  │       (registry/HF)
+└──────┬──────┘
+       │ Management (10 Gbps)
+       ▼
+┌─────────────┐
+│    Head     │
+│  (Spark 1)  │
+└──────┬──────┘
+       │ CX-7 (up to 200 Gbps)
+       ▼
+┌─────────────┐
+│   Worker    │
+│  (Spark 2)  │
+└─────────────┘
+```
+
+#### `delegated`
+
+The head node downloads resources directly (e.g., pulls the container image from a registry, downloads the model from HuggingFace) and distributes to workers over CX-7. The control machine transfers nothing — it only orchestrates via SSH.
+
+```
+┌─────────────┐
+│   Control   │
+│   Machine   │─── SSH only (orchestration) ──┐
+│ (external)  │                               │
+└─────────────┘                               │
+                                              ▼
+                                       ┌─────────────┐         ┌─────────────┐
+                       Internet ◀────▶ │    Head     │ ──────▶ │   Worker    │
+                       (registry/HF)   │  (Spark 1)  │  CX-7   │  (Spark 2)  │
+                                       └─────────────┘         └─────────────┘
+``` `
+
+### When to use each mode
+
+| Scenario | Recommended mode | Why |
+|---|---|---|
+| Control machine is a cluster Spark | `local` or `auto` | Direct CX-7 transfers to all nodes |
+| Control machine is external (laptop, desktop) | `push` or `auto` | Avoids slow management-network fan-out |
+| CI/CD, External Control Node, etc. | `delegated` | Head downloads at full speed, skips slow uplink |
+| First-time setup, unsure of topology | `auto` | Auto-detects CX-7 reachability |
+
+### Resource handling by mode
+
+| Step | `local` | `push` | `delegated` |
+|---|---|---|---|
+| **Image pull/build** | Control machine | Control machine | Head node |
+| **Image → head** | Control → head (CX-7) | Control → head (mgmt) | Already on head |
+| **Image → workers** | Control → workers (CX-7) | Head → workers (CX-7) | Head → workers (CX-7) |
+| **Model download** | Control machine | Control machine | Head node |
+| **Model → head** | Control → head (CX-7) | Control → head (mgmt) | Already on head |
+| **Model → workers** | Control → workers (CX-7) | Head → workers (CX-7) | Head → workers (CX-7) |
+
+In all modes, sparkrun checks whether the image and model already exist on each target host before transferring. If a host already has the correct image ID or model files, that host is skipped. This means repeat launches are fast regardless of transfer mode.
+
+### Setting the transfer mode
+
+Transfer mode can be set per-cluster (persistent) or per-command (one-off):
+
+:::note
+It is recommended that transfer-mode be configured as a cluster-level configuration option and not as a one-off!
+:::
+
+```bash
+# Set on the cluster definition (persists across all runs)
+sparkrun cluster create mylab \
+  --hosts 10.24.11.13,10.24.11.14 \
+  --transfer-mode push
+
+# Or update an existing cluster
+sparkrun cluster update mylab --transfer-mode push
+
+# Override for a single run
+sparkrun run qwen3-1.7b-vllm --cluster mylab --transfer-mode delegated
+```
+
+CLI `--transfer-mode` overrides the cluster setting for that invocation.
+
+:::tip
+For most setups, `auto` works well. Set an explicit mode on the cluster definition only if auto-detection consistently picks the wrong strategy due to your setup being unique.
+:::
+
 ## Quick reference
 
 | Item | Recommendation |

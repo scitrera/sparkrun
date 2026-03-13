@@ -23,9 +23,14 @@ Stop containers for a running inference workload across all hosts. When `--all` 
 ## Examples
 
 ```bash
+# Stop a specific recipe
 sparkrun stop qwen3-1.7b-vllm
 sparkrun stop nemotron3-nano-30b-nvfp4-vllm --tp 2
 sparkrun stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+
+# Stop all sparkrun containers on a cluster
+sparkrun stop --all --cluster mylab
+sparkrun stop --all --hosts 10.24.11.13,10.24.11.14
 ```
 
 :::caution

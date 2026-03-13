@@ -21,12 +21,14 @@ Jobs launch in the background (detached containers) and sparkrun follows logs au
 | `--solo` | Force single-node mode |
 | `--port` | Override serve port |
 | `--tp` / `--tensor-parallel` | Override tensor parallelism |
-| `--gpu-mem` | Override GPU memory utilization (0.0-1.0) |
-| `--served-model-name` | Override served model name |
+| `--pp` / `--pipeline-parallel` | Override pipeline parallelism |
+| `--gpu-mem` | Override GPU memory utilization (0.0–1.0) |
 | `--max-model-len` | Override maximum model context length |
+| `--served-model-name` | Override served model name |
 | `--image` | Override container image (not recommended) |
+| `-o` / `--option` | Override any recipe default: `-o key=value` (repeatable) |
 | `--cache-dir` | HuggingFace cache directory (default: `HF_HOME`, typically `~/.cache/huggingface`) |
-| `--option` / `-o` | Override any recipe default: `-o key=value` (repeatable) |
+| `--transfer-mode` | Resource transfer mode: `auto`, `local`, `push`, or `delegated` (overrides cluster setting) |
 | `--dry-run` / `-n` | Show what would be done without executing |
 | `--foreground` | Run in foreground (don't detach) |
 | `--no-follow` | Don't follow container logs after launch |
@@ -66,4 +68,8 @@ sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2 --dry-run
 
 :::note
 Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `--tp 2` means 2 hosts.
+:::
+
+:::tip[Transfer modes]
+The `--transfer-mode` flag controls how container images and models are distributed to cluster nodes. The default (`auto`) works for most setups. See [Resource Transfer Modes](/getting-started/networking/#resource-transfer-modes) for details on `local`, `push`, and `delegated` modes.
 :::

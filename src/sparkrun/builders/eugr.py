@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from scitrera_app_framework import Variables, get_working_path
 
 from sparkrun.builders.base import BuilderPlugin, _flatten_dict
-from sparkrun.utils.images import is_pullable_image_ref
+from sparkrun.utils.images import is_pullable_image_ref, parse_image_ref
 from sparkrun.utils.shell import quote, quote_list, args_list_to_shell_str
 
 if TYPE_CHECKING:
@@ -61,6 +61,23 @@ _BUILD_INDEX_VARIANTS = {
 LOCAL_EUGR_NIGHTLY = "sparkrun-eugr-vllm"
 LOCAL_EUGR_NIGHTLY_TF5 = "sparkrun-eugr-vllm-tf5"
 LOCAL_EUGR_NIGHTLY_B12X = "sparkrun-eugr-vllm-b12x"
+
+# The tags eugr's own ``build-and-copy.sh`` gives its output: the ``vllm-node``
+# family (``-b12x``, ``-mxfp4``, ``-tf5``, …). Distinct from LOCAL_EUGR_NIGHTLY*
+# above, which is what *sparkrun* tags a build it performs itself.
+#
+# Every recipe in the eugr registry names one of these, so this is *the* shape
+# that reaches the pull-first substitution in ``prepare_image`` — and reaching
+# it is not a misconfiguration. The tag exists only on a machine where the user
+# has run eugr's build script themselves; anywhere else there is nothing by that
+# name to run and our prebuilt nightly is the intended substitute. The
+# substitution warning is worded off this, because the generic "spell it as a
+# full reference" advice is a dead end for a name that is not a registry ref at
+# all, and reads as an error the operator must fix.
+#
+# Matched by prefix rather than enumerated: a new upstream variant must not
+# silently regress the message back to the you-typed-it-wrong wording.
+EUGR_LOCAL_BUILD_TAG_PREFIX = "vllm-node"
 
 # Fully-qualified ":latest" refs for the GHCR nightly variants.
 GHCR_EUGR_NIGHTLY_LATEST = GHCR_EUGR_NIGHTLY + ":latest"
@@ -125,6 +142,17 @@ def _wants_build(build_args: list[str]) -> bool:
 def _wants_b12x(build_args: list[str]) -> bool:
     """Return True when *build_args* select build-and-copy.sh's b12x preset."""
     return any(a in B12X_BUILD_ARGS for a in build_args)
+
+
+def _is_eugr_local_build_tag(image: str) -> bool:
+    """Return True when *image* is one of eugr's own build-and-copy.sh tags.
+
+    See :data:`EUGR_LOCAL_BUILD_TAG_PREFIX`. Compares the repository so a tagged
+    spelling (``vllm-node-b12x:latest``) is recognized too, and requires a ``-``
+    before any suffix so an unrelated ``vllm-nodepool`` is not claimed.
+    """
+    repository = parse_image_ref(image).repository.strip()
+    return repository == EUGR_LOCAL_BUILD_TAG_PREFIX or repository.startswith(EUGR_LOCAL_BUILD_TAG_PREFIX + "-")
 
 
 # Build cache file name (stored under cache_dir)
@@ -508,19 +536,41 @@ class EugrBuilder(BuilderPlugin):
             if _image_present(image) and not force_rebuild:
                 logger.info("image '%s' found; using it (add --use-wheels to build_args to rebuild from wheels)", image)
             else:
-                # WARNING, not INFO: this runs a different image than the recipe
-                # names, and the CLI's default level is PROGRESS (25) > INFO (20),
-                # so the INFO version was invisible to everyone who hit it.
-                logger.warning(
-                    "image '%s' is not a pullable registry reference and is not present%s; "
-                    "substituting our nightly '%s'. If '%s' is a registry image, spell it as a "
-                    "full reference (e.g. 'namespace/name:tag'); add --use-wheels to build_args "
-                    "to build it from wheels instead.",
-                    image,
-                    " on head '%s'" % head if delegated else " locally",
-                    nightly_latest,
-                    image,
-                )
+                # WARNING, not INFO, in both spellings: this runs a different
+                # image than the recipe names, and the CLI's default level is
+                # PROGRESS (25) > INFO (20), so the INFO version was invisible to
+                # everyone who hit it.
+                #
+                # Two wordings, because the same branch serves two situations that
+                # want opposite advice. An eugr-native recipe naming `vllm-node*`
+                # is on the expected path and needs no action; anything else is
+                # plausibly a registry ref that was spelled wrong, where naming the
+                # grammar is the useful thing to say. Offering the second reading
+                # to the first audience — which is every eugr recipe — sent people
+                # looking for a misconfiguration that was not there.
+                where = " on head '%s'" % head if delegated else " locally"
+                if _is_eugr_local_build_tag(image):
+                    logger.warning(
+                        "recipe names eugr's local build tag '%s', which is not present%s; "
+                        "running our prebuilt nightly '%s' instead. This is the expected path: "
+                        "'%s' exists only where eugr's build-and-copy.sh has been run by hand, "
+                        "so there is nothing else to launch.",
+                        image,
+                        where,
+                        nightly_latest,
+                        image,
+                    )
+                else:
+                    logger.warning(
+                        "image '%s' is not a pullable registry reference and is not present%s; "
+                        "substituting our nightly '%s'. If '%s' is a registry image, spell it as a "
+                        "full reference (e.g. 'namespace/name:tag'); add --use-wheels to build_args "
+                        "to build it from wheels instead.",
+                        image,
+                        where,
+                        nightly_latest,
+                        image,
+                    )
                 image = nightly_latest
                 if force_rebuild:
                     self._force_pull_image(image, head if delegated else None, ssh_kwargs if delegated else None, dry_run=dry_run)
@@ -1210,7 +1260,11 @@ class EugrBuilder(BuilderPlugin):
         from sparkrun.orchestration.primitives import run_script_on_host
 
         script = "docker image inspect %s >/dev/null 2>&1" % quote(image)
-        result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
+        # quiet: rc=1 is this probe's normal negative answer, not a fault, and the
+        # script silences both streams — so the default WARNING rendered every
+        # absent image as ``SSH script <- <host> FAILED rc=1: (no output)`` just
+        # above the message explaining what we were going to do about it.
+        result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30, quiet=True)
         return result.success
 
     @staticmethod

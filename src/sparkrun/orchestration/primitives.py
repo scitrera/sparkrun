@@ -775,16 +775,28 @@ def run_script_on_host(
     ssh_kwargs: dict | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> RemoteResult:
     """Run a script on a host — dispatches to local or remote execution.
 
     Uses :func:`should_run_locally` so that a local host with a
     different ``ssh_user`` is still reached via SSH.
+
+    ``quiet`` downgrades failure logging from WARNING to DEBUG, for a payload
+    whose non-zero exit is an *answer* rather than a fault — an existence
+    probe, say.  Without it such a probe reports its normal negative result as
+    ``FAILED rc=1``, and a probe that silences its own output (``>/dev/null
+    2>&1``) reports it as ``FAILED rc=1: (no output)``, which reads as a tool
+    malfunction rather than as a question that was answered "no".
+
+    It is forwarded to the SSH path only because the local path
+    (:func:`run_local_script`) does not log failures at all — do not "fix"
+    that asymmetry by dropping the parameter.
     """
     kw = ssh_kwargs or {}
     if should_run_locally(host, kw.get("ssh_user")):
         return run_local_script(script, dry_run=dry_run, timeout=timeout)
-    return run_remote_script(host, script, timeout=timeout, dry_run=dry_run, **kw)
+    return run_remote_script(host, script, timeout=timeout, dry_run=dry_run, quiet=quiet, **kw)
 
 
 def run_script_on_host_streaming(

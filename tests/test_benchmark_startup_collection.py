@@ -21,6 +21,7 @@ from sparkrun.core.launcher import LaunchResult, ServeReadiness
 from sparkrun.core.recipe import Recipe
 from sparkrun.core.timing import Timeline
 from sparkrun.orchestration.startup import run_probe
+from sparkrun.orchestration.executors.docker import DockerExecutor
 
 # Share the local SSE fixture with the probe's contract tests.
 from test_startup_observation import streaming_server as streaming_server
@@ -41,6 +42,7 @@ def bench_env(tmp_path, monkeypatch):
         }
     )
     runtime = get_runtime(recipe.runtime, sctx.variables)
+    runtime.executor = DockerExecutor()
     launch = LaunchResult(
         rc=0,
         cluster_id="test-job",

@@ -1,9 +1,13 @@
 # Startup readiness and timing
 
-By default, watched normal Docker launches for vLLM and SGLang use one
+By default, watched supported Docker launches for vLLM and SGLang use one
 streaming chat request as the final readiness signal. A listening port or a
 successful health response alone does not establish that a model can generate.
-Other runtime families and executors retain their existing endpoint checks.
+Runtimes and executors without compatible declarations retain endpoint checks.
+Selection uses runtime and executor capability declarations, not runtime-family
+names. Docker support currently requires Linux, a local Unix-socket daemon,
+and the serving container's host network; rootless daemons and Docker Desktop
+are excluded from this host-local observer.
 
 The readiness observer runs on the head host (rank 0), using host Python 3,
 Docker inspection, and the local inference endpoint. It records:
@@ -58,6 +62,7 @@ readiness:
   port_timeout_s: 1800
   health_timeout_s: 900
   inference: true
+  inference_style: auto
   inference_timeout_s: 120
   inference_prompt: "Reply with exactly: sparkrun-ready"
 ```
@@ -88,6 +93,53 @@ health readiness. For port/health timeouts, zero or negative means wait until
 ready, the container fails, or the caller cancels. Unknown recipe fields,
 non-boolean inference settings, empty prompts, and invalid timeouts are rejected
 when loading the recipe. Omit a field to inherit it; `null` is not an override.
+Unknown inference styles are also rejected in global configuration rather than
+silently falling back to `auto`.
+
+### Runtime styles and executor observation support
+
+`inference_style: auto` chooses the runtime's preferred supported style. An
+explicit selection can be made in global config or a recipe:
+
+```yaml
+readiness:
+  inference_style: openai-chat-stream-v1
+```
+
+Currently, `openai-chat-stream-v1` is the implemented inference style: discover
+the served model through `/v1/models`, POST `/v1/chat/completions` with streaming
+enabled, and accept the first non-empty content/reasoning delta. Future styles
+can have separate protocol handlers. Style identifies the protocol/check;
+`measurement` identifies the timing/acceptance profile, not the protocol.
+
+Runtime authors declare `readiness_styles` as a preference-ordered tuple and
+`readiness_health_path` as the HTTP readiness endpoint. The base declarations
+are empty/`None`; vLLM's shared mixin and SGLang opt in with
+`("openai-chat-stream-v1",)` and `/health`. A runtime subclass can explicitly
+opt out with an empty tuple. With inference enabled, explicitly selecting a
+style the runtime does not support fails before launch. `auto` on an opted-out
+runtime retains legacy endpoint checks. `inference: false` overrides the probe
+request, while supported endpoint-only TTR collection remains available.
+
+Executor authors implement `readiness_observer()` for their resolved
+configuration, returning a `ReadinessObserver` descriptor or `None`. The
+descriptor separates observation adapter, location, and optional start-time
+boundary from runtime protocol support. The initial implemented adapter is
+`docker-host-v1`, with location `rank0-host` and boundary
+`docker.State.StartedAt`. Docker declares it only for host networking, with
+additional target-side checks before observation. If that environment is
+unsupported, Sparkrun keeps the legacy endpoint wait without inventing startup
+metrics. A failed supported probe still fails readiness.
+
+Local and Kubernetes currently return no observer; no Docker commands are sent
+to them by readiness. Their future adapters can provide process/container start
+boundaries, or inference-only observation without startup timing. Those adapters
+and an inference-only timing schema are not implemented by this change. Never
+substitute request latency, Pod creation, or control-node launch time for the
+recorded serving-instance start boundary.
+
+The policy chain remains defaults → global config → recipe. Capability
+declarations constrain that policy; they are not another override layer.
 
 Watched launches, post-launch hooks, proxy registration, and fresh benchmark
 launches use the same effective policy. Benchmarks wait for startup readiness
@@ -142,6 +194,9 @@ timing:
     format: 1
     measurement: sparkrun-rank0-v1
     observer: rank0
+    executor: docker
+    observer_location: rank0-host
+    inference_style: openai-chat-stream-v1
     start_boundary: docker.State.StartedAt
     ttr_port_open_s: 12.25
     ttr_http_ready_s: 12.5
@@ -171,6 +226,11 @@ The startup check runs once before framework work. An already-observed launch
 observation without another startup inference. Framework warmup, coherence
 checks, and measured requests remain unchanged and separate. ColdSnap retains
 its `rank0-acceptance-v1` profile and full-response validation provenance.
+Older format-1 receipts are normalized using their fixed Docker/OpenAI profile
+contract, without mutating them or requiring a controller/plugin upgrade.
+ColdSnap records location `rank0-container`; Sparkrun's host probe records
+`rank0-host`. Both use the rank-0 host clock, but run in different contexts.
+Conflicting style, executor, location, or boundary declarations are rejected.
 
 With recipe `readiness.inference: false`, normal Docker launches export both
 TTRs and `ttft_status: not_applicable`, without a `ttft_s` field or a chat

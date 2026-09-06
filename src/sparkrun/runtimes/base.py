@@ -99,6 +99,12 @@ class RuntimePlugin(Plugin):
     runtime_name: str = ""
     default_image_prefix: str = ""
 
+    # Protocol capabilities, ordered by preference for inference_style: auto.
+    # Empty opts out; subclasses can also override an inherited declaration.
+    readiness_styles: tuple[str, ...] = ()
+    # The executor's observer may measure HTTP TTR even with inference disabled.
+    readiness_health_path: str | None = None
+
     # --- Hardware compatibility ---
     requires_capability: frozenset[str] = frozenset()
     """Capabilities or accelerator-model names every placed host must advertise.

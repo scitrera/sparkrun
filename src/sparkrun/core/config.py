@@ -322,6 +322,10 @@ class SparkrunConfig:
         return self._readiness_settings().inference
 
     @property
+    def readiness_inference_style(self) -> str:
+        return self._readiness_settings().inference_style
+
+    @property
     def readiness_inference_timeout_s(self) -> float:
         return self._readiness_settings().inference_timeout_s
 

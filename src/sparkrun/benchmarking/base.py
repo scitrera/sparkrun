@@ -352,7 +352,7 @@ def startup_timing_metadata(readiness: ServeReadiness | None, *, resumed: bool =
     from sparkrun.orchestration.startup import validate_observation
 
     try:
-        validate_observation(observation)
+        observation = validate_observation(observation, normalize=True)
     except (TypeError, ValueError):
         logger.warning("Omitting invalid benchmark startup observation")
         return {}
@@ -363,7 +363,10 @@ def startup_timing_metadata(readiness: ServeReadiness | None, *, resumed: bool =
         "format": 1,
         "measurement": observation["measurement"],
         "observer": "rank0",
-        "start_boundary": "docker.State.StartedAt",
+        "start_boundary": observation["start_boundary"],
+        "executor": observation["executor"],
+        "observer_location": observation["observer_location"],
+        "inference_style": observation["inference_style"],
         "ttft_status": "measured" if inference else "not_applicable",
         "inference_requested": inference,
         "inference_ready": observation["inference_ready"],

@@ -16,6 +16,15 @@ from sparkrun.core.launcher import wait_for_serve_ready
 from sparkrun.core.config import SparkrunConfig
 from sparkrun.orchestration import startup
 from sparkrun.scripts import startup_probe
+from sparkrun.core.readiness import OPENAI_CHAT_STREAM
+from sparkrun.orchestration.executors.docker import DockerExecutor
+
+
+@pytest.fixture(autouse=True)
+def isolated_probe_environment(monkeypatch):
+    # Unit tests stub Docker identity below. Subprocess/Docker contract tests
+    # execute the packaged source in a fresh interpreter and verify the host.
+    monkeypatch.setattr(startup_probe, "verify_host_observer", lambda: None)
 
 
 def observation():
@@ -40,8 +49,10 @@ def launch():
     return SimpleNamespace(
         runtime=SimpleNamespace(
             get_family=lambda: "vllm",
+            readiness_styles=(OPENAI_CHAT_STREAM,),
+            readiness_health_path="/health",
             get_head_container_name=lambda *a, **kw: "head",
-            executor=SimpleNamespace(executor_name="docker"),
+            executor=DockerExecutor(),
         ),
         cluster_id="job",
         host_list=["localhost"],
@@ -361,9 +372,9 @@ def test_inference_configuration_defaults_and_overrides(tmp_path):
 def test_unsupported_or_opted_out_launch_uses_legacy_endpoint_check(change):
     result = launch()
     if change == "other-family":
-        result.runtime.get_family = lambda: "llama-cpp"
+        result.runtime.readiness_styles = ()
     elif change == "other-executor":
-        result.runtime.executor.executor_name = "k8s"
+        result.runtime.executor = SimpleNamespace(executor_name="k8s")
     with (
         patch("sparkrun.core.launcher.wait_for_endpoint_ready", return_value="legacy") as legacy,
         patch.object(startup, "run_probe") as send,

@@ -9,11 +9,12 @@ import signal
 import subprocess
 import time
 from importlib.resources import files
+from sparkrun.core.readiness import DOCKER_HOST_OBSERVER, OPENAI_CHAT_STREAM, ObservationUnavailable
 
 logger = logging.getLogger(__name__)
 
 
-def validate_observation(value, *, require_inference=False):
+def validate_observation(value, *, require_inference=False, expected_style=None, normalize=False):
     if not isinstance(value, dict) or value.get("format") != 1 or value.get("observer") != "rank0":
         raise ValueError("invalid startup observation")
     if value.get("measurement") not in {"rank0-acceptance-v1", "sparkrun-rank0-v1"}:
@@ -47,7 +48,22 @@ def validate_observation(value, *, require_inference=False):
             raise ValueError("invalid startup timestamps")
         if value.get("first_token_field") not in ("content", "reasoning", "reasoning_content"):
             raise ValueError("startup observation has no text token")
-    return value
+    # Format-1 profiles have a fixed Docker/OpenAI contract. Normalize older
+    # ColdSnap receipts without requiring a plugin/controller upgrade. These
+    # are profile-defined values, not guesses from the current launch config.
+    normalized = dict(value)
+    for key, expected in (
+        ("executor", "docker"),
+        ("observer_location", "rank0-container" if value["measurement"] == "rank0-acceptance-v1" else DOCKER_HOST_OBSERVER.location),
+        ("start_boundary", DOCKER_HOST_OBSERVER.start_boundary),
+        ("inference_style", None if value.get("inference_requested") is False else OPENAI_CHAT_STREAM),
+    ):
+        if key in normalized and normalized[key] != expected:
+            raise ValueError("startup observation has incompatible " + key)
+        normalized[key] = expected
+    if expected_style is not None and normalized["inference_style"] != expected_style:
+        raise ValueError("startup observation does not satisfy the requested inference style")
+    return normalized if normalize else value
 
 
 def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
@@ -57,7 +73,11 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
     if cancel is not None and cancel.is_set():
         raise InterruptedError("cancelled")
     source = files("sparkrun.scripts").joinpath("startup_probe.py").read_text()
-    source += "\nfrom math import inf\nprint(json.dumps(observe(" + repr(config) + ")))\n"
+    source += (
+        "\nfrom math import inf\ntry:\n    print(json.dumps(observe("
+        + repr(config)
+        + ")))\nexcept ObservationUnavailable as error:\n    print(json.dumps({'unsupported_observer': str(error)}))\n"
+    )
     script = "exec python3 - <<'SPARKRUN_STARTUP_PY'\n" + source + "\nSPARKRUN_STARTUP_PY\n"
     kwargs = {key: value for key, value in (ssh_kwargs or {}).items() if key in {"ssh_user", "ssh_key", "ssh_options"}}
     command = ["bash", "-s"] if should_run_locally(host, kwargs.get("ssh_user")) else [*build_ssh_cmd(host, **kwargs), "bash", "-s"]
@@ -84,7 +104,15 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
             raise RuntimeError("rank-0 readiness probe failed: " + detail)
         if len(stdout) > 65536:
             raise RuntimeError("startup observation exceeds its size limit")
-        return validate_observation(json.loads(stdout), require_inference=config.get("inference", True))
+        value = json.loads(stdout)
+        if isinstance(value, dict) and isinstance(value.get("unsupported_observer"), str):
+            raise ObservationUnavailable(value["unsupported_observer"])
+        return validate_observation(
+            value,
+            normalize=True,
+            require_inference=config.get("inference", True),
+            expected_style=config.get("inference_style") if config.get("inference", True) else None,
+        )
     finally:
         if process.poll() is None:
             try:
@@ -101,7 +129,7 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
                 process.communicate()
 
 
-def observe_launch(result, *, settings, ssh_kwargs=None, cancel=None, timeline=None, parent=None):
+def observe_launch(result, *, settings, style=None, observer=None, ssh_kwargs=None, cancel=None, timeline=None, parent=None):
     """Use a strategy receipt once, otherwise measure on the Docker head host."""
     from sparkrun.core.launcher import ServeReadiness
     from sparkrun.orchestration.primitives import detect_host_ip
@@ -115,8 +143,12 @@ def observe_launch(result, *, settings, ssh_kwargs=None, cancel=None, timeline=N
     observation = getattr(result, "startup_observation", None)
     try:
         if observation:
-            observation = validate_observation(dict(observation), require_inference=settings.inference)
+            observation = validate_observation(
+                dict(observation), require_inference=settings.inference, expected_style=style, normalize=True
+            )
         else:
+            if observer != DOCKER_HOST_OBSERVER:
+                raise ObservationUnavailable("executor observer adapter is not implemented")
             if not is_local_host(host):
                 address = detect_host_ip(host, ssh_kwargs=ssh_kwargs) or host
             if cancel is not None and cancel.is_set():
@@ -133,6 +165,8 @@ def observe_launch(result, *, settings, ssh_kwargs=None, cancel=None, timeline=N
                     "port_timeout_s": settings.port_timeout_s,
                     "health_timeout_s": settings.health_timeout_s,
                     "inference": settings.inference,
+                    "inference_style": style,
+                    "health_path": result.runtime.readiness_health_path,
                     "inference_timeout_s": settings.inference_timeout_s,
                     "prompt": settings.inference_prompt,
                     "api_key": api_key,
@@ -144,6 +178,8 @@ def observe_launch(result, *, settings, ssh_kwargs=None, cancel=None, timeline=N
             raise InterruptedError("cancelled")
     except InterruptedError:
         return ServeReadiness(False, host, address, result.serve_port, container, reason="cancelled")
+    except ObservationUnavailable:
+        raise
     except (OSError, ValueError, RuntimeError) as error:
         logger.warning("Inference readiness observation failed: %s", error)
         return ServeReadiness(False, host, address, result.serve_port, container, reason="inference")

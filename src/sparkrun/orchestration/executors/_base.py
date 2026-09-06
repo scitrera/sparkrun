@@ -19,6 +19,7 @@ from typing import ClassVar, Mapping, TYPE_CHECKING
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extensions
 
 from sparkrun.orchestration.teardown import TEARDOWN_REMOVED_MARKER
+from sparkrun.core.readiness import ReadinessObserver
 from sparkrun.scripts import read_script
 from sparkrun.utils import merge_env
 from sparkrun.utils.shell import b64_encode_cmd, quote
@@ -322,6 +323,14 @@ class Executor(Plugin):
     # it would launch with, so status sweeps exactly the executors that could
     # have placed workloads on that cluster.
     status_scope: ClassVar[str] = "host"
+
+    def readiness_observer(self) -> ReadinessObserver | None:
+        """Declare observation support for this resolved executor configuration.
+
+        No observer preserves legacy endpoint checks. Runtime protocol support
+        alone must never cause Docker commands on a local/Kubernetes executor.
+        """
+        return None
 
     # --- Optional channel-aware gating ---
     # When set to a registered feature-flag name (e.g. ``"executor.k8s"``),

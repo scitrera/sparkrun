@@ -3,10 +3,38 @@
 import datetime
 import hashlib
 import json
+import os
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+
+OPENAI_CHAT_STREAM = "openai-chat-stream-v1"
+
+
+class ObservationUnavailable(RuntimeError):
+    """Unsupported target environment; preserve the legacy endpoint wait."""
+
+
+def verify_host_observer():
+    """Never combine a remote/VM daemon clock with this host's /proc or clock."""
+    if sys.platform != "linux":
+        raise ObservationUnavailable("Docker host observation requires Linux")
+    endpoint = os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None
+    if not endpoint:
+        endpoint = json.loads(
+            subprocess.check_output(["docker", "context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], timeout=10)
+        )
+    if not isinstance(endpoint, str) or not endpoint.startswith("unix://"):
+        raise ObservationUnavailable("Docker host observation requires a local Unix-socket daemon")
+    info = json.loads(subprocess.check_output(["docker", "info", "--format", "{{json .}}"], timeout=10))
+    if (
+        info.get("OSType") != "linux"
+        or "docker desktop" in info.get("OperatingSystem", "").lower()
+        or any("rootless" in option for option in info.get("SecurityOptions", []))
+    ):
+        raise ObservationUnavailable("Docker host observation requires a native, non-rootless Linux daemon")
 
 
 def unix_ns(timestamp):
@@ -18,6 +46,8 @@ def unix_ns(timestamp):
 def inspect_container(name):
     data = subprocess.check_output(["docker", "inspect", "--format", "{{json .}}", name], timeout=10)
     info = json.loads(data)
+    if info.get("HostConfig", {}).get("NetworkMode") != "host":
+        raise ObservationUnavailable("Docker host observation requires the serving container's host network")
     if not info["State"]["Running"]:
         raise RuntimeError("head container is not running")
     return info["Id"], unix_ns(info["State"]["StartedAt"])
@@ -37,12 +67,20 @@ def port_listening(port):
 
 
 def observe(config):
+    style = config.get("inference_style", OPENAI_CHAT_STREAM)
+    if config.get("inference", True) and style not in INFERENCE_PROBES:
+        raise ValueError("unsupported inference readiness style")
+    verify_host_observer()
     port_wait_start = time.monotonic()
     container_id, started = inspect_container(config["container"])
     result = {
         "format": 1,
         "measurement": "sparkrun-rank0-v1",
         "observer": "rank0",
+        "executor": "docker",
+        "observer_location": "rank0-host",
+        "start_boundary": "docker.State.StartedAt",
+        "inference_style": style if config.get("inference", True) else None,
         "container_id": container_id,
         "container_started_unix_ns": started,
         "observer_started_unix_ns": time.time_ns(),
@@ -50,7 +88,7 @@ def observe(config):
         "inference_requested": config.get("inference", True),
         "endpoint_ready": False,
         "response_validated": False,
-        "http_ready_path": "/health",
+        "http_ready_path": config.get("health_path", "/health"),
     }
     deadline = time.monotonic() + config["port_timeout_s"]
     while not port_listening(config["port"]):
@@ -69,7 +107,7 @@ def observe(config):
     deadline = time.monotonic() + config["health_timeout_s"]
     while True:
         try:
-            with http.open(base + "/health", timeout=1) as response:
+            with http.open(base + result["http_ready_path"], timeout=1) as response:
                 if response.status == 200:
                     result["http_ready_unix_ns"] = time.time_ns()
                     result["health_wait_s"] = time.monotonic() - health_wait_start
@@ -85,6 +123,11 @@ def observe(config):
         if inspect_container(config["container"]) != (container_id, started):
             raise RuntimeError("head container changed during readiness observation")
         return result
+    return INFERENCE_PROBES[style](config, http, base, result)
+
+
+def observe_openai_chat_stream(config, http, base, result):
+    """OpenAI chat/SSE v1: first non-empty content or reasoning delta."""
     with http.open(base + "/v1/models", timeout=10) as response:
         models = json.load(response)["data"]
     if not models or not isinstance(models[0].get("id"), str):
@@ -108,7 +151,7 @@ def observe(config):
     finished = False
 
     def accepted():
-        if inspect_container(config["container"]) != (container_id, started):
+        if inspect_container(config["container"]) != (result["container_id"], result["container_started_unix_ns"]):
             raise RuntimeError("head container changed during readiness observation")
         wall_request = (result["first_token_unix_ns"] - result["request_started_unix_ns"]) / 1e9
         if abs(wall_request - result["request_ttft_seconds"]) > 0.25:
@@ -177,3 +220,6 @@ def observe(config):
                             )
                         if "expected" not in config:
                             return accepted()
+
+
+INFERENCE_PROBES = {OPENAI_CHAT_STREAM: observe_openai_chat_stream}

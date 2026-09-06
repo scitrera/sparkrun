@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 from sparkrun.core.readiness import DEFAULT_PORT_READY_TIMEOUT_S, DEFAULT_HEALTH_READY_TIMEOUT_S, resolve_readiness_settings
+from sparkrun.core.readiness import ReadinessObserver, ObservationUnavailable, resolve_inference_style, validate_readiness_policy
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -936,6 +937,7 @@ def launch_inference(
         if progress is None:
             progress = sctx.progress
     p = progress  # short alias
+    validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
 
     # Resolve the span collector and attach it to the progress tracker, whose
     # phase/step brackets are already exactly where the timings belong.
@@ -2006,21 +2008,32 @@ def wait_for_serve_ready(
     if health_timeout_s is not None:
         settings = replace(settings, health_timeout_s=health_timeout_s)
     observation = getattr(result, "startup_observation", None)
-    family = getattr(result.runtime, "get_family", lambda: "")()
+    style = resolve_inference_style(settings, result.runtime)
     executor = getattr(result.runtime, "executor", None)
-    docker = executor is None or getattr(executor, "executor_name", "") == "docker"
+    get_observer = getattr(executor, "readiness_observer", None)
+    observer = get_observer() if callable(get_observer) else None
+    if not isinstance(observer, ReadinessObserver):
+        observer = None
+    health_path = getattr(result.runtime, "readiness_health_path", None)
     accepted = (getattr(result, "runtime_info", {}) or {}).get("inference_readiness") == "accepted"
-    if not dry_run and (observation or (not accepted and family in {"vllm", "sglang"} and docker)):
+    if not dry_run and (
+        observation or (not accepted and observer is not None and isinstance(health_path, str) and (style or not settings.inference))
+    ):
         from sparkrun.orchestration.startup import observe_launch
 
-        return observe_launch(
-            result,
-            ssh_kwargs=ssh_kwargs,
-            cancel=cancel,
-            timeline=timeline if timeline is not None else result.timeline,
-            parent=parent,
-            settings=settings,
-        )
+        try:
+            return observe_launch(
+                result,
+                ssh_kwargs=ssh_kwargs,
+                cancel=cancel,
+                timeline=timeline if timeline is not None else result.timeline,
+                parent=parent,
+                settings=settings,
+                style=style,
+                observer=observer,
+            )
+        except ObservationUnavailable as error:
+            logger.info("Startup observation unavailable: %s; using endpoint readiness", error)
     return wait_for_endpoint_ready(
         runtime=result.runtime,
         cluster_id=result.cluster_id,

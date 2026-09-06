@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from sparkrun.core.readiness import OPENAI_CHAT_STREAM
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config, resolve_api_key
 
 if TYPE_CHECKING:
@@ -16,6 +17,9 @@ class VllmMixin:
     Provides tuning config auto-mounting and version detection
     that are identical between vllm-ray and vllm-distributed.
     """
+
+    readiness_styles = (OPENAI_CHAT_STREAM,)
+    readiness_health_path = "/health"
 
     def get_common_env(self):
         return default_env_hf_offline()

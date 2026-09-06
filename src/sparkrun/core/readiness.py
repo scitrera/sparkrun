@@ -14,6 +14,29 @@ from scitrera_app_framework.api import EnvPlacement, Variables
 # the probes also check container liveness and honor cancellation.
 DEFAULT_PORT_READY_TIMEOUT_S = 1800.0
 DEFAULT_HEALTH_READY_TIMEOUT_S = 900.0
+OPENAI_CHAT_STREAM = "openai-chat-stream-v1"
+INFERENCE_STYLES = frozenset({OPENAI_CHAT_STREAM})
+
+
+@dataclass(frozen=True)
+class ReadinessObserver:
+    """Executor-owned observation transport, separate from inference protocol.
+
+    A start boundary describes the observer's timing capability, not policy.
+    Future observers may omit it when only inference readiness is available.
+    Only the Linux Docker host observer is implemented today.
+    """
+
+    adapter: str
+    location: str
+    start_boundary: str | None = None
+
+
+DOCKER_HOST_OBSERVER = ReadinessObserver("docker-host-v1", "rank0-host", "docker.State.StartedAt")
+
+
+class ObservationUnavailable(RuntimeError):
+    """The selected observation transport is unsupported on this target."""
 
 
 @dataclass(frozen=True)
@@ -21,11 +44,16 @@ class ReadinessSettings:
     port_timeout_s: float = DEFAULT_PORT_READY_TIMEOUT_S
     health_timeout_s: float = DEFAULT_HEALTH_READY_TIMEOUT_S
     inference: bool = True
+    inference_style: str = "auto"
     inference_timeout_s: float = 120.0
     inference_prompt: str = "Reply with exactly: sparkrun-ready"
 
 
 def _normalize(key: str, value: Any) -> Any:
+    if key == "inference_style":
+        if not isinstance(value, str) or value not in INFERENCE_STYLES | {"auto"}:
+            raise ValueError("readiness.inference_style must be auto or a supported style: %s" % ", ".join(sorted(INFERENCE_STYLES)))
+        return value
     if key == "inference":
         if type(value) is not bool:
             raise ValueError("readiness.inference must be a boolean")
@@ -64,7 +92,8 @@ def resolve_readiness_settings(*, config=None, recipe=None) -> ReadinessSettings
     """Resolve one immutable policy without mutating the global or recipe layer.
 
     Existing global settings are permissive: invalid values fall back to the
-    built-in default for that field. Explicit recipe errors fail at load time.
+    built-in default for that field, except explicit inference styles. Explicit
+    recipe errors fail at load time.
     Environment variables and runtime flag defaults do not enter this chain.
     """
     defaults = asdict(ReadinessSettings())
@@ -73,6 +102,11 @@ def resolve_readiness_settings(*, config=None, recipe=None) -> ReadinessSettings
     global_layer = {}
     if isinstance(raw_global, Mapping):
         for key, value in raw_global.items():
+            if key == "inference_style":
+                # Validate the effective style, not a lower-priority value
+                # that the recipe may replace (including with auto).
+                global_layer[key] = value
+                continue
             try:
                 global_layer[key] = _normalize(key, value)
             except ValueError:
@@ -80,4 +114,31 @@ def resolve_readiness_settings(*, config=None, recipe=None) -> ReadinessSettings
     raw_recipe = getattr(recipe, "readiness", {})
     recipe_layer = {key: _normalize(key, value) for key, value in parse_recipe_readiness(raw_recipe).items()}
     chain = Variables(sources=(recipe_layer, global_layer, defaults), env_placement=EnvPlacement.IGNORED)
-    return ReadinessSettings(**{key: chain.get(key) for key in defaults})
+    resolved = {key: chain.get(key) for key in defaults}
+    resolved["inference_style"] = _normalize("inference_style", resolved["inference_style"])
+    return ReadinessSettings(**resolved)
+
+
+def resolve_inference_style(settings: ReadinessSettings, runtime) -> str | None:
+    """Constrain effective policy to runtime capabilities; no fourth config layer.
+
+    Runtime styles are preference ordered. No declaration opts out. An explicit
+    incompatible style is an error, while auto preserves legacy endpoint checks.
+    """
+    if not settings.inference:
+        return None
+    styles = getattr(runtime, "readiness_styles", ())
+    styles = tuple(s for s in styles if isinstance(s, str) and s in INFERENCE_STYLES) if isinstance(styles, (tuple, list)) else ()
+    if settings.inference_style == "auto":
+        return styles[0] if styles else None
+    if settings.inference_style not in styles:
+        raise ValueError(
+            "Runtime %r does not support readiness.inference_style %r"
+            % (getattr(runtime, "runtime_name", "unknown"), settings.inference_style)
+        )
+    return settings.inference_style
+
+
+def validate_readiness_policy(*, config=None, recipe=None, runtime=None) -> None:
+    """Validate before launch side effects, including supplied/precomputed plans."""
+    resolve_inference_style(resolve_readiness_settings(config=config, recipe=recipe), runtime)

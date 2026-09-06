@@ -87,6 +87,8 @@ class ActivationResult:
 
     rc: int
     runtime_info: Mapping[str, str] = field(default_factory=dict)
+    startup_observation: Mapping[str, Any] = field(default_factory=dict)
+    """Optional same-host startup timestamps, including a verified first text token."""
 
 
 class RecipeExecutionStrategy(Protocol):

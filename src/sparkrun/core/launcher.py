@@ -74,6 +74,7 @@ class LaunchResult:
     follows is recorded by :func:`wait_for_serve_ready` onto the same
     timeline, so a consumer reading it after readiness sees the whole
     launch-to-serving story."""
+    startup_observation: dict[str, Any] = field(default_factory=dict)
 
 
 def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
@@ -1677,6 +1678,7 @@ def launch_inference(
             ib_iface_map=ib_iface_map,
             serve_command=serve_command,
             runtime_info=runtime_info,
+            startup_observation=dict(getattr(activation_result, "startup_observation", {}) or {}),
             builder=builder,
             backends=backends,
             timeline=timeline,
@@ -1965,7 +1967,8 @@ class ServeReadiness:
 
     ``reason`` is empty when ready, else ``"port"`` (never started
     listening / container exited), ``"health"`` (listening but never
-    returned HTTP 200), or ``"cancelled"`` (the caller abandoned the wait).
+    returned HTTP 200), ``"inference"`` (streaming readiness failed), or
+    ``"cancelled"`` (the caller abandoned the wait).
 
     ``"cancelled"`` is deliberately not folded into the other two: they
     say the workload is broken, this one says only that we stopped
@@ -1985,9 +1988,11 @@ class ServeReadiness:
     Covers engine init / distributed rendezvous — an inference server
     refuses connections outright until then."""
     health_wait_s: float = 0.0
-    """Seconds from the port opening until ``/v1/models`` returned 200.
+    """Seconds waiting for HTTP readiness after observing the listening port.
 
-    Covers weight load and graph capture."""
+    The legacy check uses ``/v1/models``; streaming readiness uses ``/health``.
+    Docker-start metrics live separately in ``startup_observation``."""
+    startup_observation: dict[str, Any] = field(default_factory=dict)
 
     @property
     def health_url(self) -> str:
@@ -1995,7 +2000,7 @@ class ServeReadiness:
 
     @property
     def total_wait_s(self) -> float:
-        """Containers-running → serving.  The time-to-first-inference figure."""
+        """Time spent waiting for port/health; not a TTFT measurement."""
         return self.port_wait_s + self.health_wait_s
 
 
@@ -2013,6 +2018,24 @@ def wait_for_serve_ready(
     parent: int | None = None,
 ) -> ServeReadiness:
     """Adapter over :func:`wait_for_endpoint_ready` for a :class:`LaunchResult`."""
+    observation = getattr(result, "startup_observation", None)
+    enabled = getattr(getattr(result, "config", None), "readiness_inference_enabled", False) is True
+    family = getattr(result.runtime, "get_family", lambda: "")()
+    executor = getattr(result.runtime, "executor", None)
+    docker = executor is None or getattr(executor, "executor_name", "") == "docker"
+    accepted = (getattr(result, "runtime_info", {}) or {}).get("inference_readiness") == "accepted"
+    if not dry_run and (observation or (enabled and not accepted and family in {"vllm", "sglang"} and docker)):
+        from sparkrun.orchestration.startup import observe_launch
+
+        return observe_launch(
+            result,
+            ssh_kwargs=ssh_kwargs,
+            cancel=cancel,
+            timeline=timeline if timeline is not None else result.timeline,
+            parent=parent,
+            port_timeout_s=port_timeout_s,
+            health_timeout_s=health_timeout_s,
+        )
     return wait_for_endpoint_ready(
         runtime=result.runtime,
         cluster_id=result.cluster_id,
@@ -2384,6 +2407,8 @@ def post_launch_lifecycle(
     if not readiness.ready:
         if readiness.reason == "port":
             click.echo("Error: Server port %d never became ready" % effective_port, err=True)
+        elif readiness.reason == "inference":
+            click.echo("Error: Server did not pass streaming inference readiness", err=True)
         else:
             click.echo("Error: Server health check never passed at %s" % readiness.health_url, err=True)
         sys.exit(1)

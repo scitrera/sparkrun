@@ -321,6 +321,24 @@ class SparkrunConfig:
 
         return self._readiness_timeout("health_timeout_s", DEFAULT_HEALTH_READY_TIMEOUT_S)
 
+    @property
+    def readiness_inference_enabled(self) -> bool:
+        section = self._data.get("readiness", {})
+        return isinstance(section, dict) and section.get("inference", True) is True
+
+    @property
+    def readiness_inference_timeout_s(self) -> float:
+        import math
+
+        value = self._readiness_timeout("inference_timeout_s", 120.0)
+        return value if math.isfinite(value) else 120.0
+
+    @property
+    def readiness_inference_prompt(self) -> str:
+        section = self._data.get("readiness", {})
+        value = section.get("inference_prompt") if isinstance(section, dict) else None
+        return value if isinstance(value, str) and value.strip() else "Reply with exactly: sparkrun-ready"
+
     def _readiness_timeout(self, key: str, default: float) -> float:
         import math
 

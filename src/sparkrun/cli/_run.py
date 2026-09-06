@@ -105,6 +105,28 @@ def _echo_endpoint_ready(readiness) -> None:
     """
     from sparkrun.utils.text import format_duration
 
+    observation = getattr(readiness, "startup_observation", None)
+    if observation:
+        start = observation["container_started_unix_ns"]
+
+        def duration(key):
+            return "%.3fs" % ((observation[key] - start) / 1e9) if key in observation else "unavailable"
+
+        click.secho(
+            "\n[sparkrun] Inference ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
+            % (
+                readiness.head_ip,
+                readiness.port,
+                duration("port_open_unix_ns"),
+                duration("http_ready_unix_ns"),
+                duration("first_token_unix_ns"),
+                observation["measurement"],
+            ),
+            fg="green",
+            err=True,
+        )
+        return
+
     click.secho(
         "\n[sparkrun] Endpoint ready at http://%s:%d/v1 after %s (engine init %s, model load %s)\n"
         % (
@@ -135,6 +157,8 @@ def _report_readiness_outcome(readiness) -> None:
         return
     if readiness.reason == "port":
         detail = "the head container stopped or port %d never opened" % readiness.port
+    elif readiness.reason == "inference":
+        detail = "the startup probe did not verify a first non-empty inference token"
     else:
         detail = "%s never returned HTTP 200" % readiness.health_url
     click.secho(

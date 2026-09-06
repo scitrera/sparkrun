@@ -49,6 +49,11 @@ sparkrun status
 
 Ctrl+C detaches from logs — it never kills your inference job. Your model keeps serving.
 
+Development builds also report Docker-start TTR and TTFT using a rank-local
+streaming readiness check for Docker vLLM/SGLang launches. See
+[startup readiness](docs/STARTUP_READINESS.md) for configuration, timing
+boundaries, and execution-strategy integration.
+
 See the [full CLI reference](https://sparkrun.dev/cli/overview/) for all commands and options.
 
 ## Updating
@@ -107,4 +112,3 @@ sparkrun sends basic anonymous usage telemetry to `https://telemetry.sparkrun.de
 The data allows us to make informed decisions about new features for sparkrun or the greater DGX Spark ecosystem. 
 
 Telemetry very specifically does not include personally identifiable information or information that may reveal trade secrets. Telemetry does not include hostnames, usernames, local file paths, tokens, secrets, logs, private HF or local models, or full command arguments. Disable it persistently with `sparkrun setup telemetry --disable`, re-enable with `sparkrun setup telemetry --enable`, or opt out for one process with `SPARKRUN_NO_TELEMETRY=1`.
-

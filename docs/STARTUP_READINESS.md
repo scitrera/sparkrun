@@ -89,9 +89,9 @@ ready, the container fails, or the caller cancels. Unknown recipe fields,
 non-boolean inference settings, empty prompts, and invalid timeouts are rejected
 when loading the recipe. Omit a field to inherit it; `null` is not an override.
 
-Watched launches, post-launch hooks, and proxy registration use the same
-effective policy. Benchmark endpoint waits use its port/health budgets while
-leaving inference to the benchmark itself. The probe needs Python 3 and Docker
+Watched launches, post-launch hooks, proxy registration, and fresh benchmark
+launches use the same effective policy. Benchmarks wait for startup readiness
+before running their framework's requests. The probe needs Python 3 and Docker
 access on the head host; it does not install software there.
 
 Default log-following launches and post-launch hooks use this readiness path.
@@ -124,6 +124,67 @@ Recipe readiness settings control Sparkrun's probes, not a strategy's own
 acceptance contract. Disabling the Sparkrun inference probe does not disable
 ColdSnap's mandatory acceptance or discard an already-measured TTFT; the host
 continues to reuse that successful observation without another inference.
+
+## Benchmark metadata
+
+Fresh benchmark launches export the rank-local observation under
+`sparkrun_benchmark.timing.startup` in benchmark YAML, and `timing.startup` in
+Arena submission metadata and the public API result's `metadata`. The same
+projection supplies all three. This is an optional, additive block in the
+version-1 YAML format; framework result rows and their request-latency/TTFT
+fields are unchanged.
+
+For example, this **illustrative schema sample is not a qualification result**:
+
+```yaml
+timing:
+  startup:
+    format: 1
+    measurement: sparkrun-rank0-v1
+    observer: rank0
+    start_boundary: docker.State.StartedAt
+    ttr_port_open_s: 12.25
+    ttr_http_ready_s: 12.5
+    ttft_s: 13.0
+    ttft_status: measured
+    inference_requested: true
+    inference_ready: true
+    response_validated: false
+    first_token_field: content
+    http_ready_path: /health
+    observer_start_delay_s: 0.125
+    prompt_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    max_tokens: 64
+    temperature: 0
+    request_ttft_s: 0.5
+```
+
+All `_s` fields are seconds. The three startup metrics are measured from Docker
+start; optional `request_ttft_s` measures only the readiness request, not startup
+or a framework request. Optional `observer_start_delay_s` exposes how late the
+observer began after container start. Prompt hash and generation settings are
+included when supplied by the observer; raw prompt/response text, credentials,
+container identity, and host addresses are not included in this block.
+
+The startup check runs once before framework work. An already-observed launch
+(including ColdSnap acceptance or a post-launch hook's readiness) reuses its
+observation without another startup inference. Framework warmup, coherence
+checks, and measured requests remain unchanged and separate. ColdSnap retains
+its `rank0-acceptance-v1` profile and full-response validation provenance.
+
+With recipe `readiness.inference: false`, normal Docker launches export both
+TTRs and `ttft_status: not_applicable`, without a `ttft_s` field or a chat
+request. Missing timestamps are omitted, not filled with zero. Unsupported or
+legacy paths without a startup observation omit the block entirely.
+`--skip-run` also omits it because the benchmark did not observe that launch.
+Resumed results (including partially reused runs) omit startup metrics rather
+than attributing a current or stale launch to reused measurements. Resumed
+benchmarks retain endpoint-only waits and do not add a startup inference probe.
+
+Existing Arena `timing.serve_ready` fields remain endpoint **wait durations**,
+not Docker-start TTR. Existing benchmark JSON/CSV framework outputs are unchanged;
+use YAML or API metadata for startup measurements. The benchmark log labels
+the Docker-start TTR/TTFT separately from endpoint waits.
 
 ## Comparison and qualification
 

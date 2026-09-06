@@ -307,9 +307,7 @@ class SparkrunConfig:
         this stage absorbs nearly the whole startup.  ``0`` or negative
         means "no budget", i.e. poll until cancelled.
         """
-        from sparkrun.core.launcher import DEFAULT_PORT_READY_TIMEOUT_S
-
-        return self._readiness_timeout("port_timeout_s", DEFAULT_PORT_READY_TIMEOUT_S)
+        return self._readiness_settings().port_timeout_s
 
     @property
     def readiness_health_timeout_s(self) -> float:
@@ -317,40 +315,24 @@ class SparkrunConfig:
 
         Set via ``readiness.health_timeout_s`` in ``config.yaml``.
         """
-        from sparkrun.core.launcher import DEFAULT_HEALTH_READY_TIMEOUT_S
-
-        return self._readiness_timeout("health_timeout_s", DEFAULT_HEALTH_READY_TIMEOUT_S)
+        return self._readiness_settings().health_timeout_s
 
     @property
     def readiness_inference_enabled(self) -> bool:
-        section = self._data.get("readiness", {})
-        return isinstance(section, dict) and section.get("inference", True) is True
+        return self._readiness_settings().inference
 
     @property
     def readiness_inference_timeout_s(self) -> float:
-        import math
-
-        value = self._readiness_timeout("inference_timeout_s", 120.0)
-        return value if math.isfinite(value) else 120.0
+        return self._readiness_settings().inference_timeout_s
 
     @property
     def readiness_inference_prompt(self) -> str:
-        section = self._data.get("readiness", {})
-        value = section.get("inference_prompt") if isinstance(section, dict) else None
-        return value if isinstance(value, str) and value.strip() else "Reply with exactly: sparkrun-ready"
+        return self._readiness_settings().inference_prompt
 
-    def _readiness_timeout(self, key: str, default: float) -> float:
-        import math
+    def _readiness_settings(self):
+        from sparkrun.core.readiness import resolve_readiness_settings
 
-        section = self._data.get("readiness", {})
-        raw = section.get(key) if isinstance(section, dict) else None
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            return default
-        # A budget can only ever expire early — liveness checks are what
-        # detect a genuine failure — so "unbounded" is a legitimate ask.
-        return val if val > 0 else math.inf
+        return resolve_readiness_settings(config=self)
 
     @property
     def hub_timeout_s(self) -> float:

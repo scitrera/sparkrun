@@ -276,6 +276,7 @@ def _execute_benchmark(
     from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
     from sparkrun.core.launcher import wait_for_endpoint_ready
+    from sparkrun.core.readiness import resolve_readiness_settings
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
@@ -964,13 +965,10 @@ def _execute_benchmark(
         if not dry_run and not skip_run:
             logger.log(_PROGRESS_LEVEL, "Waiting for inference server on %s:%d...", head_host, serve_port)
             logger.log(_PROGRESS_LEVEL, "Note that this could take ~5 minutes!")
-            # Shared with ``sparkrun run`` / ``proxy load`` rather than
-            # reimplemented: the two-stage wait is what produces the
-            # container-start → serving figure, and a second copy of it with
-            # its own retry budgets would make that number incomparable
-            # between `run` and `benchmark`.  The budgets stay this path's
-            # own (a benchmark is unattended, so it can afford to wait past
-            # the interactive default before calling a launch dead).
+            # Benchmarking owns its inference requests. Reuse the effective
+            # endpoint budgets without adding another warmup request; this
+            # endpoint wait is not itself a Docker-start TTFT measurement.
+            readiness_settings = resolve_readiness_settings(config=config, recipe=recipe)
             readiness = wait_for_endpoint_ready(
                 runtime=runtime,
                 cluster_id=cluster_id,
@@ -979,9 +977,9 @@ def _execute_benchmark(
                 port=serve_port,
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
-                port_timeout_s=3600.0,
+                port_timeout_s=readiness_settings.port_timeout_s,
                 port_retry_interval=5,
-                health_timeout_s=1800.0,
+                health_timeout_s=readiness_settings.health_timeout_s,
                 health_retry_interval=5,
                 timeline=launch_result.timeline if launch_result is not None else None,
             )

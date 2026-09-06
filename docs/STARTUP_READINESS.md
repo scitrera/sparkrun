@@ -1,6 +1,6 @@
 # Startup readiness and timing
 
-On `develop-next`, watched normal Docker launches for vLLM and SGLang use one
+By default, watched normal Docker launches for vLLM and SGLang use one
 streaming chat request as the final readiness signal. A listening port or a
 successful health response alone does not establish that a model can generate.
 Other runtime families and executors retain their existing endpoint checks.
@@ -40,20 +40,59 @@ meaning; Docker-start timestamps are in `startup_observation`.
 
 ## Configuration
 
-In `~/.config/sparkrun/config.yaml`:
+Readiness settings resolve field by field, from lowest to highest priority:
+
+1. Built-in defaults.
+2. The top-level `readiness` block in `~/.config/sparkrun/config.yaml`.
+3. The top-level `readiness` block in the launched recipe.
+
+Only explicitly supplied recipe fields override the global settings. An
+omitted field inherits; an explicit `false` overrides `true` (and vice versa).
+The effective policy is separate from model/runtime flags and does not mutate
+the global configuration or get baked into exported recipes.
+
+These are the built-in defaults, also usable as a global configuration block:
 
 ```yaml
 readiness:
+  port_timeout_s: 1800
+  health_timeout_s: 900
   inference: true
   inference_timeout_s: 120
   inference_prompt: "Reply with exactly: sparkrun-ready"
 ```
 
-The inference timeout is a separate bounded budget after port and HTTP health
-readiness. Existing `port_timeout_s` and `health_timeout_s` still apply. Set
-`inference: false` to retain endpoint-only readiness, for example with an
-embedding-only model or a custom server without chat support. The probe needs
-Python 3 and Docker access on the head host; it does not install software there.
+For an embedding-only recipe, override just inference in that recipe's YAML:
+
+```yaml
+readiness:
+  inference: false
+```
+
+This disables the chat request only for this recipe. Docker-start port/HTTP TTR
+measurements remain enabled, the log reports endpoint readiness, and TTFT is
+`not applicable (inference disabled)`, not zero. No model-list or chat request
+is needed by the endpoint-only probe. Other recipes retain the global defaults.
+
+A chat recipe can override the prompt and budget independently:
+
+```yaml
+readiness:
+  inference: true
+  inference_prompt: "Reply with exactly: ready"
+  inference_timeout_s: 180
+```
+
+The inference timeout is a separate finite, positive budget after port and HTTP
+health readiness. For port/health timeouts, zero or negative means wait until
+ready, the container fails, or the caller cancels. Unknown recipe fields,
+non-boolean inference settings, empty prompts, and invalid timeouts are rejected
+when loading the recipe. Omit a field to inherit it; `null` is not an override.
+
+Watched launches, post-launch hooks, and proxy registration use the same
+effective policy. Benchmark endpoint waits use its port/health budgets while
+leaving inference to the benchmark itself. The probe needs Python 3 and Docker
+access on the head host; it does not install software there.
 
 Default log-following launches and post-launch hooks use this readiness path.
 `--no-follow` retains its fast return after the existing boot-liveness check;
@@ -69,14 +108,22 @@ which reuses it without sending a second inference. The optional mapping is
 empty for existing strategies. Its format-1 contract includes measurement
 profile, rank-0 observer, container identity/start, first-token timestamp/field,
 and `inference_ready: true`; port/HTTP timestamps and full-response validation
-are additional provenance. The current supported profiles are
+are additional provenance. Endpoint-only observations instead carry
+`inference_requested: false`, `endpoint_ready: true`, and both TTR timestamps,
+without a first-token timestamp or a claim of successful inference. They cannot
+satisfy a wait that requires inference. The current supported profiles are
 `sparkrun-rank0-v1` and ColdSnap's `rank0-acceptance-v1`.
 
-ColdSnap's canonical development plugin supplies its already-validated full
+ColdSnap plugins that support this handoff supply already-validated full
 acceptance response timing. Older compatible ColdSnap controllers can mark
 `runtime_info.inference_readiness` as `accepted` without supplying timestamps;
 this suppresses a duplicate inference but does not invent TTFT. Updating this
 upstream code does not itself update the vendored ColdSnap plugin or controller.
+
+Recipe readiness settings control Sparkrun's probes, not a strategy's own
+acceptance contract. Disabling the Sparkrun inference probe does not disable
+ColdSnap's mandatory acceptance or discard an already-measured TTFT; the host
+continues to reuse that successful observation without another inference.
 
 ## Comparison and qualification
 

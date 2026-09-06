@@ -49,10 +49,10 @@ sparkrun status
 
 Ctrl+C detaches from logs — it never kills your inference job. Your model keeps serving.
 
-Development builds also report Docker-start TTR and TTFT using a rank-local
+Watched launches also report Docker-start TTR and TTFT using a rank-local
 streaming readiness check for Docker vLLM/SGLang launches. See
 [startup readiness](docs/STARTUP_READINESS.md) for configuration, timing
-boundaries, and execution-strategy integration.
+boundaries, per-recipe overrides, and execution-strategy integration.
 
 See the [full CLI reference](https://sparkrun.dev/cli/overview/) for all commands and options.
 

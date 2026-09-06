@@ -112,14 +112,16 @@ def _echo_endpoint_ready(readiness) -> None:
         def duration(key):
             return "%.3fs" % ((observation[key] - start) / 1e9) if key in observation else "unavailable"
 
+        endpoint_only = observation.get("inference_requested") is False
         click.secho(
-            "\n[sparkrun] Inference ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
+            "\n[sparkrun] %s ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
             % (
+                "Endpoint" if endpoint_only else "Inference",
                 readiness.head_ip,
                 readiness.port,
                 duration("port_open_unix_ns"),
                 duration("http_ready_unix_ns"),
-                duration("first_token_unix_ns"),
+                "not applicable (inference disabled)" if endpoint_only else duration("first_token_unix_ns"),
                 observation["measurement"],
             ),
             fg="green",

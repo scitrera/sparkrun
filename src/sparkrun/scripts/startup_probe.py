@@ -47,6 +47,8 @@ def observe(config):
         "container_started_unix_ns": started,
         "observer_started_unix_ns": time.time_ns(),
         "inference_ready": False,
+        "inference_requested": config.get("inference", True),
+        "endpoint_ready": False,
         "response_validated": False,
         "http_ready_path": "/health",
     }
@@ -71,6 +73,7 @@ def observe(config):
                 if response.status == 200:
                     result["http_ready_unix_ns"] = time.time_ns()
                     result["health_wait_s"] = time.monotonic() - health_wait_start
+                    result["endpoint_ready"] = True
                     break
         except (OSError, urllib.error.URLError):
             pass
@@ -78,6 +81,10 @@ def observe(config):
             raise TimeoutError("health")
         inspect_container(config["container"])
         time.sleep(0.1)
+    if not result["inference_requested"]:
+        if inspect_container(config["container"]) != (container_id, started):
+            raise RuntimeError("head container changed during readiness observation")
+        return result
     with http.open(base + "/v1/models", timeout=10) as response:
         models = json.load(response)["data"]
     if not models or not isinstance(models[0].get("id"), str):

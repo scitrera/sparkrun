@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import signal
 import subprocess
@@ -14,23 +13,40 @@ from importlib.resources import files
 logger = logging.getLogger(__name__)
 
 
-def validate_observation(value):
+def validate_observation(value, *, require_inference=False):
     if not isinstance(value, dict) or value.get("format") != 1 or value.get("observer") != "rank0":
         raise ValueError("invalid startup observation")
-    if value.get("inference_ready") is not True:
-        raise ValueError("startup observation has no successful inference")
     if value.get("measurement") not in {"rank0-acceptance-v1", "sparkrun-rank0-v1"}:
         raise ValueError("unsupported startup measurement")
     if not isinstance(value.get("container_id"), str) or not value["container_id"]:
         raise ValueError("startup observation has no container identity")
-    start, first = value.get("container_started_unix_ns"), value.get("first_token_unix_ns")
-    if type(start) is not int or type(first) is not int or start <= 0 or first < start:
+    start = value.get("container_started_unix_ns")
+    if type(start) is not int or start <= 0:
         raise ValueError("invalid startup timestamps")
-    if value.get("first_token_field") not in ("content", "reasoning", "reasoning_content"):
-        raise ValueError("startup observation has no text token")
     for key in ("port_open_unix_ns", "http_ready_unix_ns"):
         if key in value and (type(value[key]) is not int or value[key] < start):
             raise ValueError("invalid startup readiness timestamp")
+    if value.get("inference_requested") is False:
+        if (
+            require_inference
+            or value["measurement"] != "sparkrun-rank0-v1"
+            or value.get("endpoint_ready") is not True
+            or value.get("inference_ready") is not False
+            or value.get("response_validated") is not False
+            or "first_token_unix_ns" in value
+            or "first_token_field" in value
+            or "port_open_unix_ns" not in value
+            or "http_ready_unix_ns" not in value
+        ):
+            raise ValueError("invalid endpoint-only startup observation")
+    else:
+        if value.get("inference_ready") is not True:
+            raise ValueError("startup observation has no successful inference")
+        first = value.get("first_token_unix_ns")
+        if type(first) is not int or first < start:
+            raise ValueError("invalid startup timestamps")
+        if value.get("first_token_field") not in ("content", "reasoning", "reasoning_content"):
+            raise ValueError("startup observation has no text token")
     return value
 
 
@@ -41,7 +57,7 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
     if cancel is not None and cancel.is_set():
         raise InterruptedError("cancelled")
     source = files("sparkrun.scripts").joinpath("startup_probe.py").read_text()
-    source += "\nprint(json.dumps(observe(" + repr(config) + ")))\n"
+    source += "\nfrom math import inf\nprint(json.dumps(observe(" + repr(config) + ")))\n"
     script = "exec python3 - <<'SPARKRUN_STARTUP_PY'\n" + source + "\nSPARKRUN_STARTUP_PY\n"
     kwargs = {key: value for key, value in (ssh_kwargs or {}).items() if key in {"ssh_user", "ssh_key", "ssh_options"}}
     command = ["bash", "-s"] if should_run_locally(host, kwargs.get("ssh_user")) else [*build_ssh_cmd(host, **kwargs), "bash", "-s"]
@@ -68,7 +84,7 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
             raise RuntimeError("rank-0 readiness probe failed: " + detail)
         if len(stdout) > 65536:
             raise RuntimeError("startup observation exceeds its size limit")
-        return validate_observation(json.loads(stdout))
+        return validate_observation(json.loads(stdout), require_inference=config.get("inference", True))
     finally:
         if process.poll() is None:
             try:
@@ -85,7 +101,7 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
                 process.communicate()
 
 
-def observe_launch(result, *, ssh_kwargs=None, cancel=None, timeline=None, parent=None, port_timeout_s=1800, health_timeout_s=900):
+def observe_launch(result, *, settings, ssh_kwargs=None, cancel=None, timeline=None, parent=None):
     """Use a strategy receipt once, otherwise measure on the Docker head host."""
     from sparkrun.core.launcher import ServeReadiness
     from sparkrun.orchestration.primitives import detect_host_ip
@@ -99,7 +115,7 @@ def observe_launch(result, *, ssh_kwargs=None, cancel=None, timeline=None, paren
     observation = getattr(result, "startup_observation", None)
     try:
         if observation:
-            observation = validate_observation(dict(observation))
+            observation = validate_observation(dict(observation), require_inference=settings.inference)
         else:
             if not is_local_host(host):
                 address = detect_host_ip(host, ssh_kwargs=ssh_kwargs) or host
@@ -108,19 +124,17 @@ def observe_launch(result, *, ssh_kwargs=None, cancel=None, timeline=None, paren
             resolve_key = getattr(result.runtime, "resolve_api_key", None)
             api_key = resolve_key(result.recipe, result.overrides) if resolve_key else None
 
-            def cap(seconds):
-                return seconds if math.isfinite(seconds) else 86400.0
-
             observation = run_probe(
                 host,
                 {
                     "container": container,
                     "address": address,
                     "port": result.serve_port,
-                    "port_timeout_s": cap(port_timeout_s),
-                    "health_timeout_s": cap(health_timeout_s),
-                    "inference_timeout_s": result.config.readiness_inference_timeout_s,
-                    "prompt": result.config.readiness_inference_prompt,
+                    "port_timeout_s": settings.port_timeout_s,
+                    "health_timeout_s": settings.health_timeout_s,
+                    "inference": settings.inference,
+                    "inference_timeout_s": settings.inference_timeout_s,
+                    "prompt": settings.inference_prompt,
                     "api_key": api_key,
                 },
                 ssh_kwargs=ssh_kwargs,

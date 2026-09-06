@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from sparkrun.core.launcher import wait_for_serve_ready
+from sparkrun.core.config import SparkrunConfig
 from sparkrun.orchestration import startup
 from sparkrun.scripts import startup_probe
 
@@ -34,6 +35,8 @@ def observation():
 
 
 def launch():
+    settings = SparkrunConfig.__new__(SparkrunConfig)
+    settings._data = {"readiness": {"inference_timeout_s": 10, "inference_prompt": "Reply OK"}}
     return SimpleNamespace(
         runtime=SimpleNamespace(
             get_family=lambda: "vllm",
@@ -47,7 +50,9 @@ def launch():
         timeline=None,
         runtime_info={},
         startup_observation={},
-        config=SimpleNamespace(readiness_inference_enabled=True, readiness_inference_timeout_s=10, readiness_inference_prompt="Reply OK"),
+        config=settings,
+        recipe=SimpleNamespace(readiness={}),
+        overrides={},
     )
 
 
@@ -352,12 +357,10 @@ def test_inference_configuration_defaults_and_overrides(tmp_path):
     assert settings.readiness_inference_prompt == "Reply OK"
 
 
-@pytest.mark.parametrize("change", ["disabled", "other-family", "other-executor", "dry-run"])
+@pytest.mark.parametrize("change", ["other-family", "other-executor", "dry-run"])
 def test_unsupported_or_opted_out_launch_uses_legacy_endpoint_check(change):
     result = launch()
-    if change == "disabled":
-        result.config.readiness_inference_enabled = False
-    elif change == "other-family":
+    if change == "other-family":
         result.runtime.get_family = lambda: "llama-cpp"
     elif change == "other-executor":
         result.runtime.executor.executor_name = "k8s"
@@ -368,3 +371,127 @@ def test_unsupported_or_opted_out_launch_uses_legacy_endpoint_check(change):
         assert wait_for_serve_ready(result, dry_run=(change == "dry-run")) == "legacy"
     send.assert_not_called()
     legacy.assert_called_once()
+
+
+def endpoint_observation():
+    value = observation()
+    value.update(
+        measurement="sparkrun-rank0-v1", inference_requested=False, endpoint_ready=True, inference_ready=False, response_validated=False
+    )
+    value.pop("first_token_unix_ns")
+    value.pop("first_token_field")
+    return value
+
+
+def test_recipe_disables_inference_but_preserves_ttr_and_reuses_observation(capsys):
+    from sparkrun.cli._run import _echo_endpoint_ready
+    from sparkrun.core.timing import Timeline
+
+    result = launch()
+    result.recipe.readiness = {"inference": False, "health_timeout_s": 35}
+    result.timeline = Timeline()
+    with patch.object(startup, "run_probe", return_value=endpoint_observation()) as probe:
+        ready = wait_for_serve_ready(result)
+        assert wait_for_serve_ready(result).ready
+    assert probe.call_count == 1
+    assert probe.call_args.args[1]["inference"] is False
+    assert probe.call_args.args[1]["health_timeout_s"] == 35
+    assert probe.call_args.args[1]["inference_timeout_s"] == 10
+    assert {span["name"] for span in result.timeline.export()["spans"]} == {"serve.startup_port_open", "serve.startup_http_ready"}
+    _echo_endpoint_ready(ready)
+    output = capsys.readouterr().err
+    assert "Endpoint ready" in output and "Inference ready" not in output
+    assert "TTR port-open 1.000s, HTTP-ready 2.000s" in output
+    assert "TTFT not applicable (inference disabled)" in output
+
+
+def test_effective_config_reaches_probe_without_overwriting_global_defaults():
+    result = launch()
+    result.config.set("readiness", {"inference": False, "port_timeout_s": 2500, "inference_prompt": "global"})
+    result.recipe.readiness = {"inference": True, "inference_prompt": "recipe", "inference_timeout_s": 47}
+    with patch.object(startup, "run_probe", return_value=observation()) as probe:
+        assert wait_for_serve_ready(result).ready
+    sent = probe.call_args.args[1]
+    assert sent["inference"] is True and sent["prompt"] == "recipe"
+    assert sent["port_timeout_s"] == 2500 and sent["health_timeout_s"] == 900
+    assert sent["inference_timeout_s"] == 47
+    assert result.config.readiness_inference_enabled is False
+    assert result.config.readiness_inference_prompt == "global"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"endpoint_ready": False}, {"response_validated": True}, {"first_token_unix_ns": 4_000_000_000}, {"http_ready_unix_ns": None}],
+)
+def test_endpoint_only_observation_cannot_claim_inference_or_missing_health(change):
+    with pytest.raises(ValueError):
+        startup.validate_observation({**endpoint_observation(), **change})
+
+
+def test_endpoint_only_receipt_cannot_satisfy_required_inference():
+    with pytest.raises(ValueError):
+        startup.validate_observation(endpoint_observation(), require_inference=True)
+
+
+def test_real_endpoint_only_probe_sends_no_model_or_chat_request(streaming_server):
+    port, posts, _ = streaming_server
+    with patch.object(startup_probe, "inspect_container", return_value=("current", 1)):
+        value = startup_probe.observe(config(port, inference=False))
+    assert startup.validate_observation(value) == value
+    assert value["endpoint_ready"] and not value["inference_ready"]
+    assert "first_token_unix_ns" not in value and "model" not in value
+    assert value["port_open_unix_ns"] <= value["http_ready_unix_ns"]
+    assert posts == []
+
+
+def test_endpoint_only_container_replacement_still_fails(streaming_server):
+    port, _, _ = streaming_server
+    with patch.object(startup_probe, "inspect_container", side_effect=[("old", 1), ("new", 2)]):
+        with pytest.raises(RuntimeError, match="changed"):
+            startup_probe.observe(config(port, inference=False))
+
+
+def test_endpoint_only_probe_does_not_query_model_or_ignore_failed_health():
+    health = io.BytesIO()
+    health.status = 200
+    http = Mock()
+    http.open.return_value = health
+    with (
+        patch.object(startup_probe, "inspect_container", return_value=("current", 1)),
+        patch.object(startup_probe, "port_listening", return_value=True),
+        patch.object(startup_probe.urllib.request, "build_opener", return_value=http),
+    ):
+        startup_probe.observe(config(inference=False))
+        http.open.assert_called_once_with("http://127.0.0.1:8000/health", timeout=1)
+        http.open.side_effect = OSError("not healthy")
+        with pytest.raises(TimeoutError, match="health"):
+            startup_probe.observe(config(inference=False, health_timeout_s=0))
+
+
+def test_real_docker_endpoint_only_probe_with_unbounded_budgets(streaming_server):
+    image = os.environ.get("SPARKRUN_STARTUP_TEST_DOCKER_IMAGE")
+    if not image:
+        pytest.skip("set SPARKRUN_STARTUP_TEST_DOCKER_IMAGE for the local Docker contract test")
+    container = subprocess.check_output(["docker", "run", "-d", "--network=host", image, "sleep", "60"], text=True).strip()
+    try:
+        port, posts, _ = streaming_server
+        with patch("sparkrun.orchestration.ssh.should_run_locally", return_value=True):
+            value = startup.run_probe(
+                "localhost", config(port, container=container, inference=False, port_timeout_s=float("inf"), health_timeout_s=float("inf"))
+            )
+        assert value["container_id"] == container and value["endpoint_ready"]
+        assert not value["inference_ready"] and "first_token_unix_ns" not in value
+        assert value["container_started_unix_ns"] <= value["port_open_unix_ns"] <= value["http_ready_unix_ns"]
+        assert posts == []
+    finally:
+        subprocess.run(["docker", "rm", "-f", container], check=True, capture_output=True)
+
+
+def test_disabling_sparkrun_probe_does_not_discard_coldsnap_acceptance():
+    result = launch()
+    result.recipe.readiness = {"inference": False}
+    result.startup_observation = observation()
+    with patch.object(startup, "run_probe") as probe:
+        ready = wait_for_serve_ready(result)
+    assert ready.ready and ready.startup_observation["response_validated"]
+    probe.assert_not_called()

@@ -13,6 +13,8 @@ RUNTIME_DISPLAY: dict[str, str] = {
 }
 
 if TYPE_CHECKING:
+    from collections.abc import Container
+
     from sparkrun.core.monitoring import HostMonitorState
     from sparkrun.orchestration.disk_info import CacheStatus
 
@@ -602,6 +604,12 @@ _STARTUP_METRICS = (
 #: only the *values* are shared between the two renderings.
 _STARTUP_LABELS = {"port_open": "TTR port-open", "http_ready": "TTR HTTP-ready", "ttft": "TTFT"}
 
+#: Timeline spans whose numbers :func:`format_startup_readiness` renders.  A
+#: caller printing that block passes these as ``format_launch_timings(omit=…)``
+#: so one launch does not report the same three figures twice, once in a table
+#: built for them and once as rows that are not terms in its total.
+STARTUP_SPAN_NAMES = frozenset("serve.startup_%s" % key for key, _ in _STARTUP_METRICS)
+
 
 def startup_readiness_durations(observation: dict) -> dict[str, str]:
     """Render a rank-local startup observation's three elapsed times.
@@ -679,6 +687,7 @@ def format_launch_timings(
     width: int = 62,
     title: str = "Launch timings",
     max_depth: int | None = None,
+    omit: "Container[str]" = frozenset(),
 ) -> str:
     """Render a :meth:`~sparkrun.core.timing.Timeline.export` as a tree.
 
@@ -688,6 +697,18 @@ def format_launch_timings(
 
     ``max_depth`` counts displayed levels starting at one for root spans.
     Deeper descendants are omitted. ``None`` leaves the tree unbounded.
+
+    ``omit`` drops spans by name, **with their descendants** — for a caller
+    that has already presented them better elsewhere
+    (:data:`STARTUP_SPAN_NAMES` beside :func:`format_startup_readiness` is
+    the case this exists for).  Display only: the spans stay in the export,
+    which is what the diagnostics record and benchmark metadata read.
+
+    Worth being deliberate about, because a row here reads as a *term*: the
+    tree's rows sum to its total, so leaving a non-additive span in it either
+    misleads or needs an apology stapled to the row.  Dropping one whose
+    figures appear nowhere else would be the opposite mistake, which is why
+    this is the caller's call and not a rule keyed off ``composition``.
     """
     if max_depth is not None and max_depth < 1:
         raise ValueError("max_depth must be at least 1")
@@ -697,6 +718,8 @@ def format_launch_timings(
 
     children: dict[int | None, list[dict]] = {}
     for span in spans:
+        if span.get("name") in omit:
+            continue
         children.setdefault(span.get("parent"), []).append(span)
     for group in children.values():
         group.sort(key=lambda s: (s.get("t_start", 0.0), s.get("id", 0)))

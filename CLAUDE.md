@@ -674,11 +674,17 @@ Five things are load-bearing:
   origin — the container's `State.StartedAt` — so they overlap, which the
   clock discriminator alone does not say (they share a clock with each
   other). `composition="non_additive"` + `timing_semantics` is the second
-  marker, rendered `[from container start; non-additive]`, and it is what
-  stops a consumer summing a 46s startup into 68s. It is also why the
-  `sparkrun run` recap renders them as their **own block**
+  marker, and it is what stops a consumer summing a 46s startup into 68s. It
+  is also why the `sparkrun run` recap renders them as their **own block**
   (`format_startup_readiness`) rather than as rows in the tree, whose
-  siblings otherwise read as a stage breakdown.
+  siblings otherwise read as a stage breakdown — and why the tree then
+  `omit=`s them (`STARTUP_SPAN_NAMES`). A row in that tree reads as a *term*
+  in its total, so a non-additive one shows the same figure twice and breaks
+  the only property the tree has. Omission is **display-only and the
+  caller's** (not a rule keyed off `composition`): the spans stay in
+  `export()` for diagnostics and benchmark metadata, and dropping a
+  non-additive span whose figures appear nowhere else would be the opposite
+  mistake.
 - **The startup spans are deduped per timeline, not per result.** They were
   once skipped whenever `LaunchResult.startup_observation` was already set —
   which is true both for a repeated wait *and* for a strategy-supplied

@@ -974,7 +974,7 @@ def run(
     # which `format_launch_timings` renders "did not finish" — the honest
     # reading of "we stopped watching", not a claim that the stage failed.
     if show_timings:
-        from sparkrun.utils.cli_formatters import format_launch_timings, format_startup_readiness
+        from sparkrun.utils.cli_formatters import STARTUP_SPAN_NAMES, format_launch_timings, format_startup_readiness
 
         # Read off the result rather than off `readiness`: the watcher path
         # stores the observation there, and the post-hook path — which has no
@@ -985,7 +985,20 @@ def run(
             getattr(result, "startup_observation", None),
             host=host_list[0] if host_list else None,
         )
-        _timings = format_launch_timings(sctx.timing.export(), max_depth=_timing_tree_depth(ctx)) if sctx.timing is not None else ""
+        # The startup spans are dropped from the tree exactly when the block
+        # above rendered them: the tree's rows sum to its total and those
+        # three do not belong to that sum, so leaving them in shows the same
+        # figures twice and breaks the one property the tree has.  They stay
+        # in the export, which is what diagnostics and benchmark metadata read.
+        _timings = (
+            format_launch_timings(
+                sctx.timing.export(),
+                max_depth=_timing_tree_depth(ctx),
+                omit=STARTUP_SPAN_NAMES if _startup else frozenset(),
+            )
+            if sctx.timing is not None
+            else ""
+        )
         for _block in (_startup, _timings):
             if _block:
                 click.echo()

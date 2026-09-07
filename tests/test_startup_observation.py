@@ -391,6 +391,29 @@ def test_startup_readiness_block_repeats_the_live_line():
     assert format_startup_readiness({}) == ""
 
 
+def test_startup_spans_leave_the_tree_but_stay_in_the_export():
+    """Rendered once, in the block built for them; never as tree rows.
+
+    The tree's rows sum to its total and these three are not terms in it, so
+    a row here would show the same figure twice and break the one property
+    the tree has.
+    """
+    from sparkrun.core.timing import ROOT, Timeline
+    from sparkrun.utils.cli_formatters import STARTUP_SPAN_NAMES, format_launch_timings
+
+    timeline = Timeline()
+    with timeline.span("run", label="run"):
+        pass
+    timeline.add_span("serve.startup_ttft", clock="host:h1", duration_s=46.4, parent=ROOT, composition="non_additive")
+    export = timeline.export()
+    tree = format_launch_timings(export, omit=STARTUP_SPAN_NAMES)
+    assert "serve.startup_ttft" not in tree
+    assert "run" in tree
+    # Display only: the diagnostics record and benchmark metadata read this.
+    assert "serve.startup_ttft" in {span["name"] for span in export["spans"]}
+    assert "serve.startup_ttft" in format_launch_timings(export)
+
+
 def test_startup_readiness_block_reports_unobserved_metrics_honestly():
     from sparkrun.utils.cli_formatters import format_startup_readiness
 

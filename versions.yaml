@@ -22,7 +22,7 @@ ci:
   # Pinned, not floating: a bare `scitrera-repo-tools` picks up the newest
   # release, so an unrelated generator change would surface as CI drift on
   # whatever PR happened to run next. Bump deliberately.
-  repo_tools_source: "scitrera-repo-tools==0.1.22"
+  repo_tools_source: "git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8"
   test_branches: [ main, develop ]
   # Cut a GitHub release on every version tag, with the built sdist + wheel
   # attached and notes generated from the commits since the previous tag.

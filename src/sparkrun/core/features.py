@@ -271,6 +271,20 @@ FEATURE_CLI_SETUP_TAILSCALE = register_feature(
     )
 )
 
+# Gated on stable for the same reason as ``builder.uv_venv``: it mutates the
+# hosts (pulls a multi-GB test image, starts containers) rather than merely
+# reading them.  It is a *diagnostic*, so the gate is friction exactly when a
+# user's networking is already broken — the intent is to drop the flag once
+# the test image has field mileage.
+FEATURE_CLI_SETUP_RDMA_TEST = register_feature(
+    FeatureFlag(
+        name="cli.setup.rdma_test",
+        description="Experimental 'sparkrun setup rdma-test' command (RDMA bandwidth/latency + NCCL collective)",
+        channel_defaults={CHANNEL_BETA: True, CHANNEL_ALPHA: True},
+        default=False,
+    )
+)
+
 # The LiteLLM gateway is the only inference-gateway implementation today and
 # ships ENABLED on every channel (``default=True``, no channel overrides), like
 # ``executor.docker``.  It carries a flag so an alternate gateway can be added

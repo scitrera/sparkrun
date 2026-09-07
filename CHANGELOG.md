@@ -8,6 +8,108 @@ For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NO
 
 ## [Unreleased]
 
+### Added
+
+- `sparkrun setup rdma-test` verifies the high-speed fabric that `setup cx7`
+  configures — RDMA latency and bandwidth per link, plus an NCCL collective
+  across the cluster. Until now this was a manual copy-paste procedure, and
+  nothing in sparkrun exercised the fabric at all: `validate_ib_connectivity`
+  only proves an IB IP answers SSH, which a link silently running over the
+  management NIC would also do.
+
+  Host pairs are **derived from the configured CX-7 subnets**, so only links
+  that physically exist are tested (a switched segment is chained, not meshed,
+  keeping coverage O(N)). Each link is measured on its own and then **every
+  link between a host pair is driven concurrently**: a DGX Spark QSFP112 cable
+  presents as two RDMA devices, so a per-device figure is about half the
+  cable's real throughput.
+
+  The **`perftest` suite is the default** — host-native where `ib_write_bw`
+  exists, no image pull, seconds to run. `--suite all` adds the NCCL
+  collective, which fetches the image onto every host and takes minutes.
+
+  **Devices that share a physical port are detected, not assumed additive.**
+  DGX Spark exposes two PCIe functions of one adapter on a single 200 Gb/s
+  port, so summing their rates claims a ceiling the wire cannot carry — a
+  measured 195.7 Gb/s, ~98% of the cable, was reported as "of 400 Gb/s" and
+  each healthy ~112 Gb/s device warned for being under 75% of 200. Devices
+  reporting the same `sys_image_guid` *and* `phys_port_name` are treated as
+  sharing one wire: the aggregate expectation sums distinct ports, and each
+  device is compared against its fair share of its port. Both fields come from
+  sysfs, so a conventional dual-port card with two cables remains additive
+  without special-casing any platform.
+
+  Progress is reported through the shared `sparkrun.progress` logger (visible
+  at default verbosity, and not a console write, so the api layer stays
+  console-free): previously the command sat silent through an image pull and
+  minutes of transfers.
+
+  Severity follows the `setup check` convention — underperformance is a
+  warning and exits 0; only a test that could not run at all fails. The
+  bandwidth expectation is derived from the link's own reported rate rather
+  than hardcoded, so the verdict is meaningful on hardware that is not a DGX
+  Spark. Parsers return no measurement rather than a fabricated number when a
+  run is refused or times out.
+
+  The `perftest` suite runs host-native where `ib_write_bw` exists (DGX OS
+  ships it), so the common "did my cable work?" check pulls no image. The
+  `nccl` suite uses a new maintained image, `ghcr.io/spark-arena/sparkrun-rdma-test`
+  (built from `docker/rdma-test/`), because building NCCL and nccl-tests takes
+  ~10 minutes per node. Its tag tracks the NCCL release it was built from —
+  that is the image's rebuild cadence — and the default is pinned to that tag
+  rather than `:latest` so two runs a month apart stay comparable. Override
+  with `--image` or `rdma_test.image` in `config.yaml`.
+
+  Experimental, gated behind `cli.setup.rdma_test` (off on `stable`, on for
+  `beta`/`alpha`) because it pulls a multi-GB image and starts containers.
+
+  Each architecture of the image is built on a **native** machine and the
+  results are combined into one multi-arch manifest, rather than
+  cross-building under QEMU: the image compiles NCCL and nccl-tests with nvcc
+  across four GPU architectures, which emulation turns from a ~20 minute build
+  into hours. CI builds on native arm64 and amd64 runners in parallel and
+  pushes by digest, then merges; `docker/rdma-test/build.sh --push` /
+  `--merge` is the same flow by hand across two machines.
+
+  The runtime stage is plain Ubuntu rather than the NGC CUDA runtime image —
+  only the builder needs the toolchain. Measured on arm64: **4.3 GB → 739 MB**
+  for identical contents, because the CUDA base carries ~1.9 GB of cuBLAS /
+  cuFFT / cuSPARSE / cuSolver / cuRAND while the only CUDA library anything
+  here links is `libcudart` (768 KB). `libnccl_static.a` and nccl-tests' `.o`
+  objects are dropped in the builder, where they never reach a runtime layer.
+  The full nccl-tests binary set is kept so `rdma_test(nccl_binary=…)` accepts
+  any collective it names. Leaving the CUDA base means the image now declares
+  `NVIDIA_DRIVER_CAPABILITIES=compute,utility` itself; without it the
+  container runtime defaults to `utility`, CUDA is absent, and the collective
+  fails with nothing explaining why.
+
+  Both NCCL and nccl-tests are pinned by git ref, and the build args are named
+  `NCCL_GIT_REF` / `NCCL_TESTS_GIT_REF` rather than `NCCL_VERSION`: the NGC
+  CUDA images set `ENV NCCL_VERSION` to the libnccl2 they bundle, and an
+  inherited `ENV` outranks a same-named `ARG` under the legacy builder though
+  not under BuildKit — so the obvious name built our pinned NCCL under `buildx`
+  and NVIDIA's bundled one under `docker build`, from the same Dockerfile. The
+  build now verifies the ref it cloned and that `all_gather_perf` exists, so a
+  mis-resolved pin fails loudly instead of shipping a version nobody asked for.
+
+- `sparkrun setup check` gained an `rdma` check reporting whether RDMA devices
+  are present and `ACTIVE`, from the same probe `setup rdma-test` uses so the
+  two cannot disagree about what hardware is there. It sends nothing over the
+  fabric — "the link is configured" and "the link performs" are different
+  questions — and points at `setup rdma-test` for the second. Absent
+  `perftest` is reported as a note rather than a warning: it is one command
+  away and the test has a container fallback, so flagging it would fire on
+  hosts where nothing is wrong.
+
+### Changed
+
+- The `mpirun`-across-containers rsh agent moved from
+  `TrtllmRuntime._generate_rsh_wrapper` to
+  `sparkrun.orchestration.mpi.build_rsh_wrapper`, shared with the new RDMA
+  NCCL suite. Output is byte-identical; the values it interpolates are now
+  validated (they are emitted bare or double-quoted, so they cannot be
+  shell-quoted without changing what bash sees).
+
 ### Security
 
 - Registry names and asset subpaths are now contained to the registry cache.

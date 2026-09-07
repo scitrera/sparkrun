@@ -296,6 +296,58 @@ class TestVllmDistributedDPRankMath:
         assert "--data-parallel-rank 1" in cmd
         assert "--headless" in cmd
 
+    # --- The head gate must match what the command actually binds (#292) ---
+
+    def test_rendezvous_gate_matches_emitted_master_port(self):
+        """The gate is exactly the regime that emits ``--master-port``.
+
+        Asserted against the rendered command rather than against a second copy
+        of the tp*pp test, since the whole defect was the two disagreeing: pure
+        DP opens ``--data-parallel-rpc-port`` and never *init_port*, so gating
+        on it stalled rank 1 behind a wait that could only time out.
+        """
+        runtime = VllmDistributedRuntime()
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        regimes = [
+            {"data_parallel": 2},  # pure DP
+            {"tensor_parallel": 2},  # cross-node TP
+            {"pipeline_parallel": 2},  # cross-node PP
+            {"tensor_parallel": 2, "data_parallel": 2},  # hybrid
+        ]
+        for defaults in regimes:
+            cmd = self._cmd_for(defaults, node_rank=0, hosts=hosts)
+            gate = runtime.native_rendezvous_port(
+                self._make_recipe(defaults),
+                {},
+                num_nodes=len(hosts),
+                init_port=25000,
+            )
+            expected = 25000 if "--master-port 25000" in cmd else None
+            assert gate == expected, (defaults, cmd)
+
+    def test_pure_dp_has_no_rendezvous_gate(self):
+        """Named explicitly: the reported TP=1/DP=2 launch must not be gated."""
+        runtime = VllmDistributedRuntime()
+        recipe = self._make_recipe({"tensor_parallel": 1, "data_parallel": 2})
+        assert runtime.native_rendezvous_port(recipe, {}, num_nodes=2, init_port=25000) is None
+        # An override reaching pure DP counts too — the gate reads the same
+        # config chain the command does.
+        tp_recipe = self._make_recipe({"tensor_parallel": 2})
+        assert runtime.native_rendezvous_port(tp_recipe, {}, num_nodes=2, init_port=25000) == 25000
+        assert (
+            runtime.native_rendezvous_port(
+                tp_recipe,
+                {"tensor_parallel": 1, "data_parallel": 2},
+                num_nodes=2,
+                init_port=25000,
+            )
+            is None
+        )
+
+    def test_rendezvous_gate_without_a_recipe_is_unchanged(self):
+        """No recipe means no config chain to classify — keep the base behaviour."""
+        assert VllmDistributedRuntime().native_rendezvous_port(None, {}, num_nodes=2, init_port=25000) == 25000
+
     # --- Recipe-template already has --data-parallel-size: don't duplicate ---
 
     def test_template_data_parallel_size_not_duplicated(self):

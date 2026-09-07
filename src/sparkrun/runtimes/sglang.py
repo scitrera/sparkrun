@@ -6,6 +6,7 @@ import logging
 from typing import Any, NamedTuple, TYPE_CHECKING
 
 from scitrera_app_framework import ext_parse_bool
+from sparkrun.core.readiness import OPENAI_CHAT_STREAM
 
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config, resolve_api_key
 from sparkrun.runtimes.base import RuntimePlugin
@@ -143,6 +144,8 @@ class SglangRuntime(RuntimePlugin):
 
     runtime_name = "sglang"
     default_image_prefix = "scitrera/dgx-spark-sglang"
+    readiness_styles = (OPENAI_CHAT_STREAM,)
+    readiness_health_path = "/health"
 
     # Native distribution: each node runs its own serve process and rendezvous
     # is over the wire, so per-machine tuned images are meaningful here.  Ranks

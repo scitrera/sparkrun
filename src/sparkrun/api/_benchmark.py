@@ -271,11 +271,12 @@ def _execute_benchmark(
         KeyboardInterrupt: Re-raised after state is preserved (Ctrl+C).
     """
     import sparkrun.api as api
-    from sparkrun.benchmarking.base import export_results, BenchmarkResult as _InternalBenchmarkResult
+    from sparkrun.benchmarking.base import export_results, startup_timing_metadata, BenchmarkResult as _InternalBenchmarkResult
     from sparkrun.core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
-    from sparkrun.core.launcher import wait_for_endpoint_ready
+    from sparkrun.core.launcher import wait_for_endpoint_ready, wait_for_serve_ready
+    from sparkrun.core.readiness import resolve_readiness_settings
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
@@ -964,40 +965,63 @@ def _execute_benchmark(
         if not dry_run and not skip_run:
             logger.log(_PROGRESS_LEVEL, "Waiting for inference server on %s:%d...", head_host, serve_port)
             logger.log(_PROGRESS_LEVEL, "Note that this could take ~5 minutes!")
-            # Shared with ``sparkrun run`` / ``proxy load`` rather than
-            # reimplemented: the two-stage wait is what produces the
-            # container-start → serving figure, and a second copy of it with
-            # its own retry budgets would make that number incomparable
-            # between `run` and `benchmark`.  The budgets stay this path's
-            # own (a benchmark is unattended, so it can afford to wait past
-            # the interactive default before calling a launch dead).
-            readiness = wait_for_endpoint_ready(
-                runtime=runtime,
-                cluster_id=cluster_id,
-                host_list=host_list,
-                is_solo=is_solo,
-                port=serve_port,
-                ssh_kwargs=ssh_kwargs,
-                dry_run=dry_run,
-                port_timeout_s=3600.0,
-                port_retry_interval=5,
-                health_timeout_s=1800.0,
-                health_retry_interval=5,
-                timeline=launch_result.timeline if launch_result is not None else None,
-            )
+            # Use the launch's effective readiness policy and reuse any
+            # strategy/post-launch observation. Framework requests remain
+            # separate from this one startup readiness measurement.
+            if launch_result is not None and not bench_result.resumed:
+                readiness = wait_for_serve_ready(
+                    launch_result,
+                    ssh_kwargs=ssh_kwargs,
+                    port_retry_interval=5,
+                    health_retry_interval=5,
+                )
+            else:
+                # Alternate API implementations may not return LaunchResult.
+                # Without container provenance, only endpoint waits are known.
+                # Reused results also keep endpoint-only waits: do not issue a
+                # startup inference just to re-emit recorded measurements.
+                readiness_settings = resolve_readiness_settings(config=config, recipe=recipe)
+                readiness = wait_for_endpoint_ready(
+                    runtime=runtime,
+                    cluster_id=cluster_id,
+                    host_list=host_list,
+                    is_solo=is_solo,
+                    port=serve_port,
+                    ssh_kwargs=ssh_kwargs,
+                    dry_run=dry_run,
+                    port_timeout_s=readiness_settings.port_timeout_s,
+                    port_retry_interval=5,
+                    health_timeout_s=readiness_settings.health_timeout_s,
+                    health_retry_interval=5,
+                )
             bench_result.readiness = readiness
             if not readiness.ready:
                 if launched and not no_stop:
                     _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
                 if readiness.reason == "port":
                     raise BenchmarkFailed("Error: inference server did not become ready", exit_code=1)
+                if readiness.reason in {"inference", "cancelled"}:
+                    raise BenchmarkFailed("Error: inference server startup readiness failed (%s)" % readiness.reason, exit_code=1)
                 raise BenchmarkFailed("Error: inference server health check timed out", exit_code=1)
             logger.log(
                 _PROGRESS_LEVEL,
-                "Inference server ready (%.1fs to port, %.1fs to healthy).",
+                "Inference server ready (endpoint waits: %.1fs port, %.1fs health).",
                 readiness.port_wait_s,
                 readiness.health_wait_s,
             )
+            if startup := startup_timing_metadata(readiness):
+
+                def _seconds(key):
+                    return "%.3fs" % startup[key] if key in startup else "not observed"
+
+                logger.log(
+                    _PROGRESS_LEVEL,
+                    "Docker-start readiness (rank 0, %s): TTR port %s; TTR HTTP %s; TTFT %s.",
+                    startup["measurement"],
+                    _seconds("ttr_port_open_s"),
+                    _seconds("ttr_http_ready_s"),
+                    _seconds("ttft_s") if startup["ttft_status"] == "measured" else "not applicable (inference disabled)",
+                )
         elif dry_run:
             emitter.info("[dry-run] Would wait for inference server on %s:%d" % (head_host, serve_port))
 
@@ -1208,6 +1232,7 @@ def _execute_benchmark(
                     runtime_info=launch_result.runtime_info if launch_result else None,
                     resumed=bench_result.resumed,
                     measured_at=bench_result.measured_at,
+                    readiness=bench_result.readiness,
                 )
                 emitter.info("Results saved to: %s" % output_file)
                 bench_result.output_yaml = output_file
@@ -1633,6 +1658,8 @@ def benchmark(
 
 def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResult:
     """Translate the internal ``BenchmarkResult`` into the API one."""
+    from sparkrun.benchmarking.base import startup_timing_metadata
+
     outputs: dict[str, str] = {}
     raw_outputs = getattr(bench_result, "outputs", None) or {}
     for k, v in raw_outputs.items():
@@ -1659,6 +1686,10 @@ def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResu
 
     container_image_raw = getattr(bench_result, "container_image", None)
     container_image_str = str(container_image_raw) if container_image_raw else ""
+    startup = startup_timing_metadata(
+        getattr(bench_result, "readiness", None),
+        resumed=bool(getattr(bench_result, "resumed", False)),
+    )
 
     return BenchmarkResult(
         success=bool(getattr(bench_result, "success", False)),
@@ -1680,6 +1711,7 @@ def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResu
             "framework": framework_str,
             "profile": getattr(bench_result, "profile", None) or options.profile,
             "bench_args": dict(getattr(bench_result, "benchmark_args", None) or options.bench_args),
+            **({"timing": {"startup": startup}} if startup else {}),
         },
         state_dir=getattr(bench_result, "state_dir", None),
         resumed=bool(getattr(bench_result, "resumed", False)),

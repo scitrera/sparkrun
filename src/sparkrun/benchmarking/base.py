@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -336,6 +337,70 @@ def _build_cluster_meta(recipe, overrides, cluster_id, host_list, *, redact: boo
     return meta
 
 
+def startup_timing_metadata(readiness: ServeReadiness | None, *, resumed: bool = False) -> dict[str, Any]:
+    """Project a fresh, successful rank-local observation into public metadata.
+
+    Never substitute endpoint wait durations for Docker-start measurements.
+    Allowlist provenance fields: the raw observation may contain prompts,
+    responses, container names, or future private extensions.
+    """
+    if resumed or readiness is None or readiness.ready is not True:
+        return {}
+    observation = readiness.startup_observation
+    if not isinstance(observation, dict) or not observation:
+        return {}
+    from sparkrun.orchestration.startup import validate_observation
+
+    try:
+        observation = validate_observation(observation, normalize=True)
+    except (TypeError, ValueError):
+        logger.warning("Omitting invalid benchmark startup observation")
+        return {}
+
+    start = observation["container_started_unix_ns"]
+    inference = observation.get("inference_requested") is not False
+    meta: dict[str, Any] = {
+        "format": 1,
+        "measurement": observation["measurement"],
+        "observer": "rank0",
+        "start_boundary": observation["start_boundary"],
+        "executor": observation["executor"],
+        "observer_location": observation["observer_location"],
+        "inference_style": observation["inference_style"],
+        "ttft_status": "measured" if inference else "not_applicable",
+        "inference_requested": inference,
+        "inference_ready": observation["inference_ready"],
+    }
+    for source, target in (
+        ("port_open_unix_ns", "ttr_port_open_s"),
+        ("http_ready_unix_ns", "ttr_http_ready_s"),
+        ("first_token_unix_ns", "ttft_s"),
+    ):
+        if source in observation:
+            meta[target] = round((observation[source] - start) / 1e9, 6)
+    observer_start = observation.get("observer_started_unix_ns")
+    if type(observer_start) is int and observer_start >= start:
+        meta["observer_start_delay_s"] = round((observer_start - start) / 1e9, 6)
+    if inference:
+        meta["first_token_field"] = observation["first_token_field"]
+    if type(observation.get("response_validated")) is bool:
+        meta["response_validated"] = observation["response_validated"]
+    if observation.get("http_ready_path") in ("/health", "/v1/models"):
+        meta["http_ready_path"] = observation["http_ready_path"]
+    if inference:
+        prompt_hash = observation.get("prompt_sha256")
+        if isinstance(prompt_hash, str) and len(prompt_hash) == 64 and all(c in "0123456789abcdef" for c in prompt_hash):
+            meta["prompt_sha256"] = prompt_hash
+        max_tokens = observation.get("max_tokens")
+        if type(max_tokens) is int and max_tokens > 0:
+            meta["max_tokens"] = max_tokens
+        for source, target in (("temperature", "temperature"), ("request_ttft_seconds", "request_ttft_s")):
+            value = observation.get(source)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                meta[target] = value
+    return meta
+
+
 @dataclass
 class BenchmarkResult:
     """Result of a benchmark run with output file paths."""
@@ -378,9 +443,9 @@ class BenchmarkResult:
     resumed: bool = False
     measured_at: Optional[str] = None
 
-    # Launch-stage timing.  ``readiness`` carries the two-stage
-    # containers-running → serving wait; the span timeline comes off
-    # ``launch_result``.  Both are absent under ``--skip-run`` (nothing was
+    # Launch-stage timing. ``readiness`` carries endpoint wait durations and,
+    # when supported, a separate Docker-start observation. The span timeline
+    # comes off ``launch_result``. Both are absent under ``--skip-run`` (nothing was
     # launched) and are omitted from the metadata rather than zeroed — a
     # recorded 0.0s would read as an instantaneous launch.
     readiness: Optional["ServeReadiness"] = None
@@ -430,6 +495,8 @@ class BenchmarkResult:
             return {}
 
         meta: dict[str, Any] = {}
+        if startup := startup_timing_metadata(self.readiness):
+            meta["startup"] = startup
         if self.readiness is not None:
             meta["serve_ready"] = {
                 "port_open_s": round(self.readiness.port_wait_s, 2),
@@ -579,6 +646,7 @@ def export_results(
     runtime_info: dict[str, str] | None = None,
     resumed: bool = False,
     measured_at: str | None = None,
+    readiness: ServeReadiness | None = None,
 ) -> Path:
     """Export benchmark results to a YAML file.
 
@@ -604,6 +672,9 @@ def export_results(
         measured_at: When the recorded results were actually measured.
             ``timestamp`` below is when this file was *written*, which for a
             resumed run is not the same thing.
+        readiness: Successful readiness from this launch, with optional
+            Docker-start TTR/TTFT. Omitted for resumed results and absent
+            observations; legacy endpoint wait durations are not substituted.
 
     Returns:
         Path to the written file.
@@ -668,6 +739,9 @@ def export_results(
             "results": results,
         },
     }
+
+    if startup := startup_timing_metadata(readiness, resumed=resumed):
+        data["sparkrun_benchmark"]["timing"] = {"startup": startup}
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:

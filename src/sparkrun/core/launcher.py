@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import copy
 import logging
-import math
 import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
+from sparkrun.core.readiness import DEFAULT_PORT_READY_TIMEOUT_S, DEFAULT_HEALTH_READY_TIMEOUT_S, resolve_readiness_settings
+from sparkrun.core.readiness import ReadinessObserver, ObservationUnavailable, resolve_inference_style, validate_readiness_policy
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -74,6 +75,7 @@ class LaunchResult:
     follows is recorded by :func:`wait_for_serve_ready` onto the same
     timeline, so a consumer reading it after readiness sees the whole
     launch-to-serving story."""
+    startup_observation: dict[str, Any] = field(default_factory=dict)
 
 
 def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
@@ -935,6 +937,7 @@ def launch_inference(
         if progress is None:
             progress = sctx.progress
     p = progress  # short alias
+    validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
 
     # Resolve the span collector and attach it to the progress tracker, whose
     # phase/step brackets are already exactly where the timings belong.
@@ -1677,6 +1680,7 @@ def launch_inference(
             ib_iface_map=ib_iface_map,
             serve_command=serve_command,
             runtime_info=runtime_info,
+            startup_observation=dict(getattr(activation_result, "startup_observation", {}) or {}),
             builder=builder,
             backends=backends,
             timeline=timeline,
@@ -1937,35 +1941,14 @@ def launch_inference(
     )
 
 
-#: Wall-clock budget for "the head port is listening".
-#:
-#: Sized for the stage the *engine* spends its time in, which is not the one
-#: the two-stage split originally assumed.  sglang and vLLM V1 start their
-#: HTTP server **after** engine init, weight load and CUDA-graph capture are
-#: all finished, so nearly the whole startup lands here and the health stage
-#: that follows is seconds.  A 30B NVFP4 spec-decode model on 2 Sparks was
-#: measured at 775s to bind (570s of it capturing target-verify graphs)
-#: against a budget that expired at 321s — reported, wrongly, as an endpoint
-#: that never came up.
-#:
-#: Generous is safe: `wait_for_port` re-checks container liveness on every
-#: attempt, so a workload that actually died is caught within one interval
-#: regardless of the budget.  The budget's only job is to bound a *hang*.
-DEFAULT_PORT_READY_TIMEOUT_S = 1800.0
-
-#: Wall-clock budget for ``/v1/models`` answering once the port is open.
-#: Short by comparison on purpose — by this point the engine is up, and a
-#: server that dies is caught by the consecutive-refusal check, not here.
-DEFAULT_HEALTH_READY_TIMEOUT_S = 900.0
-
-
 @dataclass(frozen=True)
 class ServeReadiness:
     """Outcome of waiting for a launched workload's head endpoint.
 
     ``reason`` is empty when ready, else ``"port"`` (never started
     listening / container exited), ``"health"`` (listening but never
-    returned HTTP 200), or ``"cancelled"`` (the caller abandoned the wait).
+    returned HTTP 200), ``"inference"`` (streaming readiness failed), or
+    ``"cancelled"`` (the caller abandoned the wait).
 
     ``"cancelled"`` is deliberately not folded into the other two: they
     say the workload is broken, this one says only that we stopped
@@ -1985,9 +1968,11 @@ class ServeReadiness:
     Covers engine init / distributed rendezvous — an inference server
     refuses connections outright until then."""
     health_wait_s: float = 0.0
-    """Seconds from the port opening until ``/v1/models`` returned 200.
+    """Seconds waiting for HTTP readiness after observing the listening port.
 
-    Covers weight load and graph capture."""
+    The legacy check uses ``/v1/models``; streaming readiness uses ``/health``.
+    Docker-start metrics live separately in ``startup_observation``."""
+    startup_observation: dict[str, Any] = field(default_factory=dict)
 
     @property
     def health_url(self) -> str:
@@ -1995,7 +1980,7 @@ class ServeReadiness:
 
     @property
     def total_wait_s(self) -> float:
-        """Containers-running → serving.  The time-to-first-inference figure."""
+        """Time spent waiting for port/health; not a TTFT measurement."""
         return self.port_wait_s + self.health_wait_s
 
 
@@ -2004,15 +1989,51 @@ def wait_for_serve_ready(
     *,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
-    port_timeout_s: float = DEFAULT_PORT_READY_TIMEOUT_S,
+    port_timeout_s: float | None = None,
     port_retry_interval: int = 2,
-    health_timeout_s: float = DEFAULT_HEALTH_READY_TIMEOUT_S,
+    health_timeout_s: float | None = None,
     health_retry_interval: int = 5,
     timeline: "Timeline | None" = None,
     cancel: "threading.Event | None" = None,
     parent: int | None = None,
 ) -> ServeReadiness:
-    """Adapter over :func:`wait_for_endpoint_ready` for a :class:`LaunchResult`."""
+    """Apply the effective recipe/global policy to a launched workload.
+
+    Explicit function timeout arguments remain caller budget overrides; normal
+    CLI paths omit them so all policy fields resolve through the same chain.
+    """
+    settings = resolve_readiness_settings(config=getattr(result, "config", None), recipe=getattr(result, "recipe", None))
+    if port_timeout_s is not None:
+        settings = replace(settings, port_timeout_s=port_timeout_s)
+    if health_timeout_s is not None:
+        settings = replace(settings, health_timeout_s=health_timeout_s)
+    observation = getattr(result, "startup_observation", None)
+    style = resolve_inference_style(settings, result.runtime)
+    executor = getattr(result.runtime, "executor", None)
+    get_observer = getattr(executor, "readiness_observer", None)
+    observer = get_observer() if callable(get_observer) else None
+    if not isinstance(observer, ReadinessObserver):
+        observer = None
+    health_path = getattr(result.runtime, "readiness_health_path", None)
+    accepted = (getattr(result, "runtime_info", {}) or {}).get("inference_readiness") == "accepted"
+    if not dry_run and (
+        observation or (not accepted and observer is not None and isinstance(health_path, str) and (style or not settings.inference))
+    ):
+        from sparkrun.orchestration.startup import observe_launch
+
+        try:
+            return observe_launch(
+                result,
+                ssh_kwargs=ssh_kwargs,
+                cancel=cancel,
+                timeline=timeline if timeline is not None else result.timeline,
+                parent=parent,
+                settings=settings,
+                style=style,
+                observer=observer,
+            )
+        except ObservationUnavailable as error:
+            logger.info("Startup observation unavailable: %s; using endpoint readiness", error)
     return wait_for_endpoint_ready(
         runtime=result.runtime,
         cluster_id=result.cluster_id,
@@ -2021,9 +2042,9 @@ def wait_for_serve_ready(
         port=result.serve_port,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
-        port_timeout_s=port_timeout_s,
+        port_timeout_s=settings.port_timeout_s,
         port_retry_interval=port_retry_interval,
-        health_timeout_s=health_timeout_s,
+        health_timeout_s=settings.health_timeout_s,
         health_retry_interval=health_retry_interval,
         timeline=timeline if timeline is not None else result.timeline,
         cancel=cancel,
@@ -2251,14 +2272,6 @@ class ReadinessWatcher:
                 # a span taken from the shared open-span stack would be closed
                 # (with the wrong status) by the next main-thread ``end()``.
                 parent=TIMELINE_ROOT,
-                # Unbounded on purpose.  A timeout here would buy nothing: the
-                # watch is observational, costs one cheap probe per interval,
-                # and `stop()` ends it when the log stream does — so its
-                # natural budget is "as long as the user is watching".  A
-                # fixed budget could only ever expire *early* and report a
-                # still-starting engine as an endpoint that never came up.
-                port_timeout_s=math.inf,
-                health_timeout_s=math.inf,
             )
         except Exception:
             # Observational only — this thread must never be why a launch
@@ -2373,8 +2386,6 @@ def post_launch_lifecycle(
         result,
         ssh_kwargs=_ssh_kw,
         dry_run=dry_run,
-        port_timeout_s=config.readiness_port_timeout_s,
-        health_timeout_s=config.readiness_health_timeout_s,
     )
     head_host = readiness.head_host
     head_ip = readiness.head_ip
@@ -2384,6 +2395,8 @@ def post_launch_lifecycle(
     if not readiness.ready:
         if readiness.reason == "port":
             click.echo("Error: Server port %d never became ready" % effective_port, err=True)
+        elif readiness.reason == "inference":
+            click.echo("Error: Server did not pass streaming inference readiness", err=True)
         else:
             click.echo("Error: Server health check never passed at %s" % readiness.health_url, err=True)
         sys.exit(1)

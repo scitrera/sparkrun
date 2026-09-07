@@ -26,7 +26,10 @@ class TestVersionCommands:
         assert "cuda" in cmds
         assert "python" in cmds
         assert "torch" in cmds
-        assert "nccl" in cmds
+        # NCCL is reported as two explicitly-named versions, not one ambiguous
+        # `nccl` — see test_version_commands_reports_both_nccl_versions.
+        assert "nccl_torch" in cmds
+        assert "nccl_lib" in cmds
 
     def test_vllm_ray_has_vllm_key(self):
         cmds = VllmRayRuntime().version_commands()
@@ -621,3 +624,48 @@ class TestLauncherLabelIntegration:
         # Container labels (container_ prefix, normalized keys)
         assert runtime_info["container_org_opencontainers_image_version"] == "3.0"
         assert runtime_info["container_maintainer"] == "dev@example.com"
+
+
+# --- NCCL version reporting ---
+
+
+def test_version_commands_reports_both_nccl_versions():
+    """Neither NCCL version is reported under a bare ``nccl``.
+
+    A container carries two: the one torch was compiled against (its bundled
+    ``nvidia-nccl-cu*`` wheel) and the one the dynamic loader resolves for
+    ``libnccl.so.2``, which is what an engine's own communicator dlopens and
+    therefore what actually performs the collectives. Observed differing on the
+    eugr b12x nightly (torch 2.29.7, loaded 2.31.2), where only the latter was
+    doing the work — so a single ambiguous key named the wrong library in the
+    job metadata and the benchmark artifact.
+    """
+    cmds = RuntimePlugin.version_commands(RuntimePlugin.__new__(RuntimePlugin))
+
+    assert "nccl" not in cmds, "the ambiguous key must not come back"
+    assert "torch.cuda.nccl.version()" in cmds["nccl_torch"]
+    assert "ncclGetVersion" in cmds["nccl_lib"]
+    assert "libnccl.so.2" in cmds["nccl_lib"]
+
+
+def test_version_commands_survive_the_collector_shell_wrapping():
+    """Every probe stays syntactically valid inside ``echo "KEY=$(cmd)"``.
+
+    ``_collect_runtime_info`` interpolates each command into a double-quoted
+    echo, so a probe carrying its own quotes (``nccl_lib`` nests double quotes
+    inside a single-quoted ``python3 -c``) can break the *whole* generated
+    script, taking every unrelated version down with it.
+    """
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - POSIX dev environments have bash
+        return
+
+    for runtime_cls in (VllmDistributedRuntime, VllmRayRuntime, SglangRuntime, LlamaCppRuntime, TrtllmRuntime):
+        cmds = runtime_cls.version_commands(runtime_cls.__new__(runtime_cls))
+        script = "\n".join('echo "SPARKRUN_VER_%s=$(%s)"' % (k.upper(), c) for k, c in sorted(cmds.items()))
+        # -n parses without executing: no docker, no GPU, no network.
+        proc = subprocess.run([bash, "-n"], input=script, capture_output=True, text=True)
+        assert proc.returncode == 0, "%s: %s" % (runtime_cls.__name__, proc.stderr)

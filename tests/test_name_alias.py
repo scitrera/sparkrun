@@ -21,6 +21,7 @@ def test_run_with_name_override(monkeypatch):
     monkeypatch.setattr("sparkrun.core.launcher.post_launch_lifecycle", MagicMock())
     monkeypatch.setattr("sparkrun.cli._common._resolve_hosts_or_exit", lambda *args, **kwargs: (["localhost"], None))
     mock_recipe = MagicMock()
+    mock_recipe.readiness = {}
     mock_recipe.runtime = "vllm"
     mock_recipe.model = "test-model"
     mock_recipe.validate.return_value = []

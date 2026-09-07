@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from sparkrun.orchestration.mpi import DEFAULT_CONTAINER_SSH_KEY, build_rsh_wrapper
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config
 from sparkrun.runtimes.base import RuntimePlugin
 
@@ -231,14 +232,13 @@ class TrtllmRuntime(RuntimePlugin):
     def _generate_rsh_wrapper(
         host_ip_map: dict[str, str],
         cluster_id: str,
-        ssh_key_path: str = "/tmp/.ssh/id_ed25519",
+        ssh_key_path: str = DEFAULT_CONTAINER_SSH_KEY,
     ) -> str:
         """Generate the bash rsh wrapper script for mpirun.
 
-        The wrapper is written into the head container and used as
-        ``--mca plm_rsh_agent``.  It SSHes to the worker HOST
-        (using existing host-level sshd) and ``docker exec``s
-        the MPI command into the worker container.
+        Thin shim over :func:`sparkrun.orchestration.mpi.build_rsh_wrapper`,
+        which is shared with ``sparkrun setup rdma-test`` — the two are the
+        same mechanism, and a second copy would drift into a multi-node hang.
 
         Args:
             host_ip_map: Mapping of management IP to container name.
@@ -249,23 +249,7 @@ class TrtllmRuntime(RuntimePlugin):
         Returns:
             Complete bash script as a string.
         """
-        lines = [
-            "#!/bin/bash",
-            "# mpirun rsh agent: SSH to worker HOST, docker exec into container",
-            "HOST=$1; shift",
-            "case $HOST in",
-        ]
-        for ip, container_name in sorted(host_ip_map.items()):
-            lines.append('    %s) CONTAINER="%s" ;;' % (ip, container_name))
-        lines.extend(
-            [
-                '    *) echo "Unknown host: $HOST" >&2; exit 1 ;;',
-                "esac",
-                "exec ssh -o StrictHostKeyChecking=accept-new \\",  # TOFU: matches codebase convention, provides MITM protection after first connection
-                '  -i %s "$HOST" docker exec "$CONTAINER" "$@"' % ssh_key_path,
-            ]
-        )
-        return "\n".join(lines) + "\n"
+        return build_rsh_wrapper(host_ip_map, ssh_key_path=ssh_key_path)
 
     @staticmethod
     def _build_extra_config(recipe: Recipe, overrides: dict[str, Any] | None = None) -> str | None:

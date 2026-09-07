@@ -278,6 +278,14 @@ class DockerExecutor(Executor):
     """Docker-based executor for container operations."""
 
     executor_name = "docker"
+
+    def readiness_observer(self):
+        from sparkrun.core.readiness import DOCKER_HOST_OBSERVER
+
+        # Target-side checks additionally verify Linux, local daemon, and the
+        # actual container network. Never read host /proc for a bridge network.
+        return DOCKER_HOST_OBSERVER if self.config.network == "host" else None
+
     # Gated like every other executor (uniformity) but ships enabled on every
     # channel — ``executor.docker`` defaults on.  The flag exists so all
     # executors self-gate the same way and to leave room to disable docker on

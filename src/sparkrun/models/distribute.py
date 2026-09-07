@@ -24,6 +24,7 @@ from sparkrun.orchestration.ssh import (
 )
 from sparkrun.orchestration.sudo import ensure_remote_dir_ownership
 from sparkrun.scripts import read_script
+from sparkrun.utils.shell import args_list_to_shell_str, validate_interpolated_path
 
 from sparkrun.core.progress import PROGRESS
 
@@ -283,24 +284,53 @@ def _build_model_ensure_script(
     fetch identically — a second copy of this would be free to drift on GGUF
     handling or token injection, and the drift would only show on gated or
     quant-selected models.
+
+    The cache directory to probe is rendered in from :func:`model_cache_path`
+    rather than re-derived in bash.  The scripts used to mangle the id
+    themselves and got it wrong for every ``org/model`` repo (issue #291), so
+    the ``models--org--name`` rule now has exactly one implementation and the
+    check cannot disagree with the rsync destination built from the same
+    function.
+
+    *revision* is rendered pre-quoted (empty string when unpinned) and reaches
+    the downloader through the script's positional parameters rather than as
+    interpolated command text.  The scripts' cache check honors it via
+    ``_hf_snapshots.sh``: it previously reached only the *download* command, so
+    a host holding a different revision reported a hit and the pin was silently
+    ignored.
     """
+    from sparkrun.core.tooling import UV_INSTALL_BIN_DIR, UV_INSTALL_URL, UV_VERSION
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
     from sparkrun.utils.shell import quote
 
-    revision_flag = "--revision %s " % revision if revision else ""
+    revision_arg = quote(revision or "")
+    # Cache paths are validated, not quoted: they are emitted double-quoted so a
+    # leading ~/ or $HOME/ expands on the *target*, which shlex.quote would
+    # suppress.  See validate_interpolated_path.
+    cache = validate_interpolated_path(cache, field_name="cache_dir")
+    cache_path = validate_interpolated_path(model_cache_path(model_id, cache), field_name="model cache path")
+    uv = {
+        "uv_version": UV_VERSION,
+        "uv_install_url": UV_INSTALL_URL,
+        "uv_bin_dir": UV_INSTALL_BIN_DIR,
+    }
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
         script = read_script("model_sync_gguf.sh").format(
-            repo_id=repo_id,
-            quant=quant or "",
+            repo_id=quote(repo_id),
+            quant=quote(quant or ""),
             cache=cache,
-            revision_flag=revision_flag,
+            cache_path=cache_path,
+            revision=revision_arg,
+            **uv,
         )
     else:
         script = read_script("model_sync.sh").format(
-            model_id=model_id,
+            model_id=quote(model_id),
             cache=cache,
-            revision_flag=revision_flag,
+            cache_path=cache_path,
+            revision=revision_arg,
+            **uv,
         )
 
     # Inject HF token for gated models
@@ -432,8 +462,11 @@ def distribute_model_from_head(
     )
     rsync_attr_flags = " ".join(["-a", *NFS_SAFE_ATTR_OPTS]) if preserve_perms else "-r --links"
     dist_script = read_script("model_distribute.sh").format(
-        model_path=model_path,
-        targets=" ".join(targets),
+        # Validated rather than quoted (double-quoted on use, must still expand
+        # $HOME on the head); targets get the same treatment as the image
+        # sibling, which already used args_list_to_shell_str.
+        model_path=validate_interpolated_path(model_path, field_name="model cache path"),
+        targets=args_list_to_shell_str(targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
         max_parallel=HEAD_DISTRIBUTE_MAX_PARALLEL,

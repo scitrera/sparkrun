@@ -34,6 +34,7 @@ from .._common import host_options, json_option
 
 if TYPE_CHECKING:
     from sparkrun.orchestration.networking import CX7HostDetection
+    from sparkrun.orchestration.rdma import RdmaHostFacts
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,13 @@ class HostState:
     host: str
     facts: dict[str, str] = field(default_factory=dict)
     cx7: "CX7HostDetection | None" = None
+    rdma: "RdmaHostFacts | None" = None
+    """Devices and tooling from ``rdma_probe.sh``, for :func:`_check_rdma`.
+
+    A dedicated field for the same reason ``cx7`` is one: widening
+    ``setup_check.sh`` to carry RDMA facts would put a second, shallower
+    implementation of the probe beside the real one.
+    """
 
 
 def _truthy(facts: dict[str, str], key: str) -> bool:
@@ -484,6 +492,59 @@ class SetupCheck:
     evaluate: Callable[["HostState", CheckContext], "CheckItem | None"]
 
 
+def _check_rdma(state: "HostState", ctx: CheckContext) -> "CheckItem | None":
+    """RDMA devices are present and up, and the tooling to exercise them exists.
+
+    Deliberately cheap: it reads what the host reports and never sends a byte
+    over the fabric. "The link is configured" and "the link performs" are
+    different questions, and answering the second takes minutes of real
+    transfers — that is ``sparkrun setup rdma-test``, which this check points
+    at rather than becoming.
+
+    Absent perftest is **not** a warning on its own. It is one command away,
+    and ``setup rdma-test`` falls back to its container image, so reporting it
+    as a defect would fire on a host where nothing is wrong.
+
+    Inter-node, so single-host clusters are skipped.
+    """
+    if not ctx.multi_host:
+        return None
+    facts = state.rdma
+    if facts is None or not facts.complete:
+        return CheckItem("rdma", "RDMA fabric", SKIP, "could not probe RDMA devices on this host")
+    if not facts.devices:
+        return CheckItem("rdma", "RDMA fabric", SKIP, "no RDMA devices present")
+
+    active = [d for d in facts.devices if d.active]
+    inactive = [d for d in facts.devices if not d.active]
+
+    if not active:
+        return CheckItem(
+            "rdma",
+            "RDMA fabric",
+            WARN,
+            "%d device(s) present but none ACTIVE: %s" % (len(inactive), ", ".join(d.name for d in inactive)),
+            guidance="check cabling, then: sparkrun setup cx7%s" % ctx.cluster_flag,
+        )
+
+    detail = "%d device(s) ACTIVE: %s" % (len(active), ", ".join(d.name for d in active))
+    rate = next((d.rate_gbps for d in active if d.rate_gbps), None)
+    if rate:
+        detail += " @ %.0f Gb/s" % rate
+    if not facts.has_perftest:
+        detail += "; perftest not installed (rdma-test will use its container image)"
+
+    if inactive:
+        return CheckItem(
+            "rdma",
+            "RDMA fabric",
+            WARN,
+            "%s; %d not ACTIVE: %s" % (detail, len(inactive), ", ".join(d.name for d in inactive)),
+            guidance="verify performance with: sparkrun setup rdma-test%s" % ctx.cluster_flag,
+        )
+    return CheckItem("rdma", "RDMA fabric", OK, detail)
+
+
 #: Ordered registry of readiness checks. Order is the display/evaluation
 #: order and is the seed of the future ordered/dependency-driven step system.
 SETUP_CHECKS: tuple[SetupCheck, ...] = (
@@ -497,6 +558,7 @@ SETUP_CHECKS: tuple[SetupCheck, ...] = (
     SetupCheck("sudoers", _check_sudoers),
     SetupCheck("ssh_mesh", _check_ssh_mesh),
     SetupCheck("cx7", _check_cx7),
+    SetupCheck("rdma", _check_rdma),
 )
 
 
@@ -664,6 +726,19 @@ def register(setup_group) -> None:
                 logger.debug("CX7 detection failed during setup check", exc_info=True)
                 cx7_detections = {}
 
+        # RDMA device state, from the same probe `setup rdma-test` uses — so
+        # the check and the test cannot disagree about what hardware is there.
+        # Read-only and cheap: it sends nothing over the fabric.
+        rdma_facts = {}
+        if multi_host:
+            from sparkrun.api.setup._rdma import _run_probe
+
+            try:
+                rdma_facts = _run_probe(host_list, ssh_kwargs, dry_run=False)
+            except Exception:
+                logger.debug("RDMA probe failed during setup check", exc_info=True)
+                rdma_facts = {}
+
         # Render in a deterministic host order.
         for host in host_list:
             r = raw_results.get(host)
@@ -677,7 +752,12 @@ def register(setup_group) -> None:
                 json_hosts[host] = {"reachable": False, "checks": []}
                 continue
 
-            state = HostState(host=host, facts=parse_kv_output(r.stdout), cx7=cx7_detections.get(host))
+            state = HostState(
+                host=host,
+                facts=parse_kv_output(r.stdout),
+                cx7=cx7_detections.get(host),
+                rdma=rdma_facts.get(host),
+            )
             items = evaluate_host(state, check_ctx)
             results_by_host[host] = items
             _render_host(host, items)

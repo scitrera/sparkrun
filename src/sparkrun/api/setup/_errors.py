@@ -22,8 +22,18 @@ class OpenSshUnavailable(SshAccessError):
     """The OpenSSH client binaries (``ssh`` / ``ssh-keygen``) are missing."""
 
 
+class RdmaTestError(SparkrunError):
+    """The RDMA fabric test could not be set up or run.
+
+    Raised only when the test could not *start* — no usable links, an image
+    that would not fetch, a container that would not start. A link that runs
+    and measures badly is a finding in the report, not an exception.
+    """
+
+
 __all__ = [
     "SshAccessError",
     "SshKeyError",
     "OpenSshUnavailable",
+    "RdmaTestError",
 ]

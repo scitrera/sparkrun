@@ -655,6 +655,18 @@ class SparkrunConfig:
             return []
         return [Path(os.path.expanduser(str(entry))) for entry in raw if entry]
 
+    def rdma_test_settings(self) -> dict[str, Any]:
+        """Return a copy of the ``rdma_test`` section of ``config.yaml``.
+
+        Recognized keys: ``image`` (test image override — the hosts that most
+        need this command are the ones that can least reach GHCR, so a mirror
+        must be nameable), ``bw_warn_ratio`` and ``lat_warn_us`` (verdict
+        thresholds).  Absent keys fall back to the defaults in
+        :mod:`sparkrun.api.setup._rdma`.
+        """
+        section = self._data.get("rdma_test", {})
+        return dict(section) if isinstance(section, dict) else {}
+
     def plugin_settings(self, name: str) -> dict[str, Any]:
         """Return a copy of the user-level ``plugins.<name>`` settings.
 

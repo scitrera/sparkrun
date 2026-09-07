@@ -187,17 +187,29 @@ def observe_launch(result, *, settings, style=None, observer=None, ssh_kwargs=No
     for name, key in (("port_open", "port_open_unix_ns"), ("http_ready", "http_ready_unix_ns"), ("ttft", "first_token_unix_ns")):
         if key not in observation:
             continue
-        duration = (observation[key] - start) / 1e9
-        if timeline is not None and not getattr(result, "startup_observation", None):
-            timeline.add_span(
-                "serve.startup_" + name,
-                clock="host:" + host,
-                duration_s=duration,
-                wall_start=start / 1e9,
-                parent=parent,
-                measurement=observation["measurement"],
-                observer="rank0",
-            )
+        span = "serve.startup_" + name
+        # Idempotent against the span already being on *this timeline*, not
+        # against the result carrying an observation.  The latter is true both
+        # for a repeated wait and for a strategy-supplied receipt, so it kept
+        # ColdSnap's ``rank0-acceptance-v1`` measurement out of every timing
+        # artifact the launch produced — the one case where the numbers came
+        # from somewhere sparkrun could not re-measure.
+        if timeline is None or timeline.find(span) is not None:
+            continue
+        timeline.add_span(
+            span,
+            clock="host:" + host,
+            duration_s=(observation[key] - start) / 1e9,
+            wall_start=start / 1e9,
+            parent=parent,
+            measurement=observation["measurement"],
+            observer="rank0",
+            # All three are elapsed from the same origin, so they overlap.
+            # Tree siblings are otherwise additive; without the marker a
+            # consumer summing them reports a startup ~1.5x its real length.
+            composition="non_additive",
+            timing_semantics="from_container_start",
+        )
     result.startup_observation = observation
     return ServeReadiness(
         True,

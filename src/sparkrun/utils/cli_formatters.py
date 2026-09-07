@@ -587,6 +587,92 @@ def timing_tree_depth_for_verbosity(verbosity: int | bool = 0) -> int | None:
     return None if verbosity >= 3 else max(2, 2 + verbosity)
 
 
+#: Rank-local Docker-start metrics: key → observation timestamp field, in
+#: report order.  ``key`` matches the ``serve.startup_<key>`` span names, so a
+#: reader can move between the block, the tree and the exported timeline
+#: without a translation table.
+_STARTUP_METRICS = (
+    ("port_open", "port_open_unix_ns"),
+    ("http_ready", "http_ready_unix_ns"),
+    ("ttft", "first_token_unix_ns"),
+)
+
+#: Row labels for :func:`format_startup_readiness`.  The live readiness line
+#: words them differently (it carries one shared "container-start" prefix), so
+#: only the *values* are shared between the two renderings.
+_STARTUP_LABELS = {"port_open": "TTR port-open", "http_ready": "TTR HTTP-ready", "ttft": "TTFT"}
+
+
+def startup_readiness_durations(observation: dict) -> dict[str, str]:
+    """Render a rank-local startup observation's three elapsed times.
+
+    Returns ``{"port_open": "6.081s", "http_ready": "15.682s", "ttft": …}``.
+    Every value is elapsed from the serving container's start, so the three
+    **overlap and must never be summed**.
+
+    Shared by the live readiness line and the end-of-launch block precisely
+    because the user is invited to compare them: two renderings computing the
+    same figure independently is how they come to disagree.
+
+    A missing timestamp renders ``"unavailable"`` rather than ``0`` — the
+    observation omits what it did not observe — and an endpoint-only
+    observation (``readiness.inference: false``) renders TTFT as not
+    applicable rather than as a failure to measure it.
+    """
+    start = observation["container_started_unix_ns"]
+    endpoint_only = observation.get("inference_requested") is False
+    rendered: dict[str, str] = {}
+    for key, field_name in _STARTUP_METRICS:
+        if key == "ttft" and endpoint_only:
+            rendered[key] = "not applicable (inference disabled)"
+        elif field_name in observation:
+            rendered[key] = "%.3fs" % ((observation[field_name] - start) / 1e9)
+        else:
+            rendered[key] = "unavailable"
+    return rendered
+
+
+def format_startup_readiness(
+    observation: dict | None,
+    *,
+    host: str | None = None,
+    width: int = 62,
+    title: str = "Startup readiness",
+) -> str:
+    """Render the rank-local Docker-start metrics as an end-of-launch block.
+
+    The same three numbers the readiness line reports the instant the endpoint
+    answers.  That line is emitted while ``docker logs -f`` is still writing,
+    so by the time a launch finishes it is thousands of lines up the
+    scrollback — which is the whole reason it is repeated beside the timing
+    tree once the stream has stopped.
+
+    A **block** rather than three rows in the tree, because these are
+    cumulative from one origin and overlap: the tree's siblings are additive,
+    and rows there that must not be summed would read as a stage breakdown.
+    They do also reach the tree, as foreign-clock spans marked non-additive —
+    that is for the consumer reading the exported timeline, where a
+    machine-readable marker is the only thing that can carry the warning.
+
+    Returns ``""`` when there is no observation.  A legacy endpoint wait
+    measures nothing from container start, and the two stages it *does*
+    measure are already ``serve.port_open`` / ``serve.health_ok`` in the tree.
+    """
+    if not isinstance(observation, dict) or type(observation.get("container_started_unix_ns")) is not int:
+        return ""
+    where = "rank 0" + (" on %s" % host if host else "")
+    lines = ["%s (%s, elapsed from container start):" % (title, where)]
+    durations = startup_readiness_durations(observation)
+    for key, _ in _STARTUP_METRICS:
+        label = _STARTUP_LABELS[key]
+        pad = max(1, width - 2 - len(label))
+        lines.append("  %s%s%s" % (label, " " * pad, durations[key]))
+    measurement = observation.get("measurement")
+    if measurement:
+        lines.append("  measurement: %s" % measurement)
+    return "\n".join(lines)
+
+
 def format_launch_timings(
     export: dict,
     *,

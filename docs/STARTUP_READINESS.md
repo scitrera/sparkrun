@@ -35,10 +35,19 @@ handling for its local HTTP calls. Detectable clock steps during inference
 invalidate the observation.
 
 The normal launch log prints the three Docker-start metrics when inference is
-ready. They also appear as overlapping `serve.startup_port_open`,
-`serve.startup_http_ready`, and `serve.startup_ttft` spans in the launch timeline.
-Do not sum these spans or confuse them with total CLI wall time. Images/model
-distribution and any preparation before container start remain separate phases.
+ready. That line is written while the container log stream is still scrolling,
+so `sparkrun run` repeats the same three numbers as a `Startup readiness` block
+beside the timing tree once the stream stops, from the same projection. Both
+suppress with `--no-timings` only for the block; the live line always prints.
+
+They also appear as overlapping `serve.startup_port_open`,
+`serve.startup_http_ready`, and `serve.startup_ttft` spans in the launch timeline,
+each marked `composition: non_additive` with `timing_semantics:
+from_container_start`. Do not sum these spans or confuse them with total CLI wall
+time. A strategy-supplied receipt records the same spans as a sparkrun-measured
+observation; a repeated wait on one timeline does not record them twice.
+Images/model distribution and any preparation before container start remain
+separate phases.
 `ServeReadiness.port_wait_s` and `health_wait_s` retain their wait-duration
 meaning; Docker-start timestamps are in `startup_observation`.
 

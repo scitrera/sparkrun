@@ -813,3 +813,113 @@ def _resolve_host_filter(
             return None
 
     return None
+
+
+@proxy.command("ui")
+@click.option("--issue-token", is_flag=True, help="Show the stored admin token (compatibility alias)")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+def ui_cmd(issue_token, output_json):
+    """Show the gateway's admin console URL."""
+    import json as _json
+
+    from sparkrun import api
+
+    try:
+        result = api.proxy.ui(issue_token=issue_token)
+    except api.SparkrunError as e:
+        raise click.ClickException(str(e)) from e
+
+    if output_json:
+        click.echo(
+            _json.dumps(
+                {
+                    "url": result.url,
+                    "running": result.running,
+                    "token": result.token,
+                    "bind_host": result.bind_host,
+                    "exposed": result.exposed,
+                    "auth_required": result.auth_required,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    click.echo("Admin console: %s" % result.url)
+    if result.exposed and result.auth_required:
+        click.echo("Reachable off this host (bound to %s) — sign-in requires a gateway credential." % result.bind_host)
+    elif result.exposed:
+        click.echo(
+            "DANGER: reachable off this host (bound to %s) with NO sign-in — anyone who can reach it can "
+            "rewrite the served model set. Close it with 'sparkrun proxy admin-token set' "
+            "or '--host 127.0.0.1'." % result.bind_host
+        )
+    if not result.running:
+        click.echo("Note: the gateway is not running — start it with 'sparkrun proxy start'.")
+    if result.token:
+        click.echo("")
+        click.echo("Sparkrun-managed admin token:")
+        click.echo("  %s" % result.token)
+        click.echo("")
+        click.echo("Paste it into the console's token field to sign in.")
+    elif not result.auth_required:
+        click.echo("Admin authentication is disabled; no sign-in token is required.")
+    elif result.running:
+        click.echo("Get the sign-in token with: sparkrun proxy admin-token get")
+
+
+@proxy.group("admin-token")
+def admin_token_group():
+    """Get or replace the single SparkRoute admin token."""
+
+
+@admin_token_group.command("get")
+@json_option()
+def admin_token_get(output_json):
+    """Show the current token, or report that admin authentication is open."""
+    from sparkrun import api
+
+    try:
+        token = api.proxy.admin_token()
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": token is not None, "token": token})
+    elif token is None:
+        click.echo("Admin authentication is disabled (the default); no token is required.")
+        click.echo("Require one immediately with: sparkrun proxy admin-token set")
+    else:
+        click.echo(token)
+
+
+@admin_token_group.command("set")
+@json_option()
+def admin_token_set(output_json):
+    """Replace the current token with a newly generated high-entropy token."""
+    from sparkrun import api
+
+    try:
+        token = api.proxy.admin_token(rotate=True)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": True, "token": token, "rotated": True})
+    else:
+        click.echo(token)
+        click.echo("Previous admin token invalidated.", err=True)
+
+
+@admin_token_group.command("clear")
+@json_option()
+def admin_token_clear(output_json):
+    """Stop requiring an admin token immediately, without restarting."""
+    from sparkrun import api
+
+    try:
+        api.proxy.admin_token(clear=True)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": False, "token": None, "cleared": True})
+    else:
+        click.echo("Admin authentication disabled; no token is required.")

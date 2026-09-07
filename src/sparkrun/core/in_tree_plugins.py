@@ -69,7 +69,7 @@ IN_TREE_PLUGIN_PACKAGE = "sparkrun.plugins"
 #: off the plugin because the flag must resolve *before* the import — a plugin
 #: that declared its own gate could only be consulted by importing it, which is
 #: exactly what the gate is meant to avoid.
-IN_TREE_PLUGIN_FEATURES: dict[str, str] = {}
+IN_TREE_PLUGIN_FEATURES: dict[str, str] = {"sparkroute": "gateway.sparkroute"}
 
 
 def plugin_feature_flag(name: str) -> str | None:

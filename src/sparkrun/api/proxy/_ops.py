@@ -19,13 +19,12 @@ auto-discover daemon keeps driving the engine it was started with.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
 
-from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUpdateFailed
+from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUnsupported, ProxyUpdateFailed
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -851,11 +850,9 @@ def _pid_alive(pid: int | None) -> bool:
     """True when *pid* names a live process we may signal."""
     if not pid:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError, ValueError):
-        return False
+    from sparkrun.utils.process import process_exists
+
+    return process_exists(pid)
 
 
 __all__ = [
@@ -868,6 +865,9 @@ __all__ = [
     "ProxyStopResult",
     "ProxySyncResult",
     "add_alias",
+    "ui",
+    "admin_token",
+    "ProxyUiResult",
     "list_aliases",
     "list_gateways",
     "models",
@@ -880,3 +880,75 @@ __all__ = [
     "sync",
     "unregister_loaded_model",
 ]
+
+
+@dataclass(frozen=True)
+class ProxyUiResult:
+    """Where the gateway's admin console is, and how to get into it."""
+
+    url: str
+    running: bool
+    #: Sparkrun-managed operator credential; ``None`` unless requested or auth
+    #: is explicitly disabled. Stored owner-only for later retrieval.
+    token: str | None = None
+    #: Address the console's listener is bound to.  Differs from the host in
+    #: :attr:`url` for a wildcard bind, which is not connectable as written.
+    bind_host: str = ""
+    #: True when the console is reachable from off this machine.
+    exposed: bool = False
+    auth_required: bool = True
+
+
+def ui(*, issue_token: bool = False, sctx: "SparkrunContext | None" = None) -> ProxyUiResult:
+    """Locate the running gateway's admin console, optionally minting access.
+
+    Ungated, like every other management path: a console started while the
+    flag was on stays reachable.
+
+    Args:
+        issue_token: Return the single owner-only admin token managed by
+            Sparkrun. Kept for CLI compatibility; ``admin_token`` is the
+            explicit credential-management API.
+
+    Raises:
+        ProxyUnsupported: the running gateway serves no admin console.
+    """
+    engine = _running_engine(sctx)
+    url = getattr(engine, "ui_url", None)
+    if not url:
+        raise ProxyUnsupported("The %s gateway does not serve an admin console." % getattr(engine, "gateway_name", "configured"))
+
+    token = None
+    if issue_token:
+        issue = getattr(engine, "issue_ui_credential", None)
+        if issue is None:
+            raise ProxyUnsupported("The %s gateway cannot issue console credentials." % engine.gateway_name)
+        try:
+            token = issue()
+        except RuntimeError as exc:
+            raise ProxyUpdateFailed(str(exc)) from exc
+    return ProxyUiResult(
+        url=str(url),
+        running=engine.is_running(),
+        token=token,
+        bind_host=str(getattr(engine, "admin_bind_host", "")),
+        exposed=bool(getattr(engine, "admin_exposed", False)),
+        auth_required=bool(getattr(engine, "admin_auth_required", True)),
+    )
+
+
+def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunContext | None" = None) -> str | None:
+    """Return, rotate, or clear the configured gateway's live admin token.
+
+    None means admin authentication is currently open. Rotation generates a
+    high-entropy bearer token and takes effect immediately; clearing removes
+    that requirement immediately.
+    """
+    engine = _running_engine(sctx)
+    operation = getattr(engine, "admin_token", None)
+    if operation is None:
+        raise ProxyUnsupported("The %s gateway has no managed admin token." % getattr(engine, "gateway_name", "configured"))
+    try:
+        return operation(rotate=rotate, clear=clear)
+    except RuntimeError as exc:
+        raise ProxyUpdateFailed(str(exc)) from exc

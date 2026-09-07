@@ -74,6 +74,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "sparkrun.scripts" = ["*.sh"]
+"sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
 "sparkrun.bin" = ["nv-monitor-*", "prom2json-*"]
 
 [tool.pytest.ini_options]

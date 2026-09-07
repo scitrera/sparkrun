@@ -324,3 +324,8 @@ FEATURE_CLI_SETUP_FEATURES = register_feature(
         default=False,
     )
 )
+
+
+FEATURE_GATEWAY_SPARKROUTE = register_feature(
+    FeatureFlag(name="gateway.sparkroute", description="SparkRoute gateway and workload bridge", default=False)
+)

@@ -35,6 +35,7 @@ from typing import Any
 import yaml
 
 from sparkrun.utils.fs import open_private_write
+from sparkrun.utils.process import process_exists
 
 logger = logging.getLogger(__name__)
 
@@ -104,20 +105,15 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while True:
         try:
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            if sys.platform != "win32" and os.waitpid(pid, os.WNOHANG)[0] == pid:
                 return True
         except ChildProcessError:
             pass  # not our child — the normal daemonized case
         except OSError:
             pass
 
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not process_exists(pid, inaccessible=True):
             return True
-        except PermissionError:
-            # Alive but not ours to signal — treat as still running.
-            pass
 
         if _is_zombie(pid):
             return True
@@ -574,11 +570,7 @@ class GatewaySupervisor(GatewayState):
         pid = self._read_pid()
         if pid is None:
             return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
+        return process_exists(pid)
 
     # -- State file ---------------------------------------------------------
 

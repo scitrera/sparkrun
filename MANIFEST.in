@@ -1,0 +1,4 @@
+
+include vendor/sparkroute.lock
+include scripts/vendor-sparkroute.py
+recursive-include tests/vendor/sparkroute *.py

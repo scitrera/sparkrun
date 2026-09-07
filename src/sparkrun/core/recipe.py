@@ -17,6 +17,7 @@ from scitrera_app_framework.api import Variables, EnvPlacement
 
 from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
+from sparkrun.core.readiness import parse_recipe_readiness
 from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
 from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
 
@@ -107,6 +108,7 @@ _KNOWN_KEYS = {
     "layout",
     "cluster_config",
     "runtime_cache",
+    "readiness",
     "capabilities",
     "unsupported_capabilities",
 }
@@ -1091,6 +1093,10 @@ class Recipe:
 
         # Configuration
         self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
+        try:
+            self.readiness = parse_recipe_readiness(data.get("readiness", {}))
+        except ValueError as error:
+            raise RecipeError(str(error)) from error
         # Use recipe-provided env values literally.  Do NOT expand control-machine
         # variables (e.g. ``$AWS_SECRET_ACCESS_KEY``): a third-party recipe could
         # otherwise exfiltrate host secrets by injecting them into the container.
@@ -1389,6 +1395,10 @@ class Recipe:
         :func:`sparkrun.core.validation.validate_recipe` reports as errors.
         """
         issues = []
+        try:
+            parse_recipe_readiness(self.readiness)
+        except ValueError as error:
+            issues.append(str(error))
         if not self.name:
             issues.append("Recipe missing 'name' field")
         if not self.model:
@@ -1877,6 +1887,7 @@ class Recipe:
             "layout": self.layout.to_dict() if self.layout else None,
             "cluster_config": self.cluster_config.to_dict() if self.cluster_config else None,
             "runtime_cache": dict(self.runtime_cache),
+            "readiness": dict(self.readiness),
             "_applied_overrides": dict(self._applied_overrides),
             "_raw": dict(self._raw),
         }
@@ -1928,6 +1939,7 @@ class Recipe:
         self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
         self.cluster_config = LaunchOverrides.from_dict(state.get("cluster_config"))
         self.runtime_cache = dict(state.get("runtime_cache") or {})
+        self.readiness = parse_recipe_readiness(state.get("readiness", self._raw.get("readiness", {})))
         for key, raw_item in self._plugin_item_raw.items():
             registration = get_recipe_item(key)
             if registration is not None:
@@ -1984,6 +1996,7 @@ class Recipe:
         "mods",
         "defaults",
         "env",
+        "readiness",
         "pre_exec",
         "command",
         "post_exec",
@@ -2046,6 +2059,8 @@ class Recipe:
         # -- Runtime (compilation/autotune) cache knobs --
         if self.runtime_cache:
             d["runtime_cache"] = dict(self.runtime_cache)
+        if self.readiness:
+            d["readiness"] = dict(self.readiness)
 
         # -- Metadata (absorb promoted keys) --
         d["metadata"] = meta = dict(self.metadata)

@@ -21,12 +21,27 @@ OpenSSH client binaries.
 
 from __future__ import annotations
 
-from ._errors import OpenSshUnavailable, SshAccessError, SshKeyError
+from ._errors import OpenSshUnavailable, RdmaTestError, SshAccessError, SshKeyError
 from ._mesh import (
     MeshResult,
     build_collect_key_script,
     build_install_keys_script,
     mesh_ssh_keys_native,
+)
+from ._rdma import (
+    DEFAULT_RDMA_TEST_IMAGE,
+    STATUS_FAIL,
+    STATUS_OK,
+    STATUS_SKIP,
+    STATUS_WARN,
+    SUITE_ALL,
+    SUITE_NCCL,
+    SUITE_PERFTEST,
+    LinkTestResult,
+    NcclTestResult,
+    PairTestResult,
+    RdmaTestReport,
+    rdma_test,
 )
 from ._ssh_access import (
     SPARKRUN_KEY_NAME,
@@ -44,6 +59,7 @@ __all__ = [
     "ensure_local_key",
     "install_public_key_interactive",
     "mesh_ssh_keys_native",
+    "rdma_test",
     # Script builders (exposed for testing and for callers that pipe them
     # through their own transport)
     "build_authorized_key_script",
@@ -53,10 +69,23 @@ __all__ = [
     "SshProbe",
     "LocalSshKey",
     "MeshResult",
+    "RdmaTestReport",
+    "PairTestResult",
+    "LinkTestResult",
+    "NcclTestResult",
     # Errors
     "SshAccessError",
     "SshKeyError",
     "OpenSshUnavailable",
+    "RdmaTestError",
     # Constants
     "SPARKRUN_KEY_NAME",
+    "DEFAULT_RDMA_TEST_IMAGE",
+    "SUITE_PERFTEST",
+    "SUITE_NCCL",
+    "SUITE_ALL",
+    "STATUS_OK",
+    "STATUS_WARN",
+    "STATUS_FAIL",
+    "STATUS_SKIP",
 ]

@@ -99,6 +99,12 @@ class RuntimePlugin(Plugin):
     runtime_name: str = ""
     default_image_prefix: str = ""
 
+    # Protocol capabilities, ordered by preference for inference_style: auto.
+    # Empty opts out; subclasses can also override an inherited declaration.
+    readiness_styles: tuple[str, ...] = ()
+    # The executor's observer may measure HTTP TTR even with inference disabled.
+    readiness_health_path: str | None = None
+
     # --- Hardware compatibility ---
     requires_capability: frozenset[str] = frozenset()
     """Capabilities or accelerator-model names every placed host must advertise.
@@ -1958,12 +1964,36 @@ class RuntimePlugin(Plugin):
 
         Base implementation provides common GPU stack versions.
         Subclasses should call super() and add runtime-specific entries.
+
+        **There are two NCCL versions in a container and they routinely
+        differ**, so neither is reported under a bare ``nccl``. ``torch.cuda
+        .nccl.version()`` is the version torch was *compiled against* — its
+        bundled ``nvidia-nccl-cu*`` wheel — while an engine's own communicator
+        (vLLM's ``pynccl``) ``dlopen``s ``libnccl.so.2`` through the dynamic
+        loader and gets whatever the image installed system-wide. Observed on
+        the eugr b12x nightly: torch says 2.29.7, the loaded library is 2.31.2,
+        and 2.31.2 is what performs every all-reduce in the workload.
+
+        Reporting only torch's answer named the one library that is *not* doing
+        the work — in job metadata and in the benchmark artifact, where the NCCL
+        version is exactly what a collective hang or an all-reduce regression
+        gets investigated against. So both are reported under names that say
+        which is which, and the compiled-vs-loaded gap becomes visible instead
+        of being silently resolved in favour of the wrong one.
+
+        Both are normalized to dotted strings so they are comparable to each
+        other and to what engines print; ``nccl`` previously emitted a Python
+        tuple repr (``(2, 29, 7)``).
         """
         return {
             "cuda": "nvcc --version 2>/dev/null | grep 'release' | sed 's/.*release //' | sed 's/,.*//' || nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo unknown",
             "python": "python3 --version 2>/dev/null | awk '{print $2}' || echo unknown",
             "torch": "python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo unknown",
-            "nccl": "python3 -c 'import torch; print(torch.cuda.nccl.version())' 2>/dev/null || echo unknown",
+            "nccl_torch": "python3 -c 'import torch;print(\".\".join(map(str,torch.cuda.nccl.version())))' 2>/dev/null || echo unknown",
+            # NCCL_VERSION packs as major*10000 + minor*100 + patch, except for
+            # <= 2.8 which used major*1000; 20900 is the unambiguous boundary
+            # (a 1000-based code never reaches it).
+            "nccl_lib": 'python3 -c \'import ctypes;v=ctypes.c_int();ctypes.CDLL("libnccl.so.2").ncclGetVersion(ctypes.byref(v));n=v.value;b=10000 if n>=20900 else 1000;print("%d.%d.%d"%(n//b,n%b//100,n%100))\' 2>/dev/null || echo unknown',
         }
 
     def _collect_runtime_info(

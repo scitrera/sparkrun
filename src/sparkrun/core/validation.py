@@ -1566,6 +1566,16 @@ def check_executor(
 # --------------------------------------------------------------------------
 
 
+def check_readiness(recipe, runtime, config) -> list[RecipeIssue]:
+    from sparkrun.core.readiness import validate_readiness_policy
+
+    try:
+        validate_readiness_policy(recipe=recipe, runtime=runtime, config=config)
+    except ValueError as error:
+        return [RecipeIssue(ERROR, "readiness-incompatible", str(error))]
+    return []
+
+
 def validate_recipe(
     recipe: Recipe,
     *,
@@ -1620,6 +1630,7 @@ def validate_recipe(
     # (severity the plugin chose). See :func:`coerce_issues`.
     if runtime is not None:
         issues.extend(_safe("runtime-field", lambda: coerce_issues(runtime.validate_recipe(recipe), "runtime-field")))
+        issues.extend(_safe("readiness-incompatible", lambda: check_readiness(recipe, runtime, config)))
 
     issues.extend(_safe("builder", lambda: check_builder(recipe, v)[0]))
     issues.extend(_safe("executor", lambda: check_executor(recipe, runtime=runtime, cluster=cluster, config=config, v=v)))

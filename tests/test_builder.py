@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 import pytest
@@ -256,6 +257,49 @@ class TestEugrPrepareImage:
         assert result == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
         mock_build.assert_not_called()
         mock_ensure.assert_not_called()
+
+    @pytest.mark.parametrize("container", ["vllm-node", "vllm-node-b12x", "vllm-node-mxfp4:latest"])
+    def test_eugr_substitution_warning_for_local_build_tag_reads_as_expected(self, eugr_builder_with_repo, caplog, container):
+        """An eugr `vllm-node*` tag gets the no-action-needed wording.
+
+        Every recipe in the eugr registry names one of these, so this branch is
+        the *normal* path — but it used to advise spelling the name "as a full
+        reference", which is a dead end for a tag that is not a registry ref, and
+        sent operators hunting for a misconfiguration that was not there.
+        """
+        builder, _ = eugr_builder_with_repo
+        recipe = Recipe.from_dict({"name": "test", "model": "some/model", "runtime": "eugr-vllm", "container": container})
+        with caplog.at_level(logging.WARNING, logger="sparkrun.builders.eugr"):
+            with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+                with mock.patch.object(builder, "ensure_repo"):
+                    builder.prepare_image(container, recipe, ["10.0.0.1"])
+
+        message = caplog.text
+        assert "This is the expected path" in message
+        assert "spell it as a full reference" not in message
+        assert "--use-wheels" not in message
+
+    def test_eugr_substitution_warning_for_unknown_image_keeps_spelling_advice(self, eugr_builder_with_repo, caplog):
+        """A non-eugr bare name keeps the you-may-have-typo'd-a-registry-ref wording."""
+        builder, _ = eugr_builder_with_repo
+        recipe = Recipe.from_dict({"name": "test", "model": "some/model", "runtime": "eugr-vllm", "container": "my-typo-image"})
+        with caplog.at_level(logging.WARNING, logger="sparkrun.builders.eugr"):
+            with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+                with mock.patch.object(builder, "ensure_repo"):
+                    builder.prepare_image("my-typo-image", recipe, ["10.0.0.1"])
+
+        assert "spell it as a full reference" in caplog.text
+
+    def test_eugr_local_build_tag_matching(self):
+        """`vllm-node` and its `-suffix` variants match; unrelated names do not."""
+        from sparkrun.builders.eugr import _is_eugr_local_build_tag
+
+        assert _is_eugr_local_build_tag("vllm-node")
+        assert _is_eugr_local_build_tag("vllm-node-b12x")
+        assert _is_eugr_local_build_tag("vllm-node-b12x:latest")
+        # A bare prefix match would claim this one; the required "-" is what stops it.
+        assert not _is_eugr_local_build_tag("vllm-nodepool")
+        assert not _is_eugr_local_build_tag("ghcr.io/other/vllm-node")
 
     def test_eugr_prepare_builds_when_use_wheels_and_image_missing(self, eugr_builder_with_repo):
         """prepare_image() triggers a wheels build for a custom image name with --use-wheels."""
@@ -1284,6 +1328,21 @@ class TestEugrDelegatedMode:
         mock_run.return_value = RemoteResult(host="h1", returncode=1, stdout="", stderr="not found")
         result = EugrBuilder._image_exists_on_host("my-image", "h1", ssh_kwargs={})
         assert result is False
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_image_exists_on_host_probes_quietly(self, mock_run):
+        """The probe opts out of WARNING-level failure logging.
+
+        rc=1 is this probe's normal negative answer and the script silences both
+        streams, so the default rendered every absent image as a bare
+        ``FAILED rc=1: (no output)`` that read as a tool malfunction.
+        """
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        mock_run.return_value = RemoteResult(host="h1", returncode=1, stdout="", stderr="")
+        EugrBuilder._image_exists_on_host("my-image", "h1", ssh_kwargs={})
+        assert mock_run.call_args.kwargs["quiet"] is True
 
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
     def test_ensure_repo_remote_calls_ssh(self, mock_run):

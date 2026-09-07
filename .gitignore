@@ -6,6 +6,12 @@ __pycache__/
 .venv/
 *.env
 .env
+# Build pins, not secrets. The blanket *.env rule above is for dotenv files
+# holding credentials; this one records the NCCL/CUDA versions the RDMA test
+# image is built from and MUST be tracked — build.sh and the CI workflow both
+# `source` it, and tests/test_rdma_image.py skips (rather than fails) when it
+# is missing, so leaving it untracked would silently disarm that guard.
+!docker/rdma-test/image.env
 uv.lock
 reference_materials/
 .coverage

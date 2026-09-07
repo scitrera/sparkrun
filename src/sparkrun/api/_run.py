@@ -108,6 +108,12 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
     hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
+    from sparkrun.core.readiness import validate_readiness_policy
+
+    try:
+        validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
+    except ValueError as error:
+        raise SparkrunError(str(error)) from error
 
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
     from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler, resolve_scheduler_selector
@@ -270,6 +276,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
 
     recipe = plan.recipe
     runtime = plan.runtime
+    from sparkrun.core.readiness import validate_readiness_policy
+
+    try:
+        validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
+    except ValueError as error:
+        raise SparkrunError(str(error)) from error
     cluster_def = plan.cluster
     hosts = list(plan.candidate_hosts)
     host_list = list(plan.host_list)

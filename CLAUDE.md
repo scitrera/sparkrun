@@ -96,6 +96,18 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
 | `validation.py`         | `RecipeIssue`, `validate_recipe()`, `validate_for_launch()` (see Recipe Validation)  |
+| `tooling.py`            | Pinned third-party tooling installed onto hosts (`UV_VERSION` / `UV_INSTALL_URL`)    |
+
+**Third-party tooling is version-pinned centrally** (`core/tooling.py`). sparkrun fetches `uv` from the internet and
+runs it on *cluster hosts* from two places — the model ensure scripts (when a host has no HuggingFace client) and the
+`uv-venv` builder — and both used the **unversioned** `https://astral.sh/uv/install.sh`, i.e. whatever Astral published
+that morning, fanned out across every node with no record of what landed. It is a *pin, not a floor* (a host that
+already has any `uv` keeps it; this governs only what sparkrun **installs**) and deliberately **not user-configurable**
+— a supply-chain pin is not a preference. Version-only for now; `UV_INSTALL_SHA256` is the marked slot for a digest.
+When neither acquisition route works the scripts **fail with guidance** naming a way out (install a client, switch to a
+control-machine `transfer_mode`, or pre-place the weights) rather than the old bare "failed to install uv" — on an
+air-gapped host that is a fact about the host, not a defect in the recipe. `tests/test_tooling_pin.py` asserts the
+unversioned URL appears in no rendered script, which is where the whole value of centralizing it lives.
 
 ### CLI Architecture (`cli/`)
 
@@ -655,8 +667,30 @@ Five things are load-bearing:
   `clocks` key **only** when mixed, so a consumer that never sees it is
   reading a single-clock timeline and may sum freely, and
   `format_launch_timings` annotates foreign rows `[remote:h1]` so the tree
-  does not read as one arithmetic whole. Nothing produces a foreign-clock
-  span yet — this is the seam a log probe plugs into.
+  does not read as one arithmetic whole. The rank-local startup observation
+  (`orchestration/startup.py`) is what produces foreign-clock spans today:
+  `serve.startup_port_open` / `_http_ready` / `_ttft`, on `host:<head>`.
+- **A sibling is not always a term.** Those three are elapsed from *one*
+  origin — the container's `State.StartedAt` — so they overlap, which the
+  clock discriminator alone does not say (they share a clock with each
+  other). `composition="non_additive"` + `timing_semantics` is the second
+  marker, and it is what stops a consumer summing a 46s startup into 68s. It
+  is also why the `sparkrun run` recap renders them as their **own block**
+  (`format_startup_readiness`) rather than as rows in the tree, whose
+  siblings otherwise read as a stage breakdown — and why the tree then
+  `omit=`s them (`STARTUP_SPAN_NAMES`). A row in that tree reads as a *term*
+  in its total, so a non-additive one shows the same figure twice and breaks
+  the only property the tree has. Omission is **display-only and the
+  caller's** (not a rule keyed off `composition`): the spans stay in
+  `export()` for diagnostics and benchmark metadata, and dropping a
+  non-additive span whose figures appear nowhere else would be the opposite
+  mistake.
+- **The startup spans are deduped per timeline, not per result.** They were
+  once skipped whenever `LaunchResult.startup_observation` was already set —
+  which is true both for a repeated wait *and* for a strategy-supplied
+  receipt, so ColdSnap's `rank0-acceptance-v1` measurement reached the live
+  log line and the benchmark artifact but never the timeline. `timeline.find`
+  is the idempotency check that distinguishes them.
 
 **Time to first inference** is `serve.port_open` + `serve.health_ok`, recorded
 by `wait_for_serve_ready`. Note which stage is the long pole: sglang and vLLM
@@ -754,11 +788,21 @@ Four properties are load-bearing:
   start failing everything scripted around `sparkrun run`. It warns instead,
   and stays silent for `cancelled`.
 
-**Timings are on by default.** `--no-timings` (hidden) suppresses the *table
+**Timings are on by default.** `--no-timings` (hidden) suppresses the *tables
 only* — the readiness watch and its "endpoint ready" line still run, because
 "the endpoint is up now" is worth having while logs scroll whether or not you
 want a breakdown afterwards. `--collect-diagnostics` keeps the timeline for its
 own record regardless.
+
+The finalize step prints **two** blocks, and the startup one does not need the
+timeline: it reads `LaunchResult.startup_observation` (set by the watcher *or*
+by the post-hook path's synchronous wait, which is why it is read off the
+result and not off the local `readiness`, which is `None` on that path). It is
+a deliberate repeat of the live line — that line is written the instant the
+endpoint answers, which on a long launch is thousands of log lines above where
+the reader ends up, and it is the one number nothing else in the recap carries.
+`startup_readiness_durations` is the shared projection so the two renderings
+cannot print different figures for the same launch.
 
 **Sinks**: `run` (tree, on by default), `--collect-diagnostics` (`run_timeline`
 NDJSON record — additive to that collector's own phases, which bracket a
@@ -1481,6 +1525,135 @@ exposure is a **raw tailnet port** (`http://<ip>:<port>/v1`), not `tailscale ser
 control-machine `tailscale ip` probes used by `expose --proxy`). Layering: `cli → api.tailscale →
 orchestration.tailscale → {orchestration.ssh/sudo, core.config}`. Design spec: `.slop/tailscale-setup.md`.
 
+### RDMA Fabric Verification (`setup rdma-test`)
+
+`infiniband.py` *detects* the fabric; `orchestration/rdma.py` *exercises* it.
+`validate_ib_connectivity` only proves an IB IP answers SSH — which a link
+silently running at 1 Gb/s over the management NIC would also do. Verifying
+what `setup cx7` configured was a manual copy-paste procedure until this
+command; the 3-layer split is the tailscale one (`cli/_setup/_rdma.py` →
+`api/setup/_rdma.py` → `orchestration/rdma.py` + `scripts/rdma_*.sh`).
+
+**A link is a subnet, not a host pair.** `setup cx7` gives every
+point-to-point cable its own /24, so `derive_link_pairs` recovers the physical
+topology by grouping configured interfaces by subnet — no probing. Deliberately
+*not* `networking.detect_topology()`, which discovers links by arping *before*
+addresses exist: right for planning, needless work afterwards. `CX7Interface`
+is the input because it carries `name` + `ip` + **`hca`** per interface;
+`IBDetectionResult` cannot serve here (it keeps only the first iface/IP per host
+and its HCA names survive only as a comma-joined `NCCL_IB_HCA` string). A subnet
+carrying >2 hosts is a switched segment and is **chained**, not meshed, so
+coverage stays O(N).
+
+**Both twins must run at once.** A DGX Spark QSFP112 cable presents as two RDMA
+devices (`rocep1s0f1`, `roceP2p1s0f1`). Driven one at a time each reaches
+~100 Gb/s; the cable's real ~196 Gb/s only appears concurrently — so `RdmaPair`
+groups every link between two hosts and the suite adds an aggregate pass. A
+per-device-only suite under-reports by half. That is what `rdma_perftest.sh`'s
+concurrency is for, and why its output is **framed** per run
+(`SPARKRUN_RDMA_RUN_<i>_BEGIN`): concurrent streams would otherwise interleave
+into something unparseable.
+
+**The client's retry is the rendezvous.** Server and client are dispatched
+simultaneously over separate SSH connections, so the client can arrive first.
+perftest has no wait-for-peer mode, and `-R` (rdma_cm) opens **no TCP listener**
+that `health.wait_for_port` could observe — so the gate that the native cluster
+path uses is unavailable here. `_run_round` gives the server a `RDMA_PRE_SLEEP`
+head start and retries the client; every command runs under `timeout`, so a
+server whose client never arrives dies on its own.
+
+**mpirun across containers is the shared trtllm mechanism.**
+`orchestration/mpi.py:build_rsh_wrapper` was extracted from
+`TrtllmRuntime._generate_rsh_wrapper` (byte-identical; trtllm now calls it):
+`--mca plm_rsh_agent` points at an agent that SSHes to the peer *host* and
+`docker exec`s into its container, so no sshd is needed inside the image. Its
+values are emitted bare or double-quoted and therefore **validated, not
+shell-quoted** — quoting would change what bash sees and break the existing
+contract.
+
+**Severity is split, and the expectation is derived.** Only a test that could
+not run at all is a `FAIL`; underperformance is a `WARN` (the `setup check`
+convention — WARN does not exit 1). The bandwidth expectation comes from the
+link's own sysfs `rate` (`rate_to_gbps`), so the verdict is meaningful on
+hardware that is not a DGX Spark; a hardcoded "expect 100 Gb/s" would misreport
+every other NVIDIA platform. Parsers return `None` rather than fabricating a
+number, so a refused connection is never reported as a measurement.
+
+**Only the NCCL suite needs the image.** perftest ships preinstalled on DGX OS
+and needs no CUDA, so the common "did my cable work?" check costs no image pull;
+the image is a fallback there and a requirement only for the collective (whose
+NCCL + nccl-tests build is ~10 minutes — not something a diagnostic may do to a
+cluster). `docker/rdma-test/` builds it; `image.env` is the single home of the
+**NCCL version, which is the release cadence** — bump it when NCCL cuts a
+release.
+
+Each architecture is built **natively** and the results merged into one
+manifest — never cross-built under QEMU, which turns nvcc across four GPU
+architectures from a ~20 minute build into hours. CI runs `ubuntu-24.04-arm`
+and `ubuntu-24.04` in parallel and pushes by digest (artifacts carry the
+digests between jobs); `build.sh --push` / `--merge` is the same flow by hand,
+using per-arch **tags** instead, because two separate machines share only the
+registry. **The runtime stage is plain Ubuntu, not the NGC CUDA runtime image.** Only
+the *builder* needs the CUDA toolchain. Measured on arm64: 4.3 GB inheriting
+`nvcr.io/nvidia/cuda:*-runtime` against **739 MB** on `ubuntu:24.04` with
+identical contents — the base carries ~1.9 GB of cuBLAS / cuFFT / cuSPARSE /
+cuSolver / cuRAND and the only CUDA library anything here links is
+`libcudart`, at 768 KB. `libnccl_static.a` (252 MB) and nccl-tests' `.o`
+objects (41 MB) are dropped **in the builder**, since deleting them in the
+runtime stage would leave them in an earlier layer that still counts. The
+full nccl-tests binary set is kept, so `rdma_test(nccl_binary=…)` accepts any
+collective it names. Three consequences of leaving the CUDA base:
+
+- **`NVIDIA_DRIVER_CAPABILITIES=compute,utility` becomes ours to set.** The
+  container runtime defaults to `utility`, which excludes compute — CUDA is
+  simply absent and the collective fails with nothing explaining why.
+- **CUDA's library path is architecture-specific** (`targets/sbsa-linux/lib`
+  vs `targets/x86_64-linux/lib`), so a `COPY` naming one builds on one
+  architecture and fails on the other. The builder stages `libcudart` to a
+  fixed path where a shell can expand the glob.
+- **`UBUNTU_TAG` is pinned beside `UBUNTU_VERSION`.** NGC tags read
+  `<cuda>-devel-ubuntu24.04`, the Ubuntu image is `ubuntu:24.04`, and a
+  Dockerfile `FROM` has no shell — `${UBUNTU_VERSION#ubuntu}` is not
+  expansion Docker performs.
+
+Three further traps are each silent-until-production, and all were hit
+building the image for real. `tests/test_rdma_image.py` guards every one.
+
+- **`image.env` is `source`d, so multi-word values must be quoted.**
+  Unquoted, bash reads `NVCC_GENCODE=-gencode=A -gencode=B` as an assignment
+  prefixing the command `-gencode=B`, never sets the variable, and the build
+  drops every architecture including `sm_121` — an image that cannot run on a
+  DGX Spark, with nothing erroring. CI therefore `source`s it too rather than
+  `cat`-ing it into `$GITHUB_ENV`, which takes values literally and would
+  carry the quote characters into the build-arg.
+- **No stage `ARG` may share a name with an NGC base-image `ENV`.** The CUDA
+  images set `ENV NCCL_VERSION=<the libnccl2 they bundle>`, and an inherited
+  ENV outranks a same-named ARG **under the legacy builder but not under
+  BuildKit** — so `ARG NCCL_VERSION` built our pinned NCCL under `buildx` and
+  NVIDIA's bundled 2.30.7-1 under `DOCKER_BUILDKIT=0`, from one Dockerfile.
+  Hence `NCCL_GIT_REF` / `NCCL_TESTS_GIT_REF`, names NGC does not define, plus
+  a post-clone `git describe` check so a mis-resolved pin fails loudly rather
+  than building a version nobody asked for.
+- **nccl-tests is pinned, and `CXXFLAGS` is not the way to fix it.** Cloned
+  unpinned, it broke the moment upstream added the `device_api/gin` tests,
+  whose `utils/common.cc` instantiates the deprecated MPI C++ bindings —
+  headers Ubuntu ships without `libmpi_cxx`. `CXXFLAGS=-DOMPI_SKIP_MPICXX`
+  looks like the fix and is worse: a variable set on make's command line
+  *replaces* the Makefile's assignment, dropping nccl-tests' own include paths
+  and failing earlier (`gethostname was not declared`). The pin is the fix. `DEFAULT_RDMA_TEST_IMAGE` is pinned to that tag, not `:latest`, so two
+runs a month apart are comparable; `tests/test_rdma_image.py` is the drift
+guard, since a Python constant naming an image nobody built fails minutes into
+a run on the cluster. `--ulimit memlock=-1:-1` is not optional (RDMA pins
+memory; `ibv_reg_mr` fails without it), and `--device` entries are enumerated
+from `/dev/infiniband/*` at runtime rather than passing the directory.
+
+Gated behind `cli.setup.rdma_test` (off `stable`, on `beta`/`alpha` via
+`channel_defaults`) for the `builder.uv_venv` reason — it mutates hosts. The
+gate is friction exactly when a user's networking is already broken, so it
+should be dropped once the image has field mileage. `setup check`'s `rdma` check
+is the cheap peer: it reports devices present/ACTIVE from the *same* probe and
+never sends a byte, pointing at this command for the rest.
+
 ### Inference Gateway (`proxy/` + `api/proxy/`)
 
 The **gateway** is the process fronting every discovered inference endpoint
@@ -2052,8 +2225,22 @@ terms as a registry one.
 Before launching, sparkrun can pre-sync models and container images from the control machine to target hosts:
 
 - **Models** (`models/`): Downloads from HuggingFace Hub locally via `snapshot_download` (`models/download.py`), then
-  rsyncs to targets (`models/distribute.py`, `models/sync.py`). GGUF models use colon syntax (`repo:quant`) for
-  selective quant-file download.
+  rsyncs to targets (`models/distribute.py`). GGUF models use colon syntax (`repo:quant`) for
+  selective quant-file download. `models/download.py:model_cache_path()` is the **only** implementation of the HF
+  `models--org--name` cache mangling — the remote ensure scripts take the resolved path as a rendered `{cache_path}`
+  rather than re-deriving it in bash, which is how the check and the rsync destination once disagreed (issue #291).
+
+  **The remote cache check must honor `revision`.** It once reached only the *downloader*, so a host holding a
+  different revision reported a hit and the pin was silently ignored — the workload served weights the recipe had
+  explicitly pinned against. Snapshot resolution reads the *target's* filesystem, so unlike the mangling it cannot be
+  rendered control-side; it lives in one included helper (`scripts/_hf_snapshots.sh`) whose contract mirrors
+  `is_model_cached` — an explicit revision checks that ref or commit **only, with no fallback**, while an unpinned
+  lookup prefers `refs/main` and falls back to any snapshot. Two things there are load-bearing: the helper is
+  **brace-free including its comments** (both callers go through `str.format()`, so one brace is a `KeyError` inside a
+  launch — the `_mgmt_iface.sh` rule), and the shell scan stays **recursive** where `is_model_cached` globs the
+  snapshot's top level only, because narrowing it would re-download every repo that shards weights into a
+  subdirectory. `revision` is recipe content, so it is `shlex.quote`d and reaches the downloader through the script's
+  positional parameters — interpolating it as command text was a live injection running on every host.
 - **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via
   `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts
   that already have the correct image.
@@ -2202,6 +2389,18 @@ normalization.
 
 Shared helpers used across multiple modules to avoid circular imports:
 
+- `shell.quote()` / `shell.validate_interpolated_path()` — the **two** tools for getting a value into a generated
+  shell script, and picking the wrong one is silently wrong in opposite directions. `quote()` is for values with no
+  expansion to preserve (a model id, a GGUF quant, a revision). `validate_interpolated_path()` is for paths emitted
+  **inside double quotes precisely so `~/` or `$HOME/` expands on the target** (`disk_info.py` rewrites `~/`→`$HOME/`
+  for exactly this; `mods.py` ships such a default) — quoting those points the cache at a literal `$HOME` and
+  re-downloads the weights every launch. It is deliberately *not* a path allowlist like `uv_venv._validate_host_path`:
+  these have always been double-quoted, so a directory with a space works today and refusing it would be a regression
+  for no gain — only what survives double quotes is rejected (`"`, backtick, `\`, newline, and `$` other than
+  `$HOME`). Recipe content reaches all of these (`model:`, its `:quant` suffix, `model_revision`,
+  `cluster_config.remote_cache_dir`), and every one of them was confirmed to *execute* before hardening. Note a value
+  can need both treatments at once: a model id is quoted where used as a value **and** folded into the cache path by
+  `model_cache_path`, where it can only be refused — so a hostile id raises rather than rendering.
 - `coerce_value()` — type coercion for CLI string inputs (to int, float, bool)
 - `suppress_noisy_loggers()` — silences verbose HTTP/transport loggers
 - `resolve_ssh_user()` — SSH user resolution (cluster → config → env → fallback)

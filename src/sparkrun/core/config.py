@@ -307,9 +307,7 @@ class SparkrunConfig:
         this stage absorbs nearly the whole startup.  ``0`` or negative
         means "no budget", i.e. poll until cancelled.
         """
-        from sparkrun.core.launcher import DEFAULT_PORT_READY_TIMEOUT_S
-
-        return self._readiness_timeout("port_timeout_s", DEFAULT_PORT_READY_TIMEOUT_S)
+        return self._readiness_settings().port_timeout_s
 
     @property
     def readiness_health_timeout_s(self) -> float:
@@ -317,22 +315,28 @@ class SparkrunConfig:
 
         Set via ``readiness.health_timeout_s`` in ``config.yaml``.
         """
-        from sparkrun.core.launcher import DEFAULT_HEALTH_READY_TIMEOUT_S
+        return self._readiness_settings().health_timeout_s
 
-        return self._readiness_timeout("health_timeout_s", DEFAULT_HEALTH_READY_TIMEOUT_S)
+    @property
+    def readiness_inference_enabled(self) -> bool:
+        return self._readiness_settings().inference
 
-    def _readiness_timeout(self, key: str, default: float) -> float:
-        import math
+    @property
+    def readiness_inference_style(self) -> str:
+        return self._readiness_settings().inference_style
 
-        section = self._data.get("readiness", {})
-        raw = section.get(key) if isinstance(section, dict) else None
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            return default
-        # A budget can only ever expire early — liveness checks are what
-        # detect a genuine failure — so "unbounded" is a legitimate ask.
-        return val if val > 0 else math.inf
+    @property
+    def readiness_inference_timeout_s(self) -> float:
+        return self._readiness_settings().inference_timeout_s
+
+    @property
+    def readiness_inference_prompt(self) -> str:
+        return self._readiness_settings().inference_prompt
+
+    def _readiness_settings(self):
+        from sparkrun.core.readiness import resolve_readiness_settings
+
+        return resolve_readiness_settings(config=self)
 
     @property
     def hub_timeout_s(self) -> float:
@@ -650,6 +654,18 @@ class SparkrunConfig:
         if not isinstance(raw, (list, tuple)):
             return []
         return [Path(os.path.expanduser(str(entry))) for entry in raw if entry]
+
+    def rdma_test_settings(self) -> dict[str, Any]:
+        """Return a copy of the ``rdma_test`` section of ``config.yaml``.
+
+        Recognized keys: ``image`` (test image override — the hosts that most
+        need this command are the ones that can least reach GHCR, so a mirror
+        must be nameable), ``bw_warn_ratio`` and ``lat_warn_us`` (verdict
+        thresholds).  Absent keys fall back to the defaults in
+        :mod:`sparkrun.api.setup._rdma`.
+        """
+        section = self._data.get("rdma_test", {})
+        return dict(section) if isinstance(section, dict) else {}
 
     def plugin_settings(self, name: str) -> dict[str, Any]:
         """Return a copy of the user-level ``plugins.<name>`` settings.

@@ -45,12 +45,54 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         """vLLM distributed uses native multi-node distribution, not Ray."""
         return "native"
 
-    # TODO: pure DP (``tp*pp == 1, dp > 1``) emits ``--data-parallel-*`` and no
-    # ``--master-port``, so nothing here looks like it binds ``init_port`` — if
-    # so the head gate in ``_cluster_ops`` waits out its budget and reports a
-    # healthy launch as dead, and the fix is a ``native_rendezvous_port``
-    # override returning ``None`` for that regime (see SglangRuntime, #284).
-    # Needs a live 2-node ``--dp 2`` run to confirm before changing anything.
+    @staticmethod
+    def _replica_size(config) -> int:
+        """``tp * pp`` — ranks in one torch-distributed world.
+
+        The single spelling of the condition that decides whether this launch
+        has a torch-distributed world at all: :meth:`_generate_parallel_command`
+        emits ``--nnodes``/``--master-addr``/``--master-port`` exactly when this
+        is ``> 1``, and :meth:`native_rendezvous_port` gates on the same value.
+        Two copies of that test drifting apart is issue #292.
+        """
+        from sparkrun.core.parallelism import extract_parallelism
+
+        p = extract_parallelism(config)
+        # Defensive: tp or pp misconfigured as 0.
+        return max(1, p.tensor_parallel * p.pipeline_parallel)
+
+    def native_rendezvous_port(
+        self,
+        recipe: "Recipe | None",
+        overrides: dict[str, Any] | None = None,
+        *,
+        num_nodes: int = 1,
+        init_port: int = 25000,
+    ) -> int | None:
+        """``None`` under pure data parallelism — nothing binds *init_port* there.
+
+        ``--master-port`` is emitted only for a cross-node ``tp * pp`` world
+        (:meth:`_generate_parallel_command`).  A pure-DP launch instead emits
+        ``--data-parallel-address``/``--data-parallel-rpc-port``, so the head
+        never opens *init_port*, the shared gate waits out its whole budget and
+        then reports a launch that is coming up fine as dead — and tears down
+        the containers, which is how a working two-node ``--dp 2`` deployment
+        left rank 1 sitting on ``sleep infinity`` (issue #292).
+
+        Pure DP is not rendezvous-free the way SGLang's independent replicas
+        are — vLLM's ranks do meet, at the head's DP coordinator.  Not gating on
+        *that* port is nonetheless deliberate: the coordinator is reached over
+        ZMQ, whose ``connect`` is asynchronous and reconnects, so a worker that
+        starts first has no race to lose (unlike a torch ``TCPStore`` client,
+        which is exactly what this gate exists to protect).  The gate is also
+        structurally unable to express it — ``_cluster_ops`` re-pins the gate to
+        the auto-detected *init_port* whenever it is not ``None``.
+        """
+        if recipe is None:
+            return init_port
+        if self._replica_size(recipe.build_config_chain(overrides or {})) > 1:
+            return init_port
+        return None
 
     def managed_rendezvous_flags(self) -> tuple[str, ...]:
         """Torch-distributed (intra-replica) plus vLLM data-parallel (inter-replica).
@@ -157,11 +199,8 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         from sparkrun.core.parallelism import extract_parallelism
 
         config = recipe.build_config_chain(overrides)
-        p = extract_parallelism(config)
-        replica_size = p.tensor_parallel * p.pipeline_parallel
-        dp = p.data_parallel
-        if replica_size <= 0:
-            replica_size = 1  # defensive: tp or pp misconfigured as 0
+        replica_size = self._replica_size(config)
+        dp = extract_parallelism(config).data_parallel
 
         # Rank math — see CLAUDE.md / plan "Rank math" section.
         # When dp == 1 this collapses to node_rank = global rank, tp_master = head_ip.

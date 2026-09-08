@@ -708,6 +708,7 @@ def test_prepare_config_dry_run_does_not_persist_discovery(tmp_path):
 
     assert config.discovered_models == []
     assert config.save_calls == 0
+    assert not engine._discovery_labels_path.exists()
 
 
 def test_autodiscover_is_safe_for_the_warm_only_snapshot(engine):
@@ -1013,3 +1014,45 @@ def test_exposing_the_console_warns(tmp_path, binary, caplog):
     ):
         engine.start()
     assert "reachable off this host" in caplog.text.lower()
+
+
+def test_discovered_titles_follow_healthy_clusters_and_survive_cli_restart(tmp_path):
+    config = _MutableProxyConfig(bindings=[])
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    jobs = [
+        SimpleNamespace(cluster_id="opaque-a", metadata={"cluster": "spark-a"}),
+        SimpleNamespace(cluster_id="opaque-b", metadata={"cluster": "spark-b"}),
+        SimpleNamespace(cluster_id="stale-job", metadata={"cluster": "old-cluster", "model": "served-model"}),
+    ]
+    endpoints = [
+        SimpleNamespace(cluster_id="opaque-a", healthy=True, actual_models=["served-model"]),
+        SimpleNamespace(cluster_id="opaque-b", healthy=True, actual_models=["served-model"]),
+        SimpleNamespace(cluster_id="stale-job", healthy=False, actual_models=["served-model"]),
+    ]
+    with mock.patch("sparkrun.api.list_jobs", return_value=jobs), mock.patch.object(engine, "reconcile", return_value=(1, 0)):
+        engine.sync_models(endpoints)
+        first = engine.build_desired_set()
+        assert first["deployments"][0]["title"] == "sparkrun:spark-a,spark-b:served-model"
+        restarted = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+        assert restarted.build_desired_set() == first
+        engine.sync_models(endpoints[1:])
+        second = engine.build_desired_set()
+        assert second["deployments"][0]["title"] == "sparkrun:spark-b:served-model"
+        assert second["deployments"][0]["name"] == first["deployments"][0]["name"]
+        engine.sync_models([])
+        assert SparkrouteEngine(state_dir=tmp_path, proxy_config=config)._read_discovery_labels() == {}
+
+
+def test_discovered_title_fallbacks_and_corrupt_optional_cache(tmp_path):
+    config = _MutableProxyConfig(bindings=[])
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    endpoint = SimpleNamespace(cluster_id="opaque-a", healthy=True, actual_models=["served-model"])
+    with mock.patch("sparkrun.api.list_jobs", side_effect=OSError("metadata unavailable")):
+        engine.prepare_config([endpoint], {})
+    document = engine.build_desired_set()
+    assert document["deployments"][0]["title"] == "sparkrun:opaque-a:served-model"
+    engine._discovery_labels_path.write_text("{broken")
+    restarted = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    fallback = restarted.build_desired_set()
+    assert fallback["deployments"][0]["name"] == document["deployments"][0]["name"]
+    assert fallback["deployments"][0]["title"] == "sparkrun:discovered:served-model"

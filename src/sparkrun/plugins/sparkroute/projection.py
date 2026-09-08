@@ -144,6 +144,7 @@ def build_sparkrun_set(
     *,
     permissive: bool = True,
     discovered_models: list[str] | None = None,
+    discovered_clusters: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Render projected bindings into the complete ``sparkrun`` managed set.
 
@@ -171,6 +172,7 @@ def build_sparkrun_set(
         name = deployment_name(entry.recipe_revision)
         deployment: dict[str, Any] = {
             "name": name,
+            "title": deployment_title(entry.model, entry.cluster_candidates, fallback="auto"),
             "provider": SPARKRUN_PROVIDER,
             "model": entry.model,
             # Order is observable only when several translated fallbacks are
@@ -232,6 +234,7 @@ def build_sparkrun_set(
         name = discovered_deployment_name(upstream_model)
         deployment: dict[str, Any] = {
             "name": name,
+            "title": deployment_title(upstream_model, (discovered_clusters or {}).get(upstream_model, []), fallback="discovered"),
             "provider": SPARKRUN_PROVIDER,
             "model": upstream_model,
             "native_protocols": [DEFAULT_PROTOCOL],
@@ -276,6 +279,12 @@ def build_sparkrun_set(
         "deployments": deployments,
         "virtual_models": virtual_models,
     }
+
+
+def deployment_title(model: str, clusters: list[str], *, fallback: str) -> str:
+    """Human label only: never participates in deployment or binding identity."""
+    cluster = ",".join(dict.fromkeys(clusters)) or fallback
+    return f"sparkrun:{cluster}:{model}"
 
 
 class ProjectedBinding:

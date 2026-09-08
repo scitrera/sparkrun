@@ -137,6 +137,7 @@ def test_discovered_model_projects_a_warm_only_route():
     deployment = document["deployments"][0]
     assert deployment == {
         "name": discovered_deployment_name("deepseek-ai/DeepSeek-V4-Flash-0731"),
+        "title": "sparkrun:discovered:deepseek-ai/DeepSeek-V4-Flash-0731",
         "provider": "sparkrun",
         "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
         "native_protocols": ["openai"],
@@ -393,3 +394,20 @@ def test_base_runtime_declares_only_openai():
     from sparkrun.runtimes.base import RuntimePlugin
 
     assert RuntimePlugin.native_protocols(mock.Mock(), mock.Mock()) == ["openai"]
+
+
+def test_friendly_titles_preserve_deployment_ids_and_binding_revisions():
+    binding = _binding(cluster_candidates=["spark-a", "spark-b"])
+    deployment = build_sparkrun_set([binding])["deployments"][0]
+    assert deployment["title"] == "sparkrun:spark-a,spark-b:qwen3-8b"
+    assert deployment["name"] == "sparkrun:abc123abc123"
+    binding.model = "friendly/new-model"
+    renamed = build_sparkrun_set([binding])["deployments"][0]
+    assert renamed["title"] == "sparkrun:spark-a,spark-b:friendly/new-model"
+    assert renamed["name"] == deployment["name"]
+    assert renamed["endpoint_source"]["revision"] == deployment["endpoint_source"]["revision"]
+    warm_a = build_sparkrun_set([], discovered_models=["model"], discovered_clusters={"model": ["spark-a"]})["deployments"][0]
+    warm_b = build_sparkrun_set([], discovered_models=["model"], discovered_clusters={"model": ["spark-b"]})["deployments"][0]
+    assert warm_a["name"] == warm_b["name"] == discovered_deployment_name("model")
+    assert warm_a["title"] == "sparkrun:spark-a:model"
+    assert warm_b["title"] == "sparkrun:spark-b:model"

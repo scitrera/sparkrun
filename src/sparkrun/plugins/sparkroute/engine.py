@@ -37,9 +37,12 @@ sparkrun-side replies in ``docs/SPARKROUTE_MANAGED_CONFIG_RESPONSE.md``.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -129,6 +132,7 @@ class SparkrouteEngine(GatewaySupervisor):
         self.host_configured = host_configured
         self.proxy_config = proxy_config
         self.sctx = sctx
+        self._discovery_labels: dict[str, list[str]] | None = None
         self.credential = ReconcilerCredential(self.state_dir / "gateway")
 
     def _state_payload(self) -> dict[str, Any]:
@@ -303,6 +307,7 @@ class SparkrouteEngine(GatewaySupervisor):
         aliases: dict[str, str] | None = None,
         *,
         discovered_models: list[str] | None = None,
+        discovered_clusters: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         """Project ``proxy.yaml``'s bindings into the complete sparkrun set.
 
@@ -311,15 +316,15 @@ class SparkrouteEngine(GatewaySupervisor):
                 resolved, or declares a contradictory capability.
         """
         bindings = list(getattr(self.proxy_config, "bindings", []) or ())
+        models = list(getattr(self.proxy_config, "discovered_models", []) or ()) if discovered_models is None else discovered_models
         try:
             entries = dedupe_bindings(resolve_bindings(bindings, sctx=self.sctx))
             return build_sparkrun_set(
                 entries,
                 self._aliases() if aliases is None else aliases,
                 permissive=self._permissive(),
-                discovered_models=(
-                    list(getattr(self.proxy_config, "discovered_models", []) or ()) if discovered_models is None else discovered_models
-                ),
+                discovered_models=models,
+                discovered_clusters=self._read_discovery_labels() if discovered_clusters is None else discovered_clusters,
             )
         except ProjectionError as exc:
             raise SparkrouteConfigError(str(exc)) from exc
@@ -334,9 +339,11 @@ class SparkrouteEngine(GatewaySupervisor):
         never replace the durable binding catalog.
         """
         discovered = self._discovered_model_names(endpoints)
+        clusters = self._discovered_cluster_names(endpoints, discovered)
         if write:
             self._persist_discovered_models(discovered)
-        document = self.build_desired_set(aliases, discovered_models=discovered)
+            self._persist_discovery_labels(clusters)
+        document = self.build_desired_set(aliases, discovered_models=discovered, discovered_clusters=clusters)
         bound = {model["name"] for model in document["virtual_models"]}
         applied = {name for name, target in aliases.items() if target in bound}
         return None, applied, set(aliases) - applied
@@ -678,6 +685,76 @@ class SparkrouteEngine(GatewaySupervisor):
 
     # -- Model management (the sparkrun proxy commands) ---------------------
 
+    def _discovered_cluster_names(self, endpoints: list, models: list[str]) -> dict[str, list[str]]:
+        """Label only healthy endpoints, matching local job metadata by cluster ID."""
+        from sparkrun import api
+
+        live = [endpoint for endpoint in endpoints if bool(getattr(endpoint, "healthy", False))]
+        if not live or not models:
+            return {}
+        clusters: dict[str, str] = {}
+        try:
+            clusters = {
+                job.cluster_id: str(job.metadata["cluster"]) for job in api.list_jobs(sctx=self.sctx) if job.metadata.get("cluster")
+            }
+        except Exception:
+            logger.debug("Named cluster metadata unavailable; using endpoint cluster IDs", exc_info=True)
+        names: dict[str, set[str]] = {}
+        for endpoint in live:
+            cluster_id = str(getattr(endpoint, "cluster_id", "") or "")
+            cluster = str(getattr(endpoint, "cluster_name", "") or clusters.get(cluster_id) or cluster_id or "discovered")
+            candidates = getattr(endpoint, "actual_models", None) or [
+                getattr(endpoint, "served_model_name", None) or getattr(endpoint, "model", None)
+            ]
+            for candidate in candidates:
+                model = str(candidate or "").strip()
+                if model in models:
+                    names.setdefault(model, set()).add(cluster)
+        return {model: sorted(clusters) for model, clusters in names.items()}
+
+    @property
+    def _discovery_labels_path(self) -> Path:
+        return self.state_dir / "sparkroute-discovery-labels.json"
+
+    def _read_discovery_labels(self) -> dict[str, list[str]]:
+        """Optional presentation cache; never a source of routing or lifecycle IDs."""
+        if self._discovery_labels is not None:
+            return self._discovery_labels
+        try:
+            value = json.loads(self._discovery_labels_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict) and all(
+                isinstance(names, list) and all(isinstance(name, str) for name in names) for names in value.values()
+            ):
+                return value
+        except (OSError, ValueError):
+            pass
+        return {}
+
+    def _persist_discovery_labels(self, labels: dict[str, list[str]]) -> None:
+        """Keep labels across CLI invocations without rewriting unchanged snapshots."""
+        previous = self._read_discovery_labels()
+        self._discovery_labels = labels
+        if labels == previous:
+            return
+        temporary: Path | None = None
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            _restrict_dir_permissions(self.state_dir)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.state_dir, prefix=".sparkroute-labels-", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+                json.dump(labels, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._discovery_labels_path)
+        except OSError:
+            logger.debug("Could not cache display labels; discovery still applies", exc_info=True)
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
+
     def _discovered_model_names(self, endpoints: list) -> list[str]:
         """Normalize a live endpoint snapshot and exclude bound models."""
         models: set[str] = set()
@@ -726,6 +803,7 @@ class SparkrouteEngine(GatewaySupervisor):
 
         models = self._discovered_model_names(endpoints)
         self._persist_discovered_models(models)
+        self._persist_discovery_labels(self._discovered_cluster_names(endpoints, models))
         return self.reconcile(aliases, reason="sparkrun sync")
 
     def sync_aliases(self, aliases: dict[str, str]) -> tuple[int, int]:

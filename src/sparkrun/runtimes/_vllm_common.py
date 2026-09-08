@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from sparkrun.core.readiness import OPENAI_CHAT_STREAM
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config, resolve_api_key
@@ -20,6 +21,20 @@ class VllmMixin:
 
     readiness_styles = (OPENAI_CHAT_STREAM,)
     readiness_health_path = "/health"
+
+    def native_api_options(self) -> list[str]:
+        return ["chat_completions", "responses", "messages"]
+
+    def native_apis(self, recipe) -> list[str]:
+        if (getattr(recipe, "metadata", None) or {}).get("native_apis") is not None:
+            return super().native_apis(recipe)
+        # All three APIs are documented in v0.12.0. Custom/digest/nightly images
+        # remain conservative; the operator can declare their verified APIs.
+        # https://docs.vllm.ai/en/v0.12.0/api/vllm/entrypoints/openai/api_server/
+        match = re.search(r":v?(\d+)\.(\d+)\.(\d+)(?:$|[-+])", recipe.container or "")
+        if match and tuple(map(int, match.groups())) >= (0, 12, 0):
+            return self.native_api_options()
+        return super().native_apis(recipe)
 
     def get_common_env(self):
         return default_env_hf_offline()

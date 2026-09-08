@@ -130,3 +130,77 @@ def test_recipe_path_with_spaces_uses_short_canonical_reference(catalog):
     detail = api.get_recipe_details(str(path), sctx=sctx)
     assert len(detail["reference"]) < 256 and " " not in detail["reference"]
     assert api.get_recipe_details(detail["reference"], sctx=sctx)["source_path"] == str(path)
+
+
+def test_preview_preserves_hf_model_and_served_name_default(catalog):
+    sctx, root, data = catalog
+    data["defaults"]["served_model_name"] = "coding-default"
+    (root / "one/same.yaml").write_text(yaml.safe_dump(data))
+    detail = api.get_recipe_details(str(root / "one/same.yaml"), sctx=sctx)
+    assert detail["defaults"]["served_model_name"] == "coding-default"
+    assert detail["hf_model"] == "test/model"
+    assert detail["model"] == "coding-default"
+
+
+def test_facets_only_use_declared_metadata_and_filter_before_pagination(catalog):
+    sctx, root, data = catalog
+    data["metadata"]["quantization"] = "fp8"
+    data["defaults"]["max_model_len"] = 32768
+    (root / "one/same.yaml").write_text(yaml.safe_dump(data))
+    result = api.catalog_recipes(filters={"quantization": "fp8", "context_length": "32768"}, limit=1, sctx=sctx)
+    assert result["total"] == 1
+    assert result["recipes"][0]["source_path"] == str(root / "one/same.yaml")
+    assert result["facets"]["quantization"] == ["fp8", "unknown"]
+    assert api.catalog_recipes(filters={"quantization": "unknown"}, sctx=sctx)["total"] == 1
+    with pytest.raises(api.SparkrunError):
+        api.catalog_recipes(filters={"guessed_model_size": "32"}, sctx=sctx)
+
+
+def test_registry_add_never_grants_trust_or_clones(catalog, monkeypatch):
+    sctx, _, _ = catalog
+    monkeypatch.setattr(sctx.registry_manager, "_clone_or_pull", lambda *_: pytest.fail("registry configuration cloned"))
+    api.configure_registry("add", "private-test", url="https://github.com/example/recipes.git", sctx=sctx)
+    entry = sctx.registry_manager.get_registry("private-test")
+    assert not entry.trusted
+    with pytest.raises(api.SparkrunError):
+        api.configure_registry("trust", "private-test", sctx=sctx)
+    api.configure_registry("trust", "private-test", acknowledge_trust=True, sctx=sctx)
+    assert sctx.registry_manager.get_registry("private-test").trusted
+    api.configure_registry("disable", "private-test", sctx=sctx)
+    assert not sctx.registry_manager.get_registry("private-test").enabled
+    api.configure_registry("remove", "private-test", sctx=sctx)
+    assert not any(r["name"] == "private-test" for r in api.list_registries(sctx=sctx))
+
+
+def test_capacity_keeps_unreachable_hosts_unknown(catalog, monkeypatch):
+    from sparkrun.core.cluster_status import ClusterStatus
+
+    sctx, _, _ = catalog
+    monkeypatch.setattr("sparkrun.api._status.status", lambda *_, **__: ClusterStatus())
+    result = api.catalog_cluster_capacity("lab", sctx=sctx)
+    assert result["advisory"] is True
+    assert result["hosts"][0]["reachable"] is False
+    assert result["hosts"][0]["free_slots"] is None
+
+
+@pytest.mark.parametrize("runtime", ["vllm", "vllm-ray", "eugr-vllm"])
+def test_vllm_native_api_options_and_version_defaults(catalog, runtime):
+    sctx, root, data = catalog
+    data["runtime"] = runtime
+    path = root / "one/same.yaml"
+    data["container"] = "vllm/vllm-openai:v0.12.0"
+    path.write_text(yaml.safe_dump(data))
+    details = api.get_recipe_details(str(path), sctx=sctx)
+    assert details["native_api_options"] == ["chat_completions", "responses", "messages"]
+    assert details["native_protocols"] == ["openai", "anthropic"]
+    assert "responses" in details["capabilities"]
+    data["container"] = "custom/image:latest"
+    path.write_text(yaml.safe_dump(data))
+    unknown = api.get_recipe_details(str(path), sctx=sctx)
+    assert unknown["native_protocols"] == ["openai"]
+    assert "responses" not in unknown["capabilities"]
+    data["metadata"]["native_apis"] = ["chat_completions", "responses", "messages"]
+    path.write_text(yaml.safe_dump(data))
+    declared = api.get_recipe_details(str(path), sctx=sctx)
+    assert declared["native_protocols"] == ["openai", "anthropic"]
+    assert "responses" in declared["capabilities"]

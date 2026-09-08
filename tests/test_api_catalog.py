@@ -204,3 +204,15 @@ def test_vllm_native_api_options_and_version_defaults(catalog, runtime):
     declared = api.get_recipe_details(str(path), sctx=sctx)
     assert declared["native_protocols"] == ["openai"]
     assert "responses" not in declared["capabilities"]
+
+
+def test_passive_gateway_annotations_survive_catalog_without_changing_launch_revision(catalog):
+    sctx, root, data = catalog
+    path = root / "one/same.yaml"
+    original = api.get_recipe_details(str(path), sctx=sctx)
+    data["sparkroute"] = {"capabilities": ["vision"], "request_profiles": {"low": {"chat_completions": {"temperature": 0.2}}}}
+    path.write_text(yaml.safe_dump(data))
+    changed = api.get_recipe_details(str(path), sctx=sctx)
+    assert changed["sparkroute"] == data["sparkroute"]
+    assert changed["recipe_revision"] == original["recipe_revision"]
+    assert not any(issue["code"] == "unknown-top-level-key" for issue in changed["issues"])

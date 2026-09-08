@@ -237,7 +237,14 @@ def test_saved_recipe_projects_native_apis_on_discovered_workloads():
     from sparkrun.proxy.discovery import _endpoint_from_job
 
     recipe = Recipe.from_dict({"model": "test/model", "runtime": "vllm", "container": "vllm/vllm-openai:v0.12.0"})
+    recipe.sparkroute = {"capabilities": ["vision"], "request_profiles": {"low": {"chat_completions": {"temperature": 0.2}}}}
     job = _make_job("job", extra_meta={"recipe_state": recipe.__getstate__()})
     endpoint = _endpoint_from_job(job, ib_to_mgmt={})
     assert endpoint.native_protocols == ["openai", "anthropic"]
     assert "responses" in endpoint.capabilities
+    from sparkrun.api.proxy._ops import _to_endpoint
+
+    public = _to_endpoint(endpoint)
+    assert public.native_protocols == ("openai", "anthropic")
+    assert "responses" in public.capabilities
+    assert public.sparkroute == endpoint.sparkroute == recipe.sparkroute

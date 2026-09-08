@@ -67,6 +67,14 @@ core keys parsed as real attributes *specifically* to stay out of the
 fingerprint: describing what a deployment can do must not change what it is.
 A plugin item is the opposite — it changes how the workload is produced.
 
+The optional top-level `sparkroute:` mapping is also passive gateway metadata.
+Core preserves it as `recipe.sparkroute` through YAML export, cached recipe state,
+controller catalog previews, and endpoint discovery even when the gateway plugin
+is disabled. It is excluded from serve flags and workload identity. The SparkRoute
+plugin owns validation and projection of its `capabilities` and `request_profiles`
+fields; enabling or changing these does not imply a different serving workload.
+See the SparkRoute plugin's recipe-settings documentation for the schema.
+
 ## Owning how a recipe is executed
 
 An owned item may also opt its recipes into **one** execution strategy and

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 import os
 import re
@@ -109,6 +110,7 @@ _KNOWN_KEYS = {
     "cluster_config",
     "runtime_cache",
     "readiness",
+    "sparkroute",
     "capabilities",
     "unsupported_capabilities",
 }
@@ -1160,6 +1162,14 @@ class Recipe:
         self.capabilities: list[str] = [str(c) for c in (data.get("capabilities") or [])]
         self.unsupported_capabilities: list[str] = [str(c) for c in (data.get("unsupported_capabilities") or [])]
 
+        # Passive gateway annotations: preserve without requiring its plugin.
+        # The SparkRoute plugin owns the schema; these never become serve flags
+        # or contribute to the workload fingerprint.
+        raw_sparkroute = data.get("sparkroute", {})
+        if not isinstance(raw_sparkroute, dict):
+            raise RecipeError("sparkroute must be a mapping")
+        self.sparkroute: dict[str, Any] = deepcopy(raw_sparkroute)
+
         # Lifecycle hooks
         self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
         self.post_exec: list[str] = list(data.get("post_exec", []))
@@ -1871,6 +1881,7 @@ class Recipe:
             },
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
+            "sparkroute": deepcopy(self.sparkroute),
             "capabilities": list(self.capabilities),
             "unsupported_capabilities": list(self.unsupported_capabilities),
             "pre_exec": list(self.pre_exec),
@@ -1920,6 +1931,8 @@ class Recipe:
         self._plugin_item_raw = dict(state.get("plugin_items") or {})
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
+        self.sparkroute = deepcopy(state.get("sparkroute", self._raw.get("sparkroute", {})))
+        self.runtime_config.pop("sparkroute", None)
         self.capabilities = list(state.get("capabilities") or [])
         self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
         self.pre_exec = list(state.get("pre_exec") or [])
@@ -2061,6 +2074,9 @@ class Recipe:
             d["runtime_cache"] = dict(self.runtime_cache)
         if self.readiness:
             d["readiness"] = dict(self.readiness)
+
+        if self.sparkroute:
+            d["sparkroute"] = deepcopy(self.sparkroute)
 
         # -- Metadata (absorb promoted keys) --
         d["metadata"] = meta = dict(self.metadata)

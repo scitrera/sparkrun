@@ -74,6 +74,7 @@ class ProxyEndpoint:
     recipe_revision: str = ""
     native_protocols: tuple[str, ...] = ("openai",)
     capabilities: tuple[str, ...] = ()
+    sparkroute: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -852,6 +853,7 @@ def _to_endpoint(ep: "DiscoveredEndpoint") -> ProxyEndpoint:
         recipe_revision=getattr(ep, "recipe_revision", ""),
         native_protocols=tuple(getattr(ep, "native_protocols", None) or ("openai",)),
         capabilities=tuple(getattr(ep, "capabilities", None) or ()),
+        sparkroute=dict(getattr(ep, "sparkroute", None) or {}),
     )
 
 

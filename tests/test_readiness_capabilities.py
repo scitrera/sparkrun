@@ -87,12 +87,13 @@ def test_explicit_style_resolves_through_three_layers_and_is_not_a_runtime_flag(
 @pytest.mark.parametrize("previous", ["receipt", "accepted", "none"])
 def test_vllm_launch_probes_selected_api_and_served_name(style, previous):
     from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+    from sparkrun.core.timing import Timeline
 
     rt = VllmDistributedRuntime()
     rt.executor = DockerExecutor()
     result = launch(rt=rt, inference_style=style)
     result.overrides = {"served_model_name": "launch-alias"}
-    result.timeline = Mock()
+    result.timeline = Timeline()
     if previous == "receipt":
         result.startup_observation = receipt()
     elif previous == "accepted":
@@ -104,7 +105,7 @@ def test_vllm_launch_probes_selected_api_and_served_name(style, previous):
     assert probe.call_args.args[1]["inference_style"] == style
     assert probe.call_args.args[1]["model"] == "launch-alias"
     assert result.startup_observation["inference_style"] == style
-    assert result.timeline.add_span.call_args.args[0] == "serve.startup_ttft"
+    assert result.timeline.find("serve.startup_ttft") is not None
     # A fixed ColdSnap Chat receipt must never be relabeled as another API.
     with pytest.raises(ValueError, match="incompatible"):
         validate_observation(receipt(inference_style=style))

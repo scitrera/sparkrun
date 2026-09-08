@@ -1056,3 +1056,29 @@ def test_discovered_title_fallbacks_and_corrupt_optional_cache(tmp_path):
     fallback = restarted.build_desired_set()
     assert fallback["deployments"][0]["name"] == document["deployments"][0]["name"]
     assert fallback["deployments"][0]["title"] == "sparkrun:discovered:served-model"
+
+
+def test_bound_titles_use_live_job_fingerprints_even_without_configured_clusters(tmp_path):
+    from sparkrun.plugins.sparkroute.projection import ProjectedBinding
+
+    config = _MutableProxyConfig(bindings=[{"recipe": "@official/deepseek"}])
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    bound = ProjectedBinding(recipe="@official/deepseek", recipe_revision="5813420d8cac", model="deepseek", virtual_model="deepseek")
+    jobs = [
+        SimpleNamespace(cluster_id="opaque-job", metadata={"cluster": "real-cluster", "recipe_fingerprint": bound.recipe_revision}),
+        SimpleNamespace(cluster_id="same-model-other-recipe", metadata={"cluster": "other-cluster", "recipe_fingerprint": "other-recipe"}),
+        SimpleNamespace(cluster_id="stale", metadata={"cluster": "stale-cluster", "recipe_fingerprint": bound.recipe_revision}),
+    ]
+    endpoints = [SimpleNamespace(cluster_id=job.cluster_id, healthy=job.cluster_id != "stale", actual_models=["deepseek"]) for job in jobs]
+    with mock.patch.object(engine_mod, "resolve_bindings", return_value=[bound]), mock.patch("sparkrun.api.list_jobs", return_value=jobs):
+        before = engine.build_desired_set()["deployments"][0]
+        engine.prepare_config(endpoints, {}, write=False)
+        assert not engine._discovery_labels_path.exists()
+        engine.prepare_config(endpoints, {}, write=True)
+        current = engine.build_desired_set()["deployments"][0]
+        assert current["title"] == "sparkrun:real-cluster:deepseek"
+        assert current["name"] == before["name"] == "sparkrun:5813420d8cac"
+        assert current["endpoint_source"] == before["endpoint_source"]
+        assert SparkrouteEngine(state_dir=tmp_path, proxy_config=config).build_desired_set()["deployments"][0] == current
+        engine.prepare_config([], {}, write=True)
+        assert engine.build_desired_set()["deployments"][0]["title"] == "sparkrun:unassigned:deepseek"

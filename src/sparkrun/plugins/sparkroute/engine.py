@@ -132,7 +132,7 @@ class SparkrouteEngine(GatewaySupervisor):
         self.host_configured = host_configured
         self.proxy_config = proxy_config
         self.sctx = sctx
-        self._discovery_labels: dict[str, list[str]] | None = None
+        self._discovery_labels: dict[str, Any] | None = None
         self.credential = ReconcilerCredential(self.state_dir / "gateway")
 
     def _state_payload(self) -> dict[str, Any]:
@@ -308,6 +308,7 @@ class SparkrouteEngine(GatewaySupervisor):
         *,
         discovered_models: list[str] | None = None,
         discovered_clusters: dict[str, list[str]] | None = None,
+        binding_clusters: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         """Project ``proxy.yaml``'s bindings into the complete sparkrun set.
 
@@ -325,6 +326,7 @@ class SparkrouteEngine(GatewaySupervisor):
                 permissive=self._permissive(),
                 discovered_models=models,
                 discovered_clusters=self._read_discovery_labels() if discovered_clusters is None else discovered_clusters,
+                binding_clusters=self._read_display_labels()["recipes"] if binding_clusters is None else binding_clusters,
             )
         except ProjectionError as exc:
             raise SparkrouteConfigError(str(exc)) from exc
@@ -339,11 +341,13 @@ class SparkrouteEngine(GatewaySupervisor):
         never replace the durable binding catalog.
         """
         discovered = self._discovered_model_names(endpoints)
-        clusters = self._discovered_cluster_names(endpoints, discovered)
+        clusters, binding_clusters = self._discovered_cluster_names(endpoints, discovered)
         if write:
             self._persist_discovered_models(discovered)
-            self._persist_discovery_labels(clusters)
-        document = self.build_desired_set(aliases, discovered_models=discovered, discovered_clusters=clusters)
+            self._persist_discovery_labels(clusters, binding_clusters)
+        document = self.build_desired_set(
+            aliases, discovered_models=discovered, discovered_clusters=clusters, binding_clusters=binding_clusters
+        )
         bound = {model["name"] for model in document["virtual_models"]}
         applied = {name for name, target in aliases.items() if target in bound}
         return None, applied, set(aliases) - applied
@@ -685,24 +689,29 @@ class SparkrouteEngine(GatewaySupervisor):
 
     # -- Model management (the sparkrun proxy commands) ---------------------
 
-    def _discovered_cluster_names(self, endpoints: list, models: list[str]) -> dict[str, list[str]]:
-        """Label only healthy endpoints, matching local job metadata by cluster ID."""
+    def _discovered_cluster_names(self, endpoints: list, models: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        """Label healthy endpoints and recipe bindings from the same job metadata."""
         from sparkrun import api
 
         live = [endpoint for endpoint in endpoints if bool(getattr(endpoint, "healthy", False))]
-        if not live or not models:
-            return {}
-        clusters: dict[str, str] = {}
+        if not live:
+            return {}, {}
+        jobs: dict[str, Any] = {}
         try:
-            clusters = {
-                job.cluster_id: str(job.metadata["cluster"]) for job in api.list_jobs(sctx=self.sctx) if job.metadata.get("cluster")
-            }
+            jobs = {job.cluster_id: job.metadata or {} for job in api.list_jobs(sctx=self.sctx)}
         except Exception:
-            logger.debug("Named cluster metadata unavailable; using endpoint cluster IDs", exc_info=True)
+            logger.debug("Job display metadata unavailable; using discovery fields", exc_info=True)
         names: dict[str, set[str]] = {}
+        recipes: dict[str, set[str]] = {}
         for endpoint in live:
             cluster_id = str(getattr(endpoint, "cluster_id", "") or "")
-            cluster = str(getattr(endpoint, "cluster_name", "") or clusters.get(cluster_id) or cluster_id or "discovered")
+            metadata = jobs.get(cluster_id, {})
+            cluster_name = getattr(endpoint, "cluster_name", None) or metadata.get("cluster")
+            cluster = str(cluster_name or cluster_id or "discovered")
+            revision = getattr(endpoint, "recipe_revision", "") or metadata.get("recipe_fingerprint")
+            if revision and cluster_name:
+                # Match bindings by launch fingerprint, never just upstream model name.
+                recipes.setdefault(str(revision), set()).add(str(cluster_name))
             candidates = getattr(endpoint, "actual_models", None) or [
                 getattr(endpoint, "served_model_name", None) or getattr(endpoint, "model", None)
             ]
@@ -710,31 +719,49 @@ class SparkrouteEngine(GatewaySupervisor):
                 model = str(candidate or "").strip()
                 if model in models:
                     names.setdefault(model, set()).add(cluster)
-        return {model: sorted(clusters) for model, clusters in names.items()}
+        return (
+            {model: sorted(clusters) for model, clusters in names.items()},
+            {revision: sorted(clusters) for revision, clusters in recipes.items()},
+        )
 
     @property
     def _discovery_labels_path(self) -> Path:
         return self.state_dir / "sparkroute-discovery-labels.json"
 
-    def _read_discovery_labels(self) -> dict[str, list[str]]:
+    def _read_display_labels(self) -> dict[str, Any]:
         """Optional presentation cache; never a source of routing or lifecycle IDs."""
         if self._discovery_labels is not None:
             return self._discovery_labels
+
+        def valid_labels(value: Any) -> bool:
+            return isinstance(value, dict) and all(
+                isinstance(names, list) and all(isinstance(name, str) for name in names) for names in value.values()
+            )
+
         try:
             value = json.loads(self._discovery_labels_path.read_text(encoding="utf-8"))
-            if isinstance(value, dict) and all(
-                isinstance(names, list) and all(isinstance(name, str) for name in names) for names in value.values()
+            if (
+                isinstance(value, dict)
+                and value.get("schema") == 2
+                and valid_labels(value.get("models"))
+                and valid_labels(value.get("recipes"))
             ):
-                return value
+                return {"schema": 2, "models": value["models"], "recipes": value["recipes"]}
+            if valid_labels(value):  # Prior cache held discovery-only model labels.
+                return {"schema": 2, "models": value, "recipes": {}}
         except (OSError, ValueError):
             pass
-        return {}
+        return {"schema": 2, "models": {}, "recipes": {}}
 
-    def _persist_discovery_labels(self, labels: dict[str, list[str]]) -> None:
+    def _read_discovery_labels(self) -> dict[str, list[str]]:
+        return self._read_display_labels()["models"]
+
+    def _persist_discovery_labels(self, labels: dict[str, list[str]], binding_labels: dict[str, list[str]]) -> None:
         """Keep labels across CLI invocations without rewriting unchanged snapshots."""
-        previous = self._read_discovery_labels()
-        self._discovery_labels = labels
-        if labels == previous:
+        previous = self._read_display_labels()
+        snapshot = {"schema": 2, "models": labels, "recipes": binding_labels}
+        self._discovery_labels = snapshot
+        if snapshot == previous:
             return
         temporary: Path | None = None
         try:
@@ -744,7 +771,7 @@ class SparkrouteEngine(GatewaySupervisor):
                 mode="w", encoding="utf-8", dir=self.state_dir, prefix=".sparkroute-labels-", delete=False
             ) as stream:
                 temporary = Path(stream.name)
-                json.dump(labels, stream, sort_keys=True)
+                json.dump(snapshot, stream, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self._discovery_labels_path)
@@ -803,7 +830,7 @@ class SparkrouteEngine(GatewaySupervisor):
 
         models = self._discovered_model_names(endpoints)
         self._persist_discovered_models(models)
-        self._persist_discovery_labels(self._discovered_cluster_names(endpoints, models))
+        self._persist_discovery_labels(*self._discovered_cluster_names(endpoints, models))
         return self.reconcile(aliases, reason="sparkrun sync")
 
     def sync_aliases(self, aliases: dict[str, str]) -> tuple[int, int]:

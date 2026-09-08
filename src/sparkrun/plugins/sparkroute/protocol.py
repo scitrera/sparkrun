@@ -12,20 +12,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
-#: Every schema version this sparkrun can serve, oldest first.
-#:
-#: A *range* rather than a single number is the whole point.  Requiring an
-#: exact match made the boundary un-evolvable in both directions: a newer
-#: gateway could not talk to an older sparkrun, and — because the version check
-#: ran before dispatch — it could not even ask ``capabilities`` to find out
-#: why.  Accepting a range, and echoing the *requested* version back (see
-#: :func:`success_response`), means a caller always gets a correlated reply it
-#: can act on, including the ``unsupported_version`` refusal.
-SUPPORTED_VERSIONS = (1,)
-
-#: Newest version served; the value used when a request is too malformed to
-#: carry one of its own.
-PROTOCOL_VERSION = max(SUPPORTED_VERSIONS)
+#: Current bridge schema. This unreleased integration upgrades both sides together.
+PROTOCOL_VERSION = 2
+SUPPORTED_VERSIONS = (PROTOCOL_VERSION,)
 
 SUPPORTED_OPERATIONS = (
     "capabilities",
@@ -56,10 +45,11 @@ class ProtocolError(Exception):
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.request_id = ""
         #: Version the *caller* asked for, when it could be recovered.  The
         #: error response is emitted at this version so a strict client's
         #: correlation check passes and it reads the error rather than a
-        #: version mismatch — which is what lets it downgrade and retry.
+        #: version mismatch that would hide the diagnostic.
         self.schema_version = schema_version
 
 
@@ -100,7 +90,17 @@ def read_request(stream: BinaryIO) -> Request:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProtocolError("invalid_json", "request must be one JSON object") from exc
-    return parse_request(value)
+    try:
+        return parse_request(value)
+    except ProtocolError as exc:
+        if isinstance(value, dict):
+            request_id = value.get("request_id")
+            if isinstance(request_id, str) and 0 < len(request_id.encode()) <= MAX_REQUEST_ID_BYTES:
+                exc.request_id = request_id
+            version = value.get("schema_version")
+            if isinstance(version, int) and not isinstance(version, bool):
+                exc.schema_version = version
+        raise
 
 
 def parse_request(value: Any) -> Request:
@@ -178,12 +178,7 @@ def parse_request(value: Any) -> Request:
 
 
 def success_response(request_id: str, result: dict[str, Any], schema_version: int = PROTOCOL_VERSION) -> dict[str, Any]:
-    """Build a success envelope at *schema_version* — the version asked for.
-
-    Replying in the caller's version rather than in our newest is what makes a
-    version range usable: a v1 gateway keeps getting v1 replies from a sparkrun
-    that has since learned v2.
-    """
+    """Build a success envelope at the accepted request's schema version."""
     return {
         "schema_version": schema_version,
         "request_id": request_id,

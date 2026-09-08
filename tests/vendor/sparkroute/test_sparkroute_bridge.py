@@ -48,7 +48,7 @@ def _gateway_feature_enabled(monkeypatch):
 
 
 def _request(operation: str = "capabilities", **extra):
-    value = {"schema_version": 1, "request_id": "request-1", "operation": operation}
+    value = {"schema_version": 2, "request_id": "request-1", "operation": operation}
     value.update(extra)
     return value
 
@@ -114,7 +114,7 @@ def test_hidden_command_is_not_in_help_but_is_invokable():
     assert result.exit_code == 0
     response = json.loads(result.output)
     assert response["ok"] is True
-    assert response["result"]["protocol_version"] == 1
+    assert response["result"]["protocol_version"] == 2
     assert "ensure_ready" in response["result"]["operations"]
 
 
@@ -141,7 +141,7 @@ def test_stdio_returns_structured_operation_error():
         exit_code = bridge.run_stdio(io.BytesIO(request), output)
     assert exit_code == 0
     assert json.loads(output.getvalue()) == {
-        "schema_version": 1,
+        "schema_version": 2,
         "request_id": "request-1",
         "ok": False,
         "error": {"code": "recipe_not_found", "message": "not found", "retryable": False},
@@ -472,3 +472,45 @@ def test_stop_result_matches_the_gateway_struct():
         result = operations._stop("abc123abc123", "", object())
     # sparkrun.StopResult in pkg/sparkrun/bridge.go
     assert set(result) == {"state", "cluster_ids"}
+
+
+@pytest.mark.parametrize("operation", ["discover", "status", "ensure_ready"])
+def test_cluster_name_is_exposed_for_endpoint_operations(operation):
+    job = _job("opaque-job")
+    job.metadata["cluster"] = "spark-a"
+    binding = Binding(recipe="@local/qwen", recipe_revision="abc123abc123")
+    with (
+        mock.patch.object(operations.api, "default_sctx", return_value=object()),
+        mock.patch.object(operations.api, "list_jobs", return_value=[job]),
+        mock.patch.object(operations, "discover_endpoints", return_value=[_endpoint("opaque-job")]),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+    ):
+        result = operations.execute(Request(request_id="r", operation=operation, schema_version=2, binding=binding))
+    endpoint = result["endpoints"][0] if operation == "discover" else result["endpoint"]
+    assert endpoint["cluster_id"] == endpoint["job_id"] == "opaque-job"
+    assert endpoint["cluster_name"] == "spark-a"
+    assert "_owned" not in endpoint
+
+
+@pytest.mark.parametrize("cluster", [None, "", "bad\nlabel", "x" * 1025])
+def test_missing_or_invalid_cluster_names_do_not_block_discovery(cluster):
+    job = _job("opaque-job")
+    job.metadata["cluster"] = cluster
+    with (
+        mock.patch.object(operations.api, "list_jobs", return_value=[job]),
+        mock.patch.object(operations, "discover_endpoints", return_value=[_endpoint("opaque-job")]),
+    ):
+        endpoint = operations._project(operations._discover(object())[0])
+    assert "cluster_name" not in endpoint
+    assert endpoint["cluster_id"] == "opaque-job"
+
+
+@pytest.mark.parametrize("version", [1, 2, 99])
+def test_parse_errors_preserve_recoverable_request_id_and_version(version):
+    request = _request("resolve", schema_version=version, binding={})
+    output = io.StringIO()
+    bridge.run_stdio(io.BytesIO(json.dumps(request).encode()), output)
+    error = json.loads(output.getvalue())
+    assert error["ok"] is False
+    assert error["request_id"] == "request-1"
+    assert error["schema_version"] == version

@@ -145,6 +145,7 @@ def build_sparkrun_set(
     permissive: bool = True,
     discovered_models: list[str] | None = None,
     discovered_clusters: dict[str, list[str]] | None = None,
+    binding_clusters: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Render projected bindings into the complete ``sparkrun`` managed set.
 
@@ -172,7 +173,9 @@ def build_sparkrun_set(
         name = deployment_name(entry.recipe_revision)
         deployment: dict[str, Any] = {
             "name": name,
-            "title": deployment_title(entry.model, entry.cluster_candidates, fallback="auto"),
+            "title": deployment_title(
+                entry.model, (binding_clusters or {}).get(entry.recipe_revision) or entry.cluster_candidates, fallback="unassigned"
+            ),
             "provider": SPARKRUN_PROVIDER,
             "model": entry.model,
             # Order is observable only when several translated fallbacks are

@@ -16,7 +16,6 @@ from sparkrun.api._resolve import resolve_recipe
 from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
 from sparkrun.plugins.sparkroute.metadata import build_model_metadata
 from sparkrun.plugins.sparkroute.protocol import (
-    PROTOCOL_VERSION,
     SUPPORTED_OPERATIONS,
     Binding,
     ProtocolError,
@@ -66,7 +65,7 @@ def execute(request: Request) -> dict[str, Any]:
         from sparkrun import __version__
 
         return {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocol_version": request.schema_version,
             "operations": list(SUPPORTED_OPERATIONS),
             "sparkrun_version": __version__,
         }
@@ -342,6 +341,14 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "") -> list[dict
                 _OWNED_KEY: str((metadata or {}).get("owner") or "") == GATEWAY_OWNER,
             }
         )
+        cluster_name = (metadata or {}).get("cluster") or getattr(endpoint, "cluster_name", None)
+        if (
+            isinstance(cluster_name, str)
+            and cluster_name.strip()
+            and len(cluster_name.encode()) <= 1024
+            and all(c.isprintable() for c in cluster_name)
+        ):
+            result[-1]["cluster_name"] = cluster_name
         if model_metadata:
             result[-1]["model_metadata"] = model_metadata
         if len(result) >= MAX_DISCOVERED_ENDPOINTS:

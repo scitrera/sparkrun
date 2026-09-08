@@ -24,7 +24,7 @@ def run_stdio(stdin: BinaryIO | None = None, stdout: TextIO | None = None) -> in
     request_id = ""
     # Replies are emitted in the version that was *asked for*, so a caller's
     # correlation check passes and it reads the actual error — including
-    # ``unsupported_version``, which is the one it needs in order to downgrade.
+    # ``unsupported_version`` for a mismatched installation.
     schema_version = PROTOCOL_VERSION
     exit_code = 0
     try:
@@ -33,7 +33,7 @@ def run_stdio(stdin: BinaryIO | None = None, stdout: TextIO | None = None) -> in
         schema_version = request.schema_version
         response = success_response(request_id, execute(request), schema_version)
     except ProtocolError as exc:
-        response = error_response(request_id, exc, exc.schema_version or schema_version)
+        response = error_response(exc.request_id or request_id, exc, exc.schema_version or schema_version)
         exit_code = 2 if exc.code in {"empty_request", "invalid_json", "invalid_request", "unsupported_version"} else 0
     except Exception:
         # Raw exceptions may include resolved recipe or transport material.

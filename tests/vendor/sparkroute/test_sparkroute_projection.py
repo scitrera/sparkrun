@@ -411,3 +411,14 @@ def test_friendly_titles_preserve_deployment_ids_and_binding_revisions():
     assert warm_a["name"] == warm_b["name"] == discovered_deployment_name("model")
     assert warm_a["title"] == "sparkrun:spark-a:model"
     assert warm_b["title"] == "sparkrun:spark-b:model"
+
+
+def test_observed_cluster_overrides_placement_label_without_changing_binding():
+    binding = _binding(cluster_candidates=["configured-candidate"])
+    configured = build_sparkrun_set([binding])["deployments"][0]
+    live = build_sparkrun_set([binding], binding_clusters={binding.recipe_revision: ["actual-cluster"]})["deployments"][0]
+    assert live["title"] == "sparkrun:actual-cluster:qwen3-8b"
+    assert live["name"] == configured["name"]
+    assert live["endpoint_source"] == configured["endpoint_source"]
+    unknown = build_sparkrun_set([_binding(cluster_candidates=[])])["deployments"][0]
+    assert unknown["title"] == "sparkrun:unassigned:qwen3-8b"

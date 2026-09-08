@@ -71,6 +71,8 @@ class ProxyEndpoint:
     healthy: bool = True
     cluster_name: str | None = None
     recipe_revision: str = ""
+    native_protocols: tuple[str, ...] = ("openai",)
+    capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -847,6 +849,8 @@ def _to_endpoint(ep: "DiscoveredEndpoint") -> ProxyEndpoint:
         healthy=ep.healthy,
         cluster_name=getattr(ep, "cluster_name", None),
         recipe_revision=getattr(ep, "recipe_revision", ""),
+        native_protocols=tuple(getattr(ep, "native_protocols", None) or ("openai",)),
+        capabilities=tuple(getattr(ep, "capabilities", None) or ()),
     )
 
 

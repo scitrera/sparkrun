@@ -241,3 +241,8 @@ def test_saved_recipe_projects_native_apis_on_discovered_workloads():
     endpoint = _endpoint_from_job(job, ib_to_mgmt={})
     assert endpoint.native_protocols == ["openai", "anthropic"]
     assert "responses" in endpoint.capabilities
+    from sparkrun.api.proxy._ops import _to_endpoint
+
+    public = _to_endpoint(endpoint)
+    assert public.native_protocols == ("openai", "anthropic")
+    assert "responses" in public.capabilities

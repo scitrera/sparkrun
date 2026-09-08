@@ -557,9 +557,11 @@ class GatewaySupervisor(GatewayState):
             # zombie (which still answers os.kill(pid, 0) and reads as
             # running).  Never block on a gateway owned by another process —
             # `sparkrun proxy stop` must stay instant.
-            if self._proc is not None and self._proc.pid == pid:
-                self._await_exit(pid, RESTART_EXIT_TIMEOUT)
-            self._clear_state()
+            timeout = RESTART_EXIT_TIMEOUT if self._proc is not None and self._proc.pid == pid else 0.0
+            if self._await_exit(pid, timeout):
+                self._clear_state()
+            # Keep the PID while shutdown is pending, including on timeout.
+            # A later start must not lose track of a process holding resources.
             return True
         except ProcessLookupError:
             logger.info("Proxy PID %d not running (stale state)", pid)

@@ -799,18 +799,20 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
 
 
 def _stop_and_wait(engine) -> bool:
-    """Stop *engine* and poll until the process is really gone."""
-    import time
-
+    """Wait for the original process, independently of state-file cleanup."""
+    pid = engine.current_pid()
     engine.stop()
-
-    waited = 0.0
-    interval = 0.5
-    while engine.is_running() and waited < RESTART_WAIT_SECONDS:
-        time.sleep(interval)
-        waited += interval
-
-    return not engine.is_running()
+    if pid is None:
+        return True
+    # stop() can remove state before a draining process releases listeners and
+    # SQLite locks. is_running() would then mistake a missing record for exit.
+    if not engine._await_exit(pid, RESTART_WAIT_SECONDS):
+        return False
+    # An asynchronous stop retains state until exit; do not clear a concurrent
+    # replacement's record if another command has already written a new PID.
+    if engine.current_pid() == pid:
+        engine._clear_state()
+    return True
 
 
 def _models_via_api(engine) -> tuple[ProxyModel, ...]:

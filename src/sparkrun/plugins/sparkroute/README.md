@@ -77,5 +77,9 @@ A generated profile cannot silently replace an operator model/profile with the
 same name: resolve the reported collision by renaming or removing one definition.
 
 These settings stay outside the workload fingerprint and binding identity.
-Recipes still load/export without the SparkRoute plugin enabled. Core preserves
-the opaque mapping; the plugin validates it when it is used by SparkRoute.
+The plugin declares `sparkroute` through `register_recipe_item` with
+`affects_fingerprint=False`; core carries generic `plugin_items` data without
+knowing this schema. The plugin owns parsing, validation, canonical export and
+bridge projection. It must be enabled to recognize the key in fresh recipe YAML.
+Saved plugin items and their fingerprint policy survive serialization/export
+when the plugin is unavailable.

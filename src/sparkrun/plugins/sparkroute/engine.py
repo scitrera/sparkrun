@@ -811,7 +811,8 @@ class SparkrouteEngine(GatewaySupervisor):
                 continue
             protocols = list(getattr(endpoint, "native_protocols", None) or ["openai"])
             try:
-                settings = parse_sparkroute(getattr(endpoint, "sparkroute", {}) or {}, source="discovered recipe")
+                items = getattr(endpoint, "plugin_items", {}) or {}
+                settings = parse_sparkroute(items.get("sparkroute", {}), source="discovered recipe")
             except SparkrouteRecipeError as error:
                 raise SparkrouteConfigError(str(error)) from error
             capabilities = sorted(set(getattr(endpoint, "capabilities", None) or []) | set(settings.get("capabilities", [])))

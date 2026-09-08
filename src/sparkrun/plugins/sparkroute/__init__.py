@@ -72,15 +72,18 @@ def _load_bridge_command():
 def register(v) -> None:
     """Plugin entry point, invoked by the in-tree plugin loader.
 
-    Registers the gateway implementation and the hidden bridge command. Both
-    registrations are cheap and import nothing heavy — the engine arrives
+    Registers the recipe item, gateway implementation and hidden bridge command.
+    These registrations are cheap and import nothing heavy — the engine arrives
     through a deferred loader, and the Click command imports its runner only
     when invoked — so a stock install that never touches this gateway pays
     almost nothing for it being here.
     """
     from sparkrun.core.cli_registry import register_cli_command
+    from sparkrun.plugins import register_recipe_item
     from sparkrun.proxy.gateway import register_gateway
+    from .recipe_config import RECIPE_HANDLER
 
+    register_recipe_item("sparkroute", RECIPE_HANDLER, owner=__name__, affects_fingerprint=False)
     register_gateway(GATEWAY_NAME, feature_flag=FEATURE_FLAG, loader=_load_engine)
     register_cli_command(_load_bridge_command, name=BRIDGE_COMMAND)
     logger.debug("Registered the %s gateway and its bridge command", GATEWAY_NAME)

@@ -510,6 +510,14 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
     except SparkrouteRecipeError as exc:
         raise ProtocolError("catalog_invalid", str(exc)) from exc
     except (api.SparkrunError, ValueError, KeyError) as exc:
+        # A registered handler parses during core recipe resolution. Preserve
+        # our field diagnostics through the generic RecipeError/API wrappers,
+        # while keeping unrelated plugin and core exception details local.
+        cause = exc.__cause__
+        while cause is not None:
+            if isinstance(cause, SparkrouteRecipeError):
+                raise ProtocolError("catalog_invalid", str(cause)) from exc
+            cause = cause.__cause__
         raise ProtocolError("catalog_invalid", "Recipe selection or catalog request is invalid") from exc
     raise ProtocolError("unsupported_operation", "Unsupported catalog operation")
 

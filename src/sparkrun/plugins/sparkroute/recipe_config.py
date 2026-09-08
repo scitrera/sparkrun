@@ -112,13 +112,37 @@ def parse_sparkroute(value: Any, *, source: str = "recipe") -> dict[str, Any]:
 
 
 def recipe_sparkroute(recipe) -> dict[str, Any]:
-    return parse_sparkroute(getattr(recipe, "sparkroute", {}), source=str(getattr(recipe, "qualified_name", "recipe")))
+    return parse_sparkroute(recipe.plugin_item("sparkroute", {}), source=str(getattr(recipe, "qualified_name", "recipe")))
 
 
 def catalog_sparkroute(details: dict[str, Any]) -> dict[str, Any]:
-    settings = parse_sparkroute(details.get("sparkroute", {}), source=details.get("name", "recipe"))
+    # Core transports plugin data generically. Only this integration defines
+    # the SparkRoute-specific bridge field; other plugins' data stays local.
+    details = dict(details)
+    items = details.pop("plugin_items", {})
+    settings = parse_sparkroute(items.get("sparkroute", {}), source=details.get("name", "recipe"))
     return {
         **details,
         "sparkroute": settings,
         "capabilities": sorted(set(details.get("capabilities", [])) | set(settings.get("capabilities", []))),
     }
+
+
+class SparkrouteRecipeHandler:
+    """Own the top-level recipe item using sparkrun's plugin lifecycle."""
+
+    def parse(self, value, recipe):
+        return parse_sparkroute(value, source=str(recipe.qualified_name))
+
+    def validate(self, value, recipe):
+        try:
+            parse_sparkroute(value)
+        except SparkrouteRecipeError as error:
+            return [str(error).removeprefix("recipe: sparkroute.")]
+        return []
+
+    def export(self, value, recipe):
+        return deepcopy(value)
+
+
+RECIPE_HANDLER = SparkrouteRecipeHandler()

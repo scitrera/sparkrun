@@ -1101,3 +1101,45 @@ def test_discovery_projects_shared_native_apis_without_conflating_model_names(en
     by_model = {deployment["model"]: deployment for deployment in document["deployments"]}
     assert by_model["modern"]["capabilities"] == ["responses"]
     assert by_model["shared"]["native_protocols"] == ["openai"]
+
+
+def test_discovery_persists_saved_model_size_and_observed_context(engine):
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe(
+        {
+            "model": "fixture",
+            "runtime": "vllm",
+            "container": "fixture:latest",
+            "metadata": {"model_params": 8_000_000_000},
+            "defaults": {"max_model_len": 65536},
+        }
+    )
+    job = SimpleNamespace(cluster_id="fixture-job", metadata={"recipe_state": recipe.__getstate__()})
+    endpoint = SimpleNamespace(
+        cluster_id="fixture-job", healthy=True, actual_models=["coding"], native_protocols=["openai"], max_model_len=8192
+    )
+    with mock.patch("sparkrun.api.list_jobs", return_value=[job]):
+        engine._persist_discovered_apis([endpoint])
+    with mock.patch.object(engine_mod, "resolve_bindings", return_value=[]):
+        deployment = engine.build_desired_set(discovered_models=["coding"])["deployments"][0]
+    assert deployment["model_metadata"] == {"size_b": 8, "context": 8192, "input_price": 0, "output_price": 0, "tags": ["local", "vllm"]}
+
+
+def test_bound_metadata_does_not_borrow_from_a_different_recipe(engine):
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.plugins.sparkroute.projection import ProjectedBinding
+
+    jobs = []
+    endpoints = []
+    for revision, size, context in [("matching", 8, 8192), ("other", 70, 4096)]:
+        recipe = Recipe({"model": "fixture", "runtime": "vllm", "container": "fixture:latest", "metadata": {"model_params": size * 1e9}})
+        jobs.append(SimpleNamespace(cluster_id=revision, metadata={"recipe_state": recipe.__getstate__(), "recipe_fingerprint": revision}))
+        endpoints.append(SimpleNamespace(cluster_id=revision, healthy=True, actual_models=["coding"], max_model_len=context))
+    with mock.patch("sparkrun.api.list_jobs", return_value=jobs):
+        engine._persist_discovered_apis(endpoints)
+    bound = ProjectedBinding(recipe="fixture.yaml", recipe_revision="matching", model="coding", virtual_model="coding")
+    with mock.patch.object(engine_mod, "resolve_bindings", return_value=[bound]):
+        fields = engine.build_desired_set()["deployments"][0]["model_metadata"]
+    assert fields["size_b"] == 8
+    assert fields["context"] == 8192

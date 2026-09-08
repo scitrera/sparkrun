@@ -425,6 +425,10 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
         # because the Go struct marks it `omitempty` and an empty object would
         # claim "reported, all unknown" rather than "not reported".
         model_metadata = build_model_metadata(_recipe_of(job), served_models)
+        context = getattr(endpoint, "max_model_len", None)
+        if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+            for model in served_models:
+                model_metadata.setdefault(model, {})["context"] = context
         result.append(
             {
                 "state": "ready",
@@ -488,7 +492,9 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
         if request.operation == "catalog_search":
             return api.catalog_recipes(sctx=sctx, **arguments)
         if request.operation == "catalog_resolve":
-            return catalog_sparkroute(api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx))
+            return catalog_sparkroute(
+                api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx), arguments.get("overrides")
+            )
         if request.operation == "catalog_retain":
             _require_feature_enabled()
             api.retain_catalog_recipe(arguments.get("reference", ""), sctx=sctx)

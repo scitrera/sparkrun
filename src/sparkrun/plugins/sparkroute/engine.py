@@ -804,6 +804,16 @@ class SparkrouteEngine(GatewaySupervisor):
     def _persist_discovered_apis(self, endpoints: list) -> None:
         from .recipe_config import parse_sparkroute, SparkrouteRecipeError
 
+        from sparkrun import api
+        from .metadata import build_model_metadata, reduce_model_metadata
+        from .operations import _recipe_of
+
+        jobs = {}
+        if endpoints:
+            try:
+                jobs = {job.cluster_id: job for job in api.list_jobs(sctx=self.sctx)}
+            except Exception:
+                logger.debug("Job model metadata unavailable", exc_info=True)
         snapshot: dict[str, dict[str, Any]] = {}
         declared_profiles: dict[str, dict[str, Any]] = {}
         for endpoint in endpoints:
@@ -837,7 +847,21 @@ class SparkrouteEngine(GatewaySupervisor):
                     shared_profiles = {key: profiles[key] for key in sorted(common)}
                 else:
                     shared_protocols, shared_capabilities, shared_profiles = protocols, capabilities, profiles
+                job = jobs.get(getattr(endpoint, "cluster_id", ""))
+                fields = build_model_metadata(_recipe_of(job), [model]).get(model, {})
+                context = getattr(endpoint, "max_model_len", None)
+                if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+                    fields["context"] = context
+                recipe_metadata = dict(snapshot.get(model, {}).get("recipe_metadata", {}))
+                revision = getattr(endpoint, "recipe_revision", "") or (getattr(job, "metadata", None) or {}).get("recipe_fingerprint")
+                if revision and fields:
+                    recipe_metadata[revision] = reduce_model_metadata(recipe_metadata.get(revision, {}), fields)
+                fields = reduce_model_metadata(snapshot.get(model, {}).get("model_metadata", {}), fields)
                 snapshot[model] = {"native_protocols": shared_protocols, "capabilities": shared_capabilities}
+                if fields:
+                    snapshot[model]["model_metadata"] = fields
+                if recipe_metadata:
+                    snapshot[model]["recipe_metadata"] = recipe_metadata
                 if shared_profiles:
                     snapshot[model]["request_profiles"] = shared_profiles
         if snapshot == self._read_discovered_apis():

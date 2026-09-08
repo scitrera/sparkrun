@@ -211,3 +211,29 @@ def test_a_broken_recipe_degrades_to_omission_rather_than_raising():
     broken = mock.Mock()
     type(broken).metadata = mock.PropertyMock(side_effect=RuntimeError("boom"))
     assert build_model_metadata(broken, ["m"]) == {}
+
+
+def test_deployment_catalog_metadata_uses_overridden_context_and_preserves_unknown_size():
+    from sparkrun.plugins.sparkroute.recipe_config import catalog_sparkroute
+
+    details = {"model": "coding", "runtime": "vllm", "defaults": {"max_model_len": 65536}, "metadata": {"parameters_b": 8}}
+    fields = catalog_sparkroute(details, {"max_model_len": "8192"})["model_metadata"]
+    assert fields == {"size_b": 8, "context": 8192, "input_price": 0, "output_price": 0, "tags": ["local", "vllm"]}
+    assert "context" not in catalog_sparkroute(details, {"max_model_len": "auto"})["model_metadata"]
+    assert "size_b" not in catalog_sparkroute({"model": "unknown"})["model_metadata"]
+
+
+def test_binding_metadata_uses_effective_overrides():
+    assert build_model_metadata(_recipe(), ["coding"], overrides={"max_model_len": "4096"})["coding"]["context"] == 4096
+
+
+def test_generated_deployment_metadata_reduces_multiple_jobs():
+    from sparkrun.plugins.sparkroute.metadata import reduce_model_metadata
+    from sparkrun.plugins.sparkroute.projection import build_sparkrun_set
+
+    fields = reduce_model_metadata(
+        {"size_b": 8, "context": 65536, "input_price": 0, "tags": ["vllm"]},
+        {"size_b": 70, "context": 8192, "input_price": 0, "tags": ["local"]},
+    )
+    result = build_sparkrun_set([], discovered_models=["coding"], discovered_apis={"coding": {"model_metadata": fields}})
+    assert result["deployments"][0]["model_metadata"] == {"size_b": 70, "context": 8192, "input_price": 0, "tags": ["local", "vllm"]}

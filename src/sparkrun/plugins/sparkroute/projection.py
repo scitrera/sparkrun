@@ -146,7 +146,7 @@ def build_sparkrun_set(
     permissive: bool = True,
     discovered_models: list[str] | None = None,
     discovered_clusters: dict[str, list[str]] | None = None,
-    discovered_apis: dict[str, dict[str, list[str]]] | None = None,
+    discovered_apis: dict[str, dict[str, Any]] | None = None,
     binding_clusters: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Render projected bindings into the complete ``sparkrun`` managed set.
@@ -187,6 +187,14 @@ def build_sparkrun_set(
             "native_protocols": list(entry.native_protocols),
         }
 
+        from .metadata import reduce_model_metadata
+
+        # Match saved launch metadata to this recipe, not merely its public
+        # model name: another recipe may serve that name with different limits.
+        observed = (discovered_apis or {}).get(entry.model, {}).get("recipe_metadata", {}).get(entry.recipe_revision, {})
+        fields = reduce_model_metadata(entry.model_metadata, observed)
+        if fields:
+            deployment["model_metadata"] = fields
         declared = sorted(set(entry.capabilities))
         unsupported = sorted(set(entry.unsupported_capabilities))
         overlap = set(declared) & set(unsupported)
@@ -248,6 +256,9 @@ def build_sparkrun_set(
             "capabilities": (discovered_apis or {}).get(upstream_model, {}).get("capabilities", []),
             "endpoint_source": {"type": "discovered", "controller": "sparkrun"},
         }
+        discovered_metadata = (discovered_apis or {}).get(upstream_model, {}).get("model_metadata")
+        if discovered_metadata:
+            deployment["model_metadata"] = deepcopy(discovered_metadata)
         if permissive:
             deployment["capability_policy"] = {"unknown": "try"}
         deployments.append(deployment)
@@ -312,6 +323,7 @@ class ProjectedBinding:
         "native_protocols",
         "cold_start",
         "request_profiles",
+        "model_metadata",
     )
 
     def __init__(
@@ -324,6 +336,7 @@ class ProjectedBinding:
         cluster_candidates: list[str] | None = None,
         overrides: dict[str, str] | None = None,
         request_profiles: dict[str, Any] | None = None,
+        model_metadata: dict[str, Any] | None = None,
         capabilities: list[str] | None = None,
         unsupported_capabilities: list[str] | None = None,
         native_protocols: list[str] | None = None,
@@ -336,6 +349,7 @@ class ProjectedBinding:
         self.cluster_candidates = list(cluster_candidates or ())
         self.overrides = {str(k): str(v) for k, v in (overrides or {}).items()}
         self.request_profiles = deepcopy(request_profiles or {})
+        self.model_metadata = deepcopy(model_metadata or {})
         self.capabilities = list(capabilities or ())
         self.unsupported_capabilities = list(unsupported_capabilities or ())
         self.native_protocols = list(native_protocols or (DEFAULT_PROTOCOL,))
@@ -476,6 +490,8 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
             settings = recipe_sparkroute(recipe)
         except SparkrouteRecipeError as error:
             raise ProjectionError(str(error)) from error
+        from .metadata import build_model_metadata
+
         served = str(entry.get("model") or getattr(recipe, "effective_served_model_name", "") or recipe.model)
         protocols = entry.get("native_protocols") or _runtime_protocols(recipe, sctx=sctx)
         resolved.append(
@@ -488,6 +504,7 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
                 overrides=overrides,
                 # A binding may narrow or extend what the recipe declares;
                 # neither side can be inferred, so both are explicit.
+                model_metadata=build_model_metadata(recipe, [served], overrides=normalized).get(served, {}),
                 request_profiles=settings.get("request_profiles", {}),
                 capabilities=sorted(
                     set(str(c) for c in (entry.get("capabilities") or getattr(recipe, "capabilities", []) or []))

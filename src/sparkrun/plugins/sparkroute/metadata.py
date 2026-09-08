@@ -60,7 +60,7 @@ LOCAL_PRICE_PER_MILLION_TOKENS = 0.0
 LOCAL_TAG = "local"
 
 
-def build_model_metadata(recipe: Any, served_models: list[str]) -> dict[str, dict[str, Any]]:
+def build_model_metadata(recipe: Any, served_models: list[str], *, overrides: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     """Return the ``model_metadata`` map for one endpoint.
 
     Args:
@@ -77,7 +77,7 @@ def build_model_metadata(recipe: Any, served_models: list[str]) -> dict[str, dic
     if recipe is None or not served_models:
         return {}
     try:
-        values = _public_values(recipe)
+        values = _public_values(recipe, overrides)
     except Exception:  # noqa: BLE001 - advisory data must never fail discovery
         logger.debug("Could not derive model metadata for the gateway bridge", exc_info=True)
         return {}
@@ -89,7 +89,7 @@ def build_model_metadata(recipe: Any, served_models: list[str]) -> dict[str, dic
     return {model: dict(values) for model in served_models[:MAX_METADATA_ENTRIES]}
 
 
-def _public_values(recipe: Any) -> dict[str, Any]:
+def _public_values(recipe: Any, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     """Derive the public strategy fields from a recipe, omitting unknowns."""
     metadata = dict(getattr(recipe, "metadata", None) or {})
     values: dict[str, Any] = {}
@@ -98,7 +98,7 @@ def _public_values(recipe: Any) -> dict[str, Any]:
     if size_b is not None:
         values["size_b"] = size_b
 
-    context = _context_length(recipe)
+    context = _context_length(recipe, overrides)
     if context is not None:
         values["context"] = context
 
@@ -132,7 +132,7 @@ def _size_in_billions(model_params: Any) -> float | None:
     return size_b if size_b > 0 else None
 
 
-def _context_length(recipe: Any) -> int | None:
+def _context_length(recipe: Any, overrides: dict[str, Any] | None = None) -> int | None:
     """Effective runtime context limit, per the contract's explicit warning.
 
     Read from the recipe's config chain rather than the model's nominal family
@@ -146,7 +146,7 @@ def _context_length(recipe: Any) -> int | None:
     except Exception:  # noqa: BLE001 - an unreadable chain just means "unknown"
         logger.debug("Could not build the config chain for model metadata", exc_info=True)
         return None
-    raw = config.get("max_model_len")
+    raw = (overrides or {}).get("max_model_len", config.get("max_model_len"))
     if raw is None or str(raw).strip().lower() == "auto":
         return None
     try:
@@ -198,3 +198,16 @@ __all__ = [
     "MAX_TAG_BYTES",
     "build_model_metadata",
 ]
+
+
+def reduce_model_metadata(current: dict[str, Any], next_values: dict[str, Any]) -> dict[str, Any]:
+    """Conservative model attributes for a generated deployment spanning jobs."""
+    result = dict(current)
+    for key in ("size_b", "context", "input_price", "output_price"):
+        if key in next_values:
+            value = next_values[key]
+            result[key] = (min if key == "context" else max)(result[key], value) if key in result else value
+    tags = sorted(set(result.get("tags", [])) | set(next_values.get("tags", [])))
+    if tags:
+        result["tags"] = tags[:MAX_TAGS]
+    return result

@@ -115,10 +115,24 @@ def recipe_sparkroute(recipe) -> dict[str, Any]:
     return parse_sparkroute(recipe.plugin_item("sparkroute", {}), source=str(getattr(recipe, "qualified_name", "recipe")))
 
 
-def catalog_sparkroute(details: dict[str, Any]) -> dict[str, Any]:
+def catalog_sparkroute(details: dict[str, Any], overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     # Core transports plugin data generically. Only this integration defines
     # the SparkRoute-specific bridge field; other plugins' data stays local.
+    from types import SimpleNamespace
+    from .metadata import build_model_metadata
+
     details = dict(details)
+    facets = details.get("metadata") or {}
+    params_b = facets.get("parameters_b")
+    recipe = SimpleNamespace(
+        metadata={
+            "model_params": params_b * 1e9 if isinstance(params_b, (int, float)) else None,
+            "quantization": facets.get("quantization"),
+        },
+        runtime=details.get("runtime"),
+        build_config_chain=lambda: {**(details.get("defaults") or {}), **(overrides or {})},
+    )
+    details["model_metadata"] = build_model_metadata(recipe, [details.get("model", "")]).get(details.get("model", ""), {})
     items = details.pop("plugin_items", {})
     settings = parse_sparkroute(items.get("sparkroute", {}), source=details.get("name", "recipe"))
     return {

@@ -115,7 +115,7 @@ def start_operation(request: Request, *, sctx) -> dict:
                 **kwargs,
             )
         except OSError as exc:
-            raise ProtocolError("worker_unavailable", "Could not start the SparkRun operation worker", retryable=True) from exc
+            raise ProtocolError("worker_unavailable", "Could not start the sparkrun operation worker", retryable=True) from exc
         db.execute(
             "UPDATE operations SET pid=?, updated=?, request=?, state='running', result=NULL, error=NULL WHERE id=?",
             (child.pid, time.time(), json.dumps(asdict(request)), operation_id),
@@ -149,7 +149,7 @@ def operation_status(operation_id: str, *, sctx) -> dict:
             phase="interrupted",
             error={
                 "code": "worker_interrupted",
-                "message": "The SparkRun worker stopped. Retry the model request to reconcile and resume its launch.",
+                "message": "The sparkrun worker stopped. Retry the model request to reconcile and resume its launch.",
                 "retryable": True,
             },
         )
@@ -234,11 +234,11 @@ def run_worker(config_path: Path, operation_id: str) -> None:
                 (json.dumps(result), time.time(), operation_id),
             )
     except Exception as exc:
-        logging.getLogger(__name__).exception("SparkRun operation failed")
+        logging.getLogger(__name__).exception("sparkrun operation failed")
         error = (
             exc
             if isinstance(exc, ProtocolError)
-            else ProtocolError("operation_failed", "SparkRun operation failed; inspect the controller logs", retryable=True)
+            else ProtocolError("operation_failed", "sparkrun operation failed; inspect the controller logs", retryable=True)
         )
         with _connect(path) as db:
             db.execute(

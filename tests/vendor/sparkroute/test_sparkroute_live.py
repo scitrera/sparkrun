@@ -47,7 +47,8 @@ def _json(url, body=None, token=None):
         return json.load(response)
 
 
-def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared_listener", [False, True])
+def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_path, monkeypatch, shared_listener):
     calls = []
 
     class Upstream(BaseHTTPRequestHandler):
@@ -90,19 +91,20 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
     monkeypatch.setenv("SPARKRUN_SPARKROUTE_BINARY", str(Path(os.environ["SPARKROUTE_TEST_BINARY"]).resolve()))
     monkeypatch.setenv("SPARKROUTE_OPERATIONS_ADDRESS", "127.0.0.1:0")
     register(None)
+    data_port = _port()
     config = SimpleNamespace(
         bindings=[],
         aliases={},
         discovered_models=[],
         capability_policy="permissive",
         gateway_config=str(seed),
-        gateway_admin_port=_port(),
+        gateway_admin_port=data_port if shared_listener else _port(),
         gateway_admin_host="127.0.0.1",
-        gateway_admin_configured=True,
+        gateway_admin_configured=not shared_listener,
         gateway_allow_insecure_admin_nonloopback=False,
     )
     engine = SparkrouteEngine(
-        host="127.0.0.1", port=_port(), master_key="test-only-token", state_dir=tmp_path / "supervisor", proxy_config=config
+        host="127.0.0.1", port=data_port, master_key="test-only-token", state_dir=tmp_path / "supervisor", proxy_config=config
     )
     try:
         assert engine.start() == 0
@@ -122,6 +124,13 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         assert rejected.value.code == 401
         bootstrap = _json(engine.admin_url + "/v1/ui/bootstrap", token=engine.credential.read_admin_token())
         assert bootstrap["edition"] == "standalone"
+        assert bootstrap["features"]["sparkrun_catalog"] is True
+        catalog = _json(
+            engine.admin_url + "/v1/sparkrun/catalog",
+            {"operation": "catalog_clusters", "arguments": {}},
+            engine.credential.read_admin_token(),
+        )
+        assert isinstance(catalog["clusters"], list)
         assert bootstrap["build"]["license"] == "AGPL-3.0-only"
         # The actual host console script must accept the hidden JSON bridge.
         bridge = subprocess.run(

@@ -146,6 +146,7 @@ def test_command_selects_sqlite_mode_with_a_loopback_admin_listener(engine, bina
     # model set, so it is loopback regardless of the data bind host.
     assert pairs["-admin-address"] == "127.0.0.1:8081"
     assert pairs["-sparkrun-command"] == "/opt/venv/bin/sparkrun"
+    assert "-sparkrun" in cmd
 
 
 def test_aliases_are_discoverable_not_just_addressable(engine, binary):

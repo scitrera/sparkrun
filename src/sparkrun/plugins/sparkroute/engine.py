@@ -381,6 +381,7 @@ class SparkrouteEngine(GatewaySupervisor):
             "-data-address",
             self.data_address,
             "-list-aliases",
+            "-sparkrun",
             "-sparkrun-command",
             resolve_sparkrun_executable(),
         ]

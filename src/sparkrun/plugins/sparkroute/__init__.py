@@ -26,7 +26,7 @@ flag rather than a separate presence flag because the two are not
 independently useful: no point loading the plugin if the gateway will not be
 used, and none in enabling the gateway without the plugin.
 
-If disabled while a gateway is running, SparkRun's generic supervisor retains
+If disabled while a gateway is running, sparkrun's generic supervisor retains
 process-level status and stop. Configuration and bridge operations require the
 integration to remain enabled.
 """

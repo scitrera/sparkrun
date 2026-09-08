@@ -123,7 +123,7 @@ def _require_feature_enabled() -> None:
 
 def _resolve_binding(binding: Binding, sctx):
     if not hasattr(api, "resolve_catalog_recipe"):
-        raise ProtocolError("host_upgrade_required", "Update SparkRun on the control node to a build with the recipe catalog API")
+        raise ProtocolError("host_upgrade_required", "Update sparkrun on the control node to a build with the recipe catalog API")
     try:
         recipe, normalized = api.resolve_catalog_recipe(binding.recipe, binding.overrides, sctx=sctx)
         fingerprint = derive_recipe_fingerprint(recipe, normalized)
@@ -442,7 +442,7 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
 
 def _catalog(request: Request, sctx) -> dict[str, Any]:
     if not hasattr(api, "catalog_recipes"):
-        raise ProtocolError("host_upgrade_required", "Update the SparkRun control checkout to a version with the catalog API")
+        raise ProtocolError("host_upgrade_required", "Update the sparkrun control checkout to a version with the catalog API")
     arguments = request.arguments
     try:
         if request.operation == "catalog_registries":

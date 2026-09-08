@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 #: Current bridge schema. This unreleased integration upgrades both sides together.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 SUPPORTED_VERSIONS = (PROTOCOL_VERSION,)
 
 SUPPORTED_OPERATIONS = (
@@ -24,6 +24,10 @@ SUPPORTED_OPERATIONS = (
     "discover",
     "status",
     "stop",
+    "sleep",
+    "wake",
+    "workload_status",
+    "workloads",
     "catalog_registries",
     "catalog_clusters",
     "catalog_search",
@@ -31,6 +35,9 @@ SUPPORTED_OPERATIONS = (
     "catalog_retain",
     "catalog_import",
     "catalog_refresh",
+    "catalog_registry",
+    "catalog_capacity",
+    "catalog_plugins",
     "operation_status",
 )
 
@@ -144,7 +151,7 @@ def parse_request(value: Any) -> Request:
 
     binding_value = value.get("binding")
     binding = _parse_binding(binding_value) if binding_value is not None else None
-    if operation in {"resolve", "ensure_ready", "status", "stop"} and binding is None:
+    if operation in {"resolve", "ensure_ready", "status", "stop", "sleep", "wake", "workload_status"} and binding is None:
         raise ProtocolError("invalid_request", "operation requires a binding")
 
     cluster_id = _optional_string(value.get("cluster_id"), "cluster_id", 1024)
@@ -161,7 +168,7 @@ def parse_request(value: Any) -> Request:
     timeout_seconds = float(timeout_value)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or timeout_seconds > MAX_TIMEOUT_SECONDS:
         raise ProtocolError("invalid_request", "timeout_seconds is outside the supported range")
-    if cluster_id and operation not in {"status", "stop"}:
+    if cluster_id and operation not in {"status", "stop", "sleep", "wake", "workload_status"}:
         raise ProtocolError("invalid_request", "cluster_id is not valid for this operation")
 
     wait_value = value.get("wait", True)
@@ -176,21 +183,34 @@ def parse_request(value: Any) -> Request:
     allowed = {
         "catalog_registries": set(),
         "catalog_clusters": set(),
-        "catalog_search": {"query", "registry", "runtime", "local_only", "offset", "limit"},
+        "catalog_search": {"query", "registry", "runtime", "local_only", "offset", "limit", "filters"},
         "catalog_resolve": {"reference", "overrides"},
         "catalog_import": {"content"},
         "catalog_retain": {"reference"},
         "catalog_refresh": set(),
+        "catalog_registry": {"action", "name", "url", "subpath", "acknowledge_trust"},
+        "catalog_capacity": {"cluster"},
+        "catalog_plugins": set(),
         "operation_status": {"operation_id"},
     }.get(operation, set())
     if set(arguments) - allowed:
         raise ProtocolError("invalid_request", "operation arguments contain unknown fields")
-    for key in ("query", "registry", "runtime", "reference", "operation_id"):
+    for key in ("query", "registry", "runtime", "reference", "operation_id", "action", "name", "url", "cluster"):
         if key in arguments:
             _required_string(arguments[key], key, 4096 if key == "reference" else 256)
     for key in ("offset", "limit"):
         if key in arguments and (isinstance(arguments[key], bool) or not isinstance(arguments[key], int)):
             raise ProtocolError("invalid_request", "catalog page must be an integer")
+    if "filters" in arguments and (
+        not isinstance(arguments["filters"], dict)
+        or len(arguments["filters"]) > 8
+        or any(not isinstance(k, str) or not isinstance(v, str) or len(v) > 128 for k, v in arguments["filters"].items())
+    ):
+        raise ProtocolError("invalid_request", "recipe filters are invalid")
+    if "acknowledge_trust" in arguments and not isinstance(arguments["acknowledge_trust"], bool):
+        raise ProtocolError("invalid_request", "trust acknowledgement must be a boolean")
+    if "subpath" in arguments and (not isinstance(arguments["subpath"], str) or len(arguments["subpath"]) > 1024):
+        raise ProtocolError("invalid_request", "registry subpath is invalid")
     if "local_only" in arguments and not isinstance(arguments["local_only"], bool):
         raise ProtocolError("invalid_request", "local_only must be a boolean")
     if "content" in arguments and (not isinstance(arguments["content"], str) or len(arguments["content"].encode()) > 256 * 1024):

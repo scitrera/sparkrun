@@ -52,7 +52,7 @@ _OWNED_KEY = "_owned"
 #: runs — the command only exists because the plugin loaded, which the same
 #: flag gates — so this is defence in depth for direct programmatic use of
 #: :func:`execute`, not the primary gate.
-GATED_OPERATIONS = frozenset({"ensure_ready", "stop"})
+GATED_OPERATIONS = frozenset({"ensure_ready", "stop", "sleep", "wake"})
 
 #: The single flag gating this whole integration, loading included; see
 #: :mod:`sparkrun.plugins.sparkroute`.
@@ -75,6 +75,19 @@ def execute(request: Request) -> dict[str, Any]:
     sctx = api.default_sctx()
     if request.operation.startswith("catalog_") or request.operation == "operation_status":
         return _catalog(request, sctx)
+    if request.operation == "workloads":
+        from .workload_plugins import inspect_workloads
+
+        return inspect_workloads(sctx=sctx)
+    if request.operation == "workload_status":
+        from .workload_plugins import control_workload
+
+        return control_workload(request, sctx=sctx)
+    if request.operation in {"sleep", "wake"}:
+        from .jobs import start_operation, wait_operation
+
+        operation = start_operation(request, sctx=sctx)
+        return wait_operation(operation, request.timeout_seconds, sctx=sctx)
     binding = request.binding
     if request.operation == "discover" and binding is None:
         return {"endpoints": [_project(e) for e in _discover(sctx)]}
@@ -150,6 +163,9 @@ def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, 
     if existing:
         return {"state": "ready", "endpoint": _project(existing), "adopted": True}
 
+    from .workload_plugins import wake_existing
+
+    wake_existing(binding, sctx=sctx)
     from .jobs import previous_placement, progress
 
     progress("checking existing workloads")
@@ -394,6 +410,11 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
             continue
         job = jobs.get(endpoint.cluster_id)
         metadata = job.metadata if job is not None else {}
+        from .workload_plugins import describe_job
+
+        plugin_info = describe_job(job, sctx=sctx) if job is not None else {}
+        if plugin_info.get("plugins_in_use") and plugin_info.get("lifecycle_state") != "running":
+            continue
         # The gateway treats this as an authorization input, so use only the
         # model IDs returned by the live /v1/models probe. Job metadata is not
         # authoritative enough to assert what a reused host:port serves.
@@ -432,6 +453,8 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
             and all(c.isprintable() for c in cluster_name)
         ):
             result[-1]["cluster_name"] = cluster_name
+        result[-1]["plugins_in_use"] = plugin_info.get("plugins_in_use", [])
+        result[-1]["lifecycle_actions"] = plugin_info.get("lifecycle_actions", [])
         if model_metadata:
             result[-1]["model_metadata"] = model_metadata
         if len(result) >= MAX_DISCOVERED_ENDPOINTS:
@@ -445,6 +468,17 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
         raise ProtocolError("host_upgrade_required", "Update the sparkrun control checkout to a version with the catalog API")
     arguments = request.arguments
     try:
+        if request.operation == "catalog_registry":
+            _require_feature_enabled()
+            return api.configure_registry(sctx=sctx, **arguments)
+        if request.operation == "catalog_plugins":
+            from .workload_plugins import plugin_availability
+
+            return {"plugins": plugin_availability()}
+        if request.operation == "catalog_capacity":
+            from .jobs import start_operation
+
+            return start_operation(request, sctx=sctx)
         if request.operation == "catalog_registries":
             return {"registries": api.list_registries(sctx=sctx)}
         if request.operation == "catalog_clusters":

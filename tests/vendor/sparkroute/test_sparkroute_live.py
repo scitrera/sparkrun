@@ -43,8 +43,13 @@ def _json(url, body=None, token=None):
     if token:
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, data=json.dumps(body).encode() if body else None, headers=headers)
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            raise
+        raise AssertionError("Gateway returned %s: %s" % (error.code, error.read().decode())) from error
 
 
 @pytest.mark.parametrize("shared_listener", [False, True])
@@ -135,7 +140,7 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         # The actual host console script must accept the hidden JSON bridge.
         bridge = subprocess.run(
             [resolve_sparkrun_executable(), "gateway-bridge"],
-            input=json.dumps({"schema_version": 3, "request_id": "live-capabilities", "operation": "capabilities"}),
+            input=json.dumps({"schema_version": 4, "request_id": "live-capabilities", "operation": "capabilities"}),
             capture_output=True,
             text=True,
             timeout=30,
@@ -143,7 +148,7 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         )
         payload = json.loads(bridge.stdout)
         assert payload["request_id"] == "live-capabilities"
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
         assert payload["ok"] is True
     finally:
         engine.stop()

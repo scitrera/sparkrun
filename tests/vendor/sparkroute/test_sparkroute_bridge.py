@@ -48,7 +48,7 @@ def _gateway_feature_enabled(monkeypatch):
 
 
 def _request(operation: str = "capabilities", **extra):
-    value = {"schema_version": 3, "request_id": "request-1", "operation": operation}
+    value = {"schema_version": 4, "request_id": "request-1", "operation": operation}
     value.update(extra)
     return value
 
@@ -120,7 +120,7 @@ def test_hidden_command_is_not_in_help_but_is_invokable():
     assert result.exit_code == 0
     response = json.loads(result.output)
     assert response["ok"] is True
-    assert response["result"]["protocol_version"] == 3
+    assert response["result"]["protocol_version"] == 4
     assert "ensure_ready" in response["result"]["operations"]
 
 
@@ -147,7 +147,7 @@ def test_stdio_returns_structured_operation_error():
         exit_code = bridge.run_stdio(io.BytesIO(request), output)
     assert exit_code == 0
     assert json.loads(output.getvalue()) == {
-        "schema_version": 3,
+        "schema_version": 4,
         "request_id": "request-1",
         "ok": False,
         "error": {"code": "recipe_not_found", "message": "not found", "retryable": False},
@@ -391,6 +391,8 @@ def test_endpoint_projection_matches_the_gateway_struct():
         "recipe_revision",
         "runtime",
         "owned",
+        "plugins_in_use",
+        "lifecycle_actions",
     }
     # Ownership is tracked internally and must not reach the wire.
     assert operations._OWNED_KEY in internal[0]
@@ -418,6 +420,8 @@ def test_endpoint_projection_carries_optional_model_metadata():
         "recipe_revision",
         "runtime",
         "owned",
+        "plugins_in_use",
+        "lifecycle_actions",
         "model_metadata",
     }
     # The key must be an exact served model identity, per the contract.

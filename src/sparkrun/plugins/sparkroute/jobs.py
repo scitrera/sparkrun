@@ -75,7 +75,12 @@ def start_operation(request: Request, *, sctx) -> dict:
 
     binding = asdict(request.binding) if request.binding else {}
     # File aliases of the same resolved recipe share a worker on this cluster.
-    identity = {"operation": request.operation, "revision": binding.get("recipe_revision"), "clusters": binding.get("cluster_candidates")}
+    identity = {
+        "operation": "activation" if request.operation in {"ensure_ready", "sleep", "wake"} else request.operation,
+        "revision": binding.get("recipe_revision"),
+        "clusters": binding.get("cluster_candidates"),
+        "arguments": request.arguments if request.operation.startswith("catalog_") else {},
+    }
     if request.binding and not identity["revision"]:
         from .operations import _resolve_binding
 
@@ -86,10 +91,28 @@ def start_operation(request: Request, *, sctx) -> dict:
     path = _path(sctx)
     with _connect(path) as db:
         db.execute("BEGIN IMMEDIATE")
+        if request.operation in {"ensure_ready", "sleep", "wake"}:
+            for active in db.execute("SELECT * FROM operations WHERE state='running' AND key!=?", (key,)).fetchall():
+                other = json.loads(active["request"])
+                other_binding = other.get("binding") or {}
+                if other_binding.get("recipe_revision") != binding.get("recipe_revision") or not _alive(active["pid"]):
+                    continue
+                a, b = set(binding.get("cluster_candidates") or ()), set(other_binding.get("cluster_candidates") or ())
+                if not a or not b or a.intersection(b):
+                    raise ProtocolError(
+                        "workload_busy",
+                        "A lifecycle operation is still running on an overlapping cluster; retry after it finishes",
+                        retryable=True,
+                    )
         row = db.execute(
             "SELECT * FROM operations WHERE key=? AND state IN ('running', 'failed') ORDER BY updated DESC LIMIT 1", (key,)
         ).fetchone()
         if row and row["state"] == "running" and _alive(row["pid"]):
+            original = json.loads(row["request"])
+            if original["operation"] != request.operation or original.get("cluster_id", "") != request.cluster_id:
+                raise ProtocolError(
+                    "workload_busy", "A lifecycle operation is already running for this recipe; retry after it finishes", retryable=True
+                )
             return _public(row)
         if row:
             operation_id = row["id"]  # resume, preserving the last placement
@@ -219,7 +242,15 @@ def run_worker(config_path: Path, operation_id: str) -> None:
     try:
         _require_feature_enabled()
         request = parse_request(json.loads(row["request"]))
-        if request.operation == "catalog_refresh":
+        if request.operation in {"sleep", "wake"}:
+            from .workload_plugins import control_workload
+
+            progress(request.operation + " workload")
+            result = control_workload(request, sctx=sctx)
+        elif request.operation == "catalog_capacity":
+            progress("checking cluster occupancy")
+            result = api.catalog_cluster_capacity(request.arguments["cluster"], sctx=sctx)
+        elif request.operation == "catalog_refresh":
             progress("refreshing registries")
             result = api.refresh_registries(
                 sctx=sctx, progress=lambda name, ok: progress("refreshed " + name if ok else "could not refresh " + name)

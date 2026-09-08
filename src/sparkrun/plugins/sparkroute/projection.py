@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 #: ``sparkrun`` rather than the earlier ``sparkrun:openai-compatible``. Which
 #: inference dialects a deployment speaks is
 #: :data:`Deployment.native_protocols`, and ``Provider.type`` stays
-#: ``openai_compatible`` as the transport/auth compatibility class.
+#: ``sparkrun`` as the lifecycle-managed provider class.
 #:
 #: Not per-cluster and not per-protocol: a deployment references exactly one
 #: provider, but an ``activatable`` binding may list several
@@ -145,6 +145,7 @@ def build_sparkrun_set(
     permissive: bool = True,
     discovered_models: list[str] | None = None,
     discovered_clusters: dict[str, list[str]] | None = None,
+    discovered_apis: dict[str, dict[str, list[str]]] | None = None,
     binding_clusters: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Render projected bindings into the complete ``sparkrun`` managed set.
@@ -240,7 +241,8 @@ def build_sparkrun_set(
             "title": deployment_title(upstream_model, (discovered_clusters or {}).get(upstream_model, []), fallback="discovered"),
             "provider": SPARKRUN_PROVIDER,
             "model": upstream_model,
-            "native_protocols": [DEFAULT_PROTOCOL],
+            "native_protocols": (discovered_apis or {}).get(upstream_model, {}).get("native_protocols") or [DEFAULT_PROTOCOL],
+            "capabilities": (discovered_apis or {}).get(upstream_model, {}).get("capabilities", []),
             "endpoint_source": {"type": "discovered", "controller": "sparkrun"},
         }
         if permissive:
@@ -278,7 +280,7 @@ def build_sparkrun_set(
             model["aliases"] = sorted(model["aliases"])
 
     return {
-        "providers": [{"name": SPARKRUN_PROVIDER, "type": "openai_compatible"}],
+        "providers": [{"name": SPARKRUN_PROVIDER, "type": "sparkrun"}],
         "deployments": deployments,
         "virtual_models": virtual_models,
     }
@@ -399,6 +401,16 @@ def _runtime_protocols(recipe: Any, *, sctx: Any = None) -> list[str]:
     return protocols or [DEFAULT_PROTOCOL]
 
 
+def _runtime_capabilities(recipe: Any, *, sctx: Any = None) -> list[str]:
+    from sparkrun.api._resolve import resolve_runtime
+
+    try:
+        return list(resolve_runtime(recipe, sctx=sctx).native_capabilities(recipe))
+    except Exception:
+        logger.debug("Could not resolve native APIs for %s", getattr(recipe, "qualified_name", recipe), exc_info=True)
+        return []
+
+
 def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> list[ProjectedBinding]:
     """Resolve ``proxy.yaml`` binding entries into projectable bindings.
 
@@ -456,7 +468,10 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
                 overrides=overrides,
                 # A binding may narrow or extend what the recipe declares;
                 # neither side can be inferred, so both are explicit.
-                capabilities=[str(c) for c in (entry.get("capabilities") or getattr(recipe, "capabilities", []) or [])],
+                capabilities=sorted(
+                    set(str(c) for c in (entry.get("capabilities") or getattr(recipe, "capabilities", []) or []))
+                    | set(_runtime_capabilities(recipe, sctx=sctx))
+                ),
                 unsupported_capabilities=[
                     str(c) for c in (entry.get("unsupported_capabilities") or getattr(recipe, "unsupported_capabilities", []) or [])
                 ],

@@ -325,6 +325,7 @@ class SparkrouteEngine(GatewaySupervisor):
                 self._aliases() if aliases is None else aliases,
                 permissive=self._permissive(),
                 discovered_models=models,
+                discovered_apis=self._read_discovered_apis(),
                 discovered_clusters=self._read_discovery_labels() if discovered_clusters is None else discovered_clusters,
                 binding_clusters=self._read_display_labels()["recipes"] if binding_clusters is None else binding_clusters,
             )
@@ -343,6 +344,7 @@ class SparkrouteEngine(GatewaySupervisor):
         discovered = self._discovered_model_names(endpoints)
         clusters, binding_clusters = self._discovered_cluster_names(endpoints, discovered)
         if write:
+            self._persist_discovered_apis(endpoints)
             self._persist_discovered_models(discovered)
             self._persist_discovery_labels(clusters, binding_clusters)
         document = self.build_desired_set(
@@ -783,6 +785,60 @@ class SparkrouteEngine(GatewaySupervisor):
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
 
+    def _read_discovered_apis(self) -> dict[str, dict[str, list[str]]]:
+        try:
+            value = json.loads((self.state_dir / "sparkroute-discovery-apis.json").read_text())
+            if isinstance(value, dict) and all(
+                isinstance(entry, dict)
+                and all(
+                    isinstance(entry.get(key), list) and all(isinstance(item, str) for item in entry[key])
+                    for key in ("native_protocols", "capabilities")
+                )
+                for entry in value.values()
+            ):
+                return value
+        except (OSError, ValueError):
+            pass
+        return {}
+
+    def _persist_discovered_apis(self, endpoints: list) -> None:
+        snapshot: dict[str, dict[str, list[str]]] = {}
+        for endpoint in endpoints:
+            if not getattr(endpoint, "healthy", False):
+                continue
+            protocols = list(getattr(endpoint, "native_protocols", None) or ["openai"])
+            capabilities = list(getattr(endpoint, "capabilities", None) or [])
+            for model in getattr(endpoint, "actual_models", None) or [
+                getattr(endpoint, "served_model_name", None) or getattr(endpoint, "model", "")
+            ]:
+                if not model:
+                    continue
+                if model in snapshot:
+                    # One discovered model can cover multiple jobs: advertise
+                    # only APIs shared by all candidates for that model.
+                    shared_protocols = [p for p in protocols if p in snapshot[model]["native_protocols"]]
+                    shared_capabilities = [c for c in capabilities if c in snapshot[model]["capabilities"]]
+                else:
+                    shared_protocols, shared_capabilities = protocols, capabilities
+                snapshot[model] = {"native_protocols": shared_protocols, "capabilities": shared_capabilities}
+        if snapshot == self._read_discovered_apis():
+            return
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_dir_permissions(self.state_dir)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.state_dir, prefix=".sparkroute-apis-", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+                json.dump(snapshot, stream, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self.state_dir / "sparkroute-discovery-apis.json")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def _discovered_model_names(self, endpoints: list) -> list[str]:
         """Normalize a live endpoint snapshot and exclude bound models."""
         models: set[str] = set()
@@ -830,6 +886,7 @@ class SparkrouteEngine(GatewaySupervisor):
             raise SparkrouteConfigError("SparkRoute model sync requires proxy.yaml")
 
         models = self._discovered_model_names(endpoints)
+        self._persist_discovered_apis(endpoints)
         self._persist_discovered_models(models)
         self._persist_discovery_labels(*self._discovered_cluster_names(endpoints, models))
         return self.reconcile(aliases, reason="sparkrun sync")

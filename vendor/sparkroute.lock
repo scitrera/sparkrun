@@ -5,10 +5,10 @@ version = "0.1.0"
 module = "sparkrun.plugins.sparkroute"
 feature = "gateway.sparkroute"
 repository = "git@github.com:sparksq/sparkrun-sparkroute-plugin.git"
-commit = "b156b0dc3f798f352c9dc1d389acbfc128cf4a79"
-tree = "1dd396f4f248c2641b03748ae25b09011a315a29"
+commit = "e98e687df2ffd24eb1f0f1bc9382bc38bba53601"
+tree = "a0e495c615a1e1fbe07c9a88a26b6fa00fc7d12f"
 sparkrun = ">=0.3.8,<0.4"
-content_sha256 = "5a8446233b4a1c6abec70945e8498ade2bbb8164b83cb2a88b1f2b45b39a560d"
+content_sha256 = "7c3c0681d7e51a59fce925947fe3f3379a068c7f48452ae06007251a344b625d"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/LICENSE"
@@ -48,11 +48,11 @@ sha256 = "b46745588b19d51ac318a988389774a5b022360b08bcfd5d2eb5872f8639c9de"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/engine.py"
-sha256 = "c21aac6e33ee51e159cca9d4f24e8562c779f280d54475ec93cef73ae1bcf3cb"
+sha256 = "b060e05f72bdf81e8a965094ade74829563a18dd4964cbb0cf8e0c95081d2f29"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/jobs.py"
-sha256 = "2972ab9badd6816ae904444d559fda86192061d8b8c9f8f10c08475d1ac6dd97"
+sha256 = "187ca67e2da50dbad000d16237e6675522f3d15edeb35650bf28892288167743"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/metadata.py"
@@ -60,19 +60,23 @@ sha256 = "e8ff591a404ad254ed8a88ef092c2f1d0be78b2f1c5f1ac18516759a161aaaab"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/operations.py"
-sha256 = "66a4ef3679489e6c3c74213e97552ace7ffea3b3253fbf2ae38b43bc1badb144"
+sha256 = "7e640b07981328bb903b7175af5ca5dd34f0210d1ffca83d4a9fdfd326b060f6"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/projection.py"
-sha256 = "1436348da0193c619cf2ab667c3ed8600809216d13bb08a9885c8759144b7f8c"
+sha256 = "86882f11af91bd96c1e5847f6e410e1677e7a98e4f85870aa40bf197c28387ee"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/protocol.py"
-sha256 = "eea86c09cfdc2ac5e05a93abe48c6ef23394cfef814936b66fb24d6f7bf5213a"
+sha256 = "56e883c661a1017e18b4fe06383e27ec213d4c34061affc943acf4b0f21b6ff5"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/release.py"
 sha256 = "cfde7ab4cf8fd2f77b8d35cb70fac53a98fdc4d14fe020b4374403ef36f071ac"
+
+[[files]]
+path = "src/sparkrun/plugins/sparkroute/workload_plugins.py"
+sha256 = "071baa53de7c03de124c3602f2a28723e41772834cc51f9aec14d4c5a69d6c52"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_admin.py"
@@ -80,11 +84,11 @@ sha256 = "957511f66efa521d29e68efdf1eaec1dae318215acae8e99556e66aa3d8c4f4b"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_bridge.py"
-sha256 = "81d136069c3b5846b10d7ae4895aa24906009504f41aa768ac7a1630a2f921bd"
+sha256 = "f88ad6069e24bb57871e68f426cea91494497cb173aa37b70d0e13701268b6fe"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_engine.py"
-sha256 = "31761e119913516c7611540fabce38685770e7950f2a96ed1470acb88bcc2cf1"
+sha256 = "67eecfa0e737c26782c512b652762b566c73f5d2eaf425af49a1cb0955d73902"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_jobs.py"
@@ -92,7 +96,7 @@ sha256 = "d01204e39247b78fb184be9c8cc630dc3346e77d226c30bb35e84682c32e1c3e"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_live.py"
-sha256 = "b7f40924b474cf25fe197556dd39dff223ff51d0d5ed1b1868e4ca7cfa3494fd"
+sha256 = "1a94e4ebfd9799eec30458847787f32eb111d71b9b9808c0f09e3b8565a79684"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_metadata.py"
@@ -100,8 +104,12 @@ sha256 = "432ecc7000d2141104397169780a429f275afc0d19c4e2b7c2f713658b53255c"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_projection.py"
-sha256 = "91cc754b795f8b96ff192d9440404c6575ed7788bb22200d2a681a48fe604c2f"
+sha256 = "f20beb424943a2135d8bba61491bc149adfe96204eebd79de384472270bfe68a"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_release.py"
 sha256 = "a4677e04431ac36ec992ee7b15af474d3087c9b947531eea88e06e39195f4911"
+
+[[files]]
+path = "tests/vendor/sparkroute/test_sparkroute_workload_plugins.py"
+sha256 = "8bfa754bca2b6f21206a376de5dd911d3bd67a098255abd982faeb5de64207f0"

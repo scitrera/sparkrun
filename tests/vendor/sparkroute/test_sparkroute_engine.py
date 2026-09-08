@@ -1083,3 +1083,21 @@ def test_bound_titles_use_live_job_fingerprints_even_without_configured_clusters
         assert SparkrouteEngine(state_dir=tmp_path, proxy_config=config).build_desired_set()["deployments"][0] == current
         engine.prepare_config([], {}, write=True)
         assert engine.build_desired_set()["deployments"][0]["title"] == "sparkrun:unassigned:deepseek"
+
+
+def test_discovery_projects_shared_native_apis_without_conflating_model_names(engine):
+    endpoints = [
+        SimpleNamespace(
+            healthy=True, actual_models=["shared", "modern"], native_protocols=["openai", "anthropic"], capabilities=["responses"]
+        ),
+        SimpleNamespace(healthy=True, actual_models=["shared", "legacy"], native_protocols=["openai"], capabilities=[]),
+    ]
+    engine._persist_discovered_apis(endpoints)
+    cached = engine._read_discovered_apis()
+    assert cached["shared"] == {"native_protocols": ["openai"], "capabilities": []}
+    assert cached["modern"] == {"native_protocols": ["openai", "anthropic"], "capabilities": ["responses"]}
+    with mock.patch.object(engine_mod, "resolve_bindings", return_value=[]):
+        document = engine.build_desired_set(discovered_models=["modern", "shared"])
+    by_model = {deployment["model"]: deployment for deployment in document["deployments"]}
+    assert by_model["modern"]["capabilities"] == ["responses"]
+    assert by_model["shared"]["native_protocols"] == ["openai"]

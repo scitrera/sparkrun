@@ -319,6 +319,7 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
         "defaults": defaults,
         "metadata": _declared_facets(path),
         "recipe_revision": derive_recipe_fingerprint(recipe, normalized),
+        "sparkroute": recipe.sparkroute,
         "native_api_options": runtime.native_api_options(),
         "native_protocols": list(runtime.native_protocols(recipe) or ("openai",)),
         "capabilities": sorted(set(getattr(recipe, "capabilities", []) or []) | set(runtime.native_capabilities(recipe))),

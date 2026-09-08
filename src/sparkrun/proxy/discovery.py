@@ -62,6 +62,9 @@ class DiscoveredEndpoint:
     #: ``None`` when unknown. Surfaces the true model window to clients so
     #: the gateway does not advertise an arbitrary per-key cap.
     max_model_len: int | None = None
+    # Named placement and launch fingerprint are metadata, not the opaque job ID.
+    cluster_name: str | None = None
+    recipe_revision: str = ""
 
 
 def discover_endpoints(
@@ -197,6 +200,8 @@ def _endpoint_from_job(
 
     return DiscoveredEndpoint(
         cluster_id=job.cluster_id,
+        cluster_name=meta.get("cluster") or None,
+        recipe_revision=str(meta.get("recipe_fingerprint") or ""),
         model=meta.get("model", "") or "",
         served_model_name=served_name,
         runtime=(job.runtime or meta.get("runtime") or "") or "",

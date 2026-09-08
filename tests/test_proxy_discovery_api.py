@@ -215,3 +215,18 @@ class TestDiscoveryApiIntegration:
             )
 
         assert endpoints == []
+
+
+def test_named_cluster_and_launch_revision_survive_discovery_and_api_projection():
+    from sparkrun.proxy.discovery import _endpoint_from_job
+    from sparkrun.api.proxy._ops import _to_endpoint
+
+    job = _make_job("opaque-job", extra_meta={"cluster": "spark-a", "recipe_fingerprint": "abc123abc123"})
+    endpoint = _endpoint_from_job(job, ib_to_mgmt={})
+    public = _to_endpoint(endpoint)
+    assert endpoint.cluster_id == public.cluster_id == "opaque-job"
+    assert endpoint.cluster_name == public.cluster_name == "spark-a"
+    assert endpoint.recipe_revision == public.recipe_revision == "abc123abc123"
+    legacy = _to_endpoint(_endpoint_from_job(_make_job("old-job"), ib_to_mgmt={}))
+    assert legacy.cluster_name is None
+    assert legacy.recipe_revision == ""

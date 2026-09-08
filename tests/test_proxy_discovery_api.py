@@ -230,3 +230,14 @@ def test_named_cluster_and_launch_revision_survive_discovery_and_api_projection(
     legacy = _to_endpoint(_endpoint_from_job(_make_job("old-job"), ib_to_mgmt={}))
     assert legacy.cluster_name is None
     assert legacy.recipe_revision == ""
+
+
+def test_saved_recipe_projects_native_apis_on_discovered_workloads():
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.proxy.discovery import _endpoint_from_job
+
+    recipe = Recipe.from_dict({"model": "test/model", "runtime": "vllm", "container": "vllm/vllm-openai:v0.12.0"})
+    job = _make_job("job", extra_meta={"recipe_state": recipe.__getstate__()})
+    endpoint = _endpoint_from_job(job, ib_to_mgmt={})
+    assert endpoint.native_protocols == ["openai", "anthropic"]
+    assert "responses" in endpoint.capabilities

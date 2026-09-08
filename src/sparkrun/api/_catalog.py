@@ -117,7 +117,15 @@ def list_clusters(*, sctx=None) -> list[dict[str, Any]]:
 
 
 def catalog_recipes(
-    query: str = "", *, registry: str = "", runtime: str = "", local_only: bool = False, offset: int = 0, limit: int = 50, sctx=None
+    query: str = "",
+    *,
+    registry: str = "",
+    runtime: str = "",
+    local_only: bool = False,
+    offset: int = 0,
+    limit: int = 50,
+    filters: dict[str, str] | None = None,
+    sctx=None,
 ) -> dict[str, Any]:
     """Search cached recipes with exact file identity and bounded pagination."""
     from sparkrun.api._recipes import search_recipes
@@ -125,6 +133,13 @@ def catalog_recipes(
 
     if not 1 <= limit <= 100 or offset < 0 or len(query) > 256:
         raise SparkrunError("Invalid catalog page or query")
+    filters = filters or {}
+    if (
+        not isinstance(filters, dict)
+        or set(filters) - set(CATALOG_FACETS)
+        or any(not isinstance(v, str) or len(v) > 128 for v in filters.values())
+    ):
+        raise SparkrunError("Invalid recipe filters")
     sctx = resolve_sctx(sctx)
     cleanup_catalog_imports(sctx=sctx)
     found = (
@@ -170,12 +185,20 @@ def catalog_recipes(
                 row[key] = str(row[key])[:1024]
         row["source_path"] = str(path)[:4096]
         row["reference"] = _reference(path, entry.get("registry"), sctx, imported=path.parent == _root(sctx) / "imports")
+        row.update(_declared_facets(path))
         rows.append(row)
     rows.sort(key=lambda row: (bool(row["registry"]), str(row["name"]), row["source_path"]))
+    facets = {key: sorted({str(row.get(key)) if row.get(key) is not None else "unknown" for row in rows}) for key in CATALOG_FACETS}
+    rows = [
+        row
+        for row in rows
+        if all((str(row.get(key)) if row.get(key) is not None else "unknown") == value for key, value in filters.items() if value)
+    ]
     next_offset = offset + limit
     registries = list_registries(sctx=sctx)
     return {
         "recipes": rows[offset:next_offset],
+        "facets": facets,
         "total": len(rows),
         "next_offset": next_offset if next_offset < len(rows) else None,
         "unavailable_registries": [r["name"] for r in registries if r["enabled"] and not r["cached"]],
@@ -272,7 +295,15 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
     plugins = sorted({item.owner for item in registered_recipe_items() if item.key in selected_keys})
     defaults = {
         key: recipe.defaults[key]
-        for key in ("tensor_parallel", "pipeline_parallel", "data_parallel", "max_model_len", "gpu_memory_utilization", "port")
+        for key in (
+            "tensor_parallel",
+            "pipeline_parallel",
+            "data_parallel",
+            "max_model_len",
+            "gpu_memory_utilization",
+            "port",
+            "served_model_name",
+        )
         if key in recipe.defaults
     }
     return {
@@ -281,13 +312,16 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
         "source_path": str(path),
         "registry": registry,
         "model": recipe.effective_served_model_name or recipe.model,
+        "hf_model": recipe.model,
         "runtime": recipe.runtime,
         "description": recipe.description or "",
         "min_nodes": recipe.min_nodes,
         "defaults": defaults,
+        "metadata": _declared_facets(path),
         "recipe_revision": derive_recipe_fingerprint(recipe, normalized),
+        "native_api_options": runtime.native_api_options(),
         "native_protocols": list(runtime.native_protocols(recipe) or ("openai",)),
-        "capabilities": list(getattr(recipe, "capabilities", []) or []),
+        "capabilities": sorted(set(getattr(recipe, "capabilities", []) or []) | set(runtime.native_capabilities(recipe))),
         "required_plugins": plugins,
         "available_plugins": sorted({item.owner for item in registered_recipe_items()}),
         "trusted": trusted,
@@ -364,3 +398,112 @@ def cleanup_catalog_imports(*, sctx=None, max_age_seconds: float = 7 * 86400) ->
             record.unlink(missing_ok=True)
             removed += 1
     return removed
+
+
+CATALOG_FACETS = ("min_nodes", "tp", "pp", "quantization", "context_length", "parameters_b")
+
+
+def _declared_facets(path: Path) -> dict[str, Any]:
+    """Only declared YAML metadata; no name heuristics, network, or HF resolver."""
+    import math
+    import yaml
+
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_RECIPE_BYTES + 1)
+        if len(raw) > MAX_RECIPE_BYTES:
+            return {}
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            return {}
+        defaults = data.get("defaults") or {}
+        metadata = data.get("metadata") or {}
+        if not isinstance(defaults, dict) or not isinstance(metadata, dict):
+            return {}
+
+        def number(value):
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0 else None
+
+        params = number(metadata.get("model_params"))
+        quant = metadata.get("quantization", defaults.get("quantization"))
+        return {
+            "min_nodes": number(data.get("min_nodes", 1)),
+            "tp": number(defaults.get("tensor_parallel")),
+            "pp": number(defaults.get("pipeline_parallel")),
+            "quantization": quant[:128] if isinstance(quant, str) and quant else None,
+            "context_length": number(defaults.get("max_model_len")),
+            "parameters_b": params / 1e9 if params else None,
+            "benchmarks": _benchmark_context(metadata.get("benchmarks")),
+        }
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+
+
+def configure_registry(
+    action: str, name: str, *, url: str = "", subpath: str = "", acknowledge_trust: bool = False, sctx=None
+) -> dict[str, Any]:
+    """Explicit configuration changes; adding never clones or grants trust."""
+    from sparkrun.core.registry import RegistryEntry, RegistryError
+
+    sctx = resolve_sctx(sctx)
+    manager = sctx.registry_manager
+    try:
+        if action == "add":
+            manager.add_registry(RegistryEntry(name=name, url=url, subpath=subpath, trusted=False))
+        elif action == "trust":
+            if acknowledge_trust is not True:
+                raise SparkrunError("Review the registry and explicitly acknowledge that its recipes may execute hooks")
+            manager.trust_registry(name)
+        elif action in {"remove", "enable", "disable", "untrust"}:
+            getattr(manager, action + "_registry")(name)
+        else:
+            raise SparkrunError("Unsupported registry action")
+    except (RegistryError, ValueError) as exc:
+        raise SparkrunError("Registry configuration failed: %s" % str(exc)) from exc
+    return {"registries": list_registries(sctx=sctx)}
+
+
+def catalog_cluster_capacity(cluster: str, *, sctx=None) -> dict[str, Any]:
+    """Explicit live advisory occupancy probe; never reserves or launches."""
+    from sparkrun.api._status import status
+
+    sctx = resolve_sctx(sctx)
+    definition = sctx.cluster_manager.get(cluster)
+    observed = status(list(definition.hosts), cluster=definition, sctx=sctx)
+    rows = []
+    for host in definition.hosts[:256]:
+        occupancy = observed.for_host(host)
+        rows.append(
+            {
+                "host": host,
+                "reachable": occupancy is not None,
+                "free_slots": occupancy.free_slots if occupancy else None,
+                "used_slots": occupancy.used_slots if occupancy else None,
+                "workloads": len(occupancy.workloads) if occupancy else None,
+            }
+        )
+    return {"cluster": cluster, "observed_at": time.time(), "hosts": rows, "advisory": True}
+
+
+def _benchmark_context(value) -> list[dict[str, Any]]:
+    """Bounded, explicitly declared context; these are not measured by browsing."""
+    import math
+
+    if not isinstance(value, list):
+        return []
+    result = []
+    for entry in value[:10]:
+        if not isinstance(entry, dict):
+            continue
+        row = {}
+        for key in ("output_tokens_per_second", "time_to_first_token_ms", "input_tokens", "output_tokens", "concurrency"):
+            item = entry.get(key)
+            if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) and item >= 0:
+                row[key] = item
+        for key in ("hardware", "runtime", "date", "description"):
+            item = entry.get(key)
+            if isinstance(item, str):
+                row[key] = item[:256]
+        if row:
+            result.append(row)
+    return result

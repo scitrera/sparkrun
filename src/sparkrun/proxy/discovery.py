@@ -65,6 +65,8 @@ class DiscoveredEndpoint:
     # Named placement and launch fingerprint are metadata, not the opaque job ID.
     cluster_name: str | None = None
     recipe_revision: str = ""
+    native_protocols: list[str] = field(default_factory=lambda: ["openai"])
+    capabilities: list[str] = field(default_factory=list)
 
 
 def discover_endpoints(
@@ -198,10 +200,26 @@ def _endpoint_from_job(
 
     served_name = meta.get("served_model_name")
 
+    protocols = ["openai"]
+    capabilities = []
+    if meta.get("recipe_state"):
+        try:
+            from sparkrun.core.recipe import Recipe
+            from sparkrun.api._resolve import resolve_runtime
+
+            recipe = Recipe._deserialize(meta["recipe_state"])
+            runtime = resolve_runtime(recipe)
+            protocols = runtime.native_protocols(recipe)
+            capabilities = sorted(set(recipe.capabilities or []) | set(runtime.native_capabilities(recipe)))
+        except Exception:
+            logger.debug("Cannot resolve serving APIs from saved recipe for %s", job.cluster_id, exc_info=True)
+
     return DiscoveredEndpoint(
         cluster_id=job.cluster_id,
         cluster_name=meta.get("cluster") or None,
         recipe_revision=str(meta.get("recipe_fingerprint") or ""),
+        native_protocols=protocols,
+        capabilities=capabilities,
         model=meta.get("model", "") or "",
         served_model_name=served_name,
         runtime=(job.runtime or meta.get("runtime") or "") or "",

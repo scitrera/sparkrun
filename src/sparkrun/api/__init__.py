@@ -96,6 +96,8 @@ from sparkrun.api._catalog import (
     cleanup_catalog_imports,
     retain_catalog_recipe,
     catalog_recipes,
+    configure_registry,
+    catalog_cluster_capacity,
     get_recipe_details,
     import_recipe,
     list_clusters,
@@ -106,6 +108,8 @@ from sparkrun.api._catalog import (
 
 __all__ = [
     "catalog_recipes",
+    "configure_registry",
+    "catalog_cluster_capacity",
     "cleanup_catalog_imports",
     "retain_catalog_recipe",
     "get_recipe_details",

@@ -277,7 +277,7 @@ def test_recipe_capabilities_reach_the_generated_deployment():
     )
     assert recipe.capabilities == ["single_vector_embedding"]
 
-    with mock.patch("sparkrun.api._resolve.resolve_recipe", return_value=recipe):
+    with mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(recipe, {})):
         entries = projection.resolve_bindings([{"recipe": "@local/bge", "cluster": "spark-a"}])
 
     document = build_sparkrun_set(entries)
@@ -299,7 +299,7 @@ def test_an_invalid_cold_start_is_rejected():
     from sparkrun.plugins.sparkroute.projection import resolve_bindings
 
     recipe = Recipe({"recipe_version": "2", "model": "m", "runtime": "vllm", "container": "c", "defaults": {"port": 8000}})
-    with mock.patch("sparkrun.api._resolve.resolve_recipe", return_value=recipe):
+    with mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(recipe, {})):
         with pytest.raises(ProjectionError, match="cold_start"):
             resolve_bindings([{"recipe": "@local/x", "cold_start": "maybe"}])
 
@@ -365,7 +365,7 @@ def test_runtime_hook_supplies_protocols_and_a_binding_may_override():
     runtime.native_protocols.return_value = ["openai", "anthropic"]
 
     with (
-        mock.patch("sparkrun.api._resolve.resolve_recipe", return_value=recipe),
+        mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(recipe, {})),
         mock.patch("sparkrun.api._resolve.resolve_runtime", return_value=runtime),
     ):
         from_runtime = resolve_bindings([{"recipe": "@local/x"}])
@@ -383,7 +383,7 @@ def test_unresolvable_runtime_degrades_to_openai_rather_than_failing():
 
     recipe = Recipe({"recipe_version": "2", "model": "m", "runtime": "vllm", "container": "c", "defaults": {"port": 8000}})
     with (
-        mock.patch("sparkrun.api._resolve.resolve_recipe", return_value=recipe),
+        mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(recipe, {})),
         mock.patch("sparkrun.api._resolve.resolve_runtime", side_effect=RuntimeError("no plugin")),
     ):
         assert resolve_bindings([{"recipe": "@local/x"}])[0].native_protocols == ["openai"]

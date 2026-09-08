@@ -12,7 +12,6 @@ import time
 from typing import Any
 
 import sparkrun.api as api
-from sparkrun.api._resolve import resolve_recipe
 from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
 from sparkrun.plugins.sparkroute.metadata import build_model_metadata
 from sparkrun.plugins.sparkroute.protocol import (
@@ -74,6 +73,8 @@ def execute(request: Request) -> dict[str, Any]:
         _require_feature_enabled()
 
     sctx = api.default_sctx()
+    if request.operation.startswith("catalog_") or request.operation == "operation_status":
+        return _catalog(request, sctx)
     binding = request.binding
     if request.operation == "discover" and binding is None:
         return {"endpoints": [_project(e) for e in _discover(sctx)]}
@@ -89,17 +90,22 @@ def execute(request: Request) -> dict[str, Any]:
             "runtime": str(getattr(recipe, "runtime", "") or ""),
         }
     if request.operation == "discover":
-        return {"endpoints": [_project(e) for e in _discover(sctx, fingerprint=fingerprint)]}
+        return {"endpoints": [_project(e) for e in _discover(sctx, fingerprint=fingerprint, cluster_candidates=binding.cluster_candidates)]}
     if request.operation == "status":
-        endpoint = _adoptable(_discover(sctx, fingerprint=fingerprint, cluster_id=request.cluster_id))
+        endpoint = _adoptable(
+            _discover(sctx, fingerprint=fingerprint, cluster_id=request.cluster_id, cluster_candidates=binding.cluster_candidates)
+        )
         return {
             "state": "ready" if endpoint else "offline",
             "endpoint": _project(endpoint),
         }
     if request.operation == "ensure_ready":
-        return _ensure_ready(request, binding, recipe, fingerprint, sctx)
+        from .jobs import start_operation, wait_operation
+
+        operation = start_operation(request, sctx=sctx)
+        return wait_operation(operation, request.timeout_seconds, sctx=sctx) if request.wait else operation
     if request.operation == "stop":
-        return _stop(fingerprint, request.cluster_id, sctx)
+        return _stop(fingerprint, request.cluster_id, sctx, cluster_candidates=binding.cluster_candidates)
     raise ProtocolError("unsupported_operation", "unsupported bridge operation")
 
 
@@ -116,9 +122,12 @@ def _require_feature_enabled() -> None:
 
 
 def _resolve_binding(binding: Binding, sctx):
+    if not hasattr(api, "resolve_catalog_recipe"):
+        raise ProtocolError("host_upgrade_required", "Update SparkRun on the control node to a build with the recipe catalog API")
     try:
-        recipe = resolve_recipe(binding.recipe, sctx=sctx, overrides=binding.overrides)
-        fingerprint = derive_recipe_fingerprint(recipe, binding.overrides)
+        recipe, normalized = api.resolve_catalog_recipe(binding.recipe, binding.overrides, sctx=sctx)
+        fingerprint = derive_recipe_fingerprint(recipe, normalized)
+        recipe._sparkroute_launch_overrides = normalized
     except api.RecipeNotFound as exc:
         raise ProtocolError("recipe_not_found", "configured recipe could not be resolved") from exc
     except api.SparkrunError as exc:
@@ -137,27 +146,72 @@ def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, 
     # boundaries: nothing here can interrupt a launch in flight.
     deadline = time.monotonic() + request.timeout_seconds
 
-    existing = _adoptable(_discover(sctx, fingerprint=fingerprint))
+    existing = _adoptable(_discover(sctx, fingerprint=fingerprint, cluster_candidates=binding.cluster_candidates))
     if existing:
         return {"state": "ready", "endpoint": _project(existing), "adopted": True}
+
+    from .jobs import previous_placement, progress
+
+    progress("checking existing workloads")
+    placements = []
+    if previous := previous_placement():
+        placements.append(previous)
+    # A previously successful worker is not the only source of recovery state:
+    # after a gateway restart, or a transient health-probe failure, persisted
+    # jobs still identify a live workload that must not be launched again.
+    for job in api.list_jobs(sctx=sctx):
+        metadata = job.metadata or {}
+        if metadata.get("recipe_fingerprint") != fingerprint:
+            continue
+        cluster = metadata.get("cluster")
+        if binding.cluster_candidates and cluster not in binding.cluster_candidates:
+            continue
+        if not job.hosts or not cluster or not metadata.get("port"):
+            continue
+        if any(p["cluster_id"] == job.cluster_id for p in placements):
+            continue
+        placements.append(
+            {
+                "cluster_id": job.cluster_id,
+                "cluster": cluster,
+                "hosts": list(job.hosts),
+                "port": int(metadata["port"]),
+                "solo": len(job.hosts) == 1,
+            }
+        )
+    for placement in placements:
+        recovered = _recover_launch(placement, binding, recipe, fingerprint, sctx, deadline)
+        if recovered:
+            return recovered
 
     candidates: tuple[str | None, ...] = tuple(binding.cluster_candidates) or (None,)
     run_result = None
     last_capacity_error: Exception | None = None
     for candidate in candidates:
         try:
-            run_result = api.run(
-                api.RunOptions(
-                    recipe=recipe,
-                    cluster=candidate,
-                    overrides=dict(binding.overrides),
-                    follow=False,
-                    detached=True,
-                    trust=False,
-                    owner=GATEWAY_OWNER,
-                ),
-                sctx=sctx,
+            options = api.RunOptions(
+                recipe=recipe,
+                cluster=candidate,
+                overrides=recipe._sparkroute_launch_overrides,
+                auto_port=True,
+                follow=False,
+                detached=True,
+                trust=False,
+                owner=GATEWAY_OWNER,
             )
+            progress("planning placement")
+            plan = api.plan(options, sctx=sctx)
+            progress(
+                "launching workload",
+                {
+                    "cluster_id": plan.cluster_id,
+                    "cluster": plan.cluster.name,
+                    "hosts": list(plan.host_list),
+                    "port": plan.recipe.defaults.get("port", 8000),
+                    "solo": plan.is_solo,
+                },
+            )
+            run_result = api.run(options, plan=plan, sctx=sctx)
             break
         except api.InsufficientCapacity as exc:
             last_capacity_error = exc
@@ -187,19 +241,42 @@ def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, 
         logger.warning("launched job recorded a different recipe fingerprint than the binding resolved")
     cluster_id = run_result.cluster_id
 
-    if not request.wait:
-        return {"state": "activating", "endpoint": None, "adopted": False}
+    from sparkrun.core.launcher import post_launch_lifecycle, wait_for_serve_ready
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    interval = READINESS_POLL_MIN_SECONDS
-    while True:
-        endpoints = _discover(sctx, fingerprint=launched_fingerprint, cluster_id=cluster_id)
-        if endpoints:
-            return {"state": "ready", "endpoint": _project(endpoints[0]), "adopted": False}
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ProtocolError("readiness_timeout", "activated endpoint did not become ready in time", retryable=True)
-        time.sleep(min(interval, remaining))
-        interval = min(interval * READINESS_POLL_BACKOFF, READINESS_POLL_MAX_SECONDS)
+    if recipe.post_exec or recipe.post_commands:
+        post_launch_lifecycle(
+            run_result.launch_result, remote_cache_dir=run_result.effective_cache_dir, trust=False, progress=sctx.progress
+        )
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProtocolError("readiness_timeout", "activation exceeded its readiness budget", retryable=True)
+    import threading
+
+    progress(
+        "waiting for server readiness",
+        {
+            "cluster_id": cluster_id,
+            "cluster": plan.cluster.name,
+            "hosts": list(run_result.host_list),
+            "port": run_result.serve_port,
+            "solo": run_result.is_solo,
+        },
+    )
+    cancel = threading.Event()
+    timer = threading.Timer(remaining, cancel.set)
+    timer.daemon = True
+    timer.start()
+    try:
+        readiness = wait_for_serve_ready(run_result.launch_result, ssh_kwargs=build_ssh_kwargs(sctx.config), cancel=cancel)
+    finally:
+        timer.cancel()
+    if not readiness.ready:
+        raise ProtocolError("readiness_failed", "server startup readiness did not complete (%s)" % readiness.reason, retryable=True)
+    endpoints = _discover(sctx, fingerprint=launched_fingerprint, cluster_id=cluster_id, cluster_candidates=binding.cluster_candidates)
+    if not endpoints:
+        raise ProtocolError("endpoint_unavailable", "ready workload did not publish the expected endpoint", retryable=True)
+    return {"state": "ready", "endpoint": _project(endpoints[0]), "adopted": False}
 
 
 def _project(endpoint: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -219,13 +296,13 @@ def _adoptable(endpoints: list[dict[str, Any]]) -> dict[str, Any] | None:
     return endpoints[0]
 
 
-def _stop(fingerprint: str, cluster_id: str, sctx) -> dict[str, Any]:
+def _stop(fingerprint: str, cluster_id: str, sctx, *, cluster_candidates: tuple[str, ...] = ()) -> dict[str, Any]:
     # A fingerprint says "same serve configuration", not "mine".  Two operators
     # — or an operator and this bridge — running the same recipe produce the
     # same digest, so stopping on the digest alone would let the gateway tear
     # down a workload a human launched and is using.  Teardown therefore
     # requires the ownership tag this bridge writes at launch.
-    matching_ids, owned_ids = _matching_job_ids(sctx, fingerprint)
+    matching_ids, owned_ids = _matching_job_ids(sctx, fingerprint, cluster_candidates=cluster_candidates)
     if cluster_id:
         if cluster_id not in matching_ids:
             raise ProtocolError("job_not_found", "cluster does not belong to the configured recipe revision")
@@ -248,12 +325,14 @@ def _stop(fingerprint: str, cluster_id: str, sctx) -> dict[str, Any]:
     return {"state": "offline", "cluster_ids": stopped}
 
 
-def _matching_job_ids(sctx, fingerprint: str) -> tuple[list[str], list[str]]:
+def _matching_job_ids(sctx, fingerprint: str, *, cluster_candidates: tuple[str, ...] = ()) -> tuple[list[str], list[str]]:
     """Return ``(matching_ids, owned_ids)`` for *fingerprint*, in one pass."""
     matching: list[str] = []
     owned: list[str] = []
     for job in api.list_jobs(sctx=sctx):
         metadata = job.metadata or {}
+        if cluster_candidates and metadata.get("cluster") not in cluster_candidates:
+            continue
         if str(metadata.get("recipe_fingerprint") or "") != fingerprint:
             continue
         matching.append(job.cluster_id)
@@ -285,11 +364,14 @@ def _recipe_of(job) -> Any:
         return None
 
 
-def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "") -> list[dict[str, Any]]:
+def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_candidates: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     jobs = {job.cluster_id: job for job in api.list_jobs(sctx=sctx)}
     allowed_ids: set[str] | None = None
     if fingerprint:
         allowed_ids = {job_id for job_id, job in jobs.items() if str((job.metadata or {}).get("recipe_fingerprint") or "") == fingerprint}
+    if cluster_candidates:
+        scoped = {job_id for job_id, job in jobs.items() if (job.metadata or {}).get("cluster") in cluster_candidates}
+        allowed_ids = scoped if allowed_ids is None else allowed_ids & scoped
     if cluster_id:
         allowed_ids = {cluster_id} if allowed_ids is None else allowed_ids & {cluster_id}
 
@@ -339,6 +421,7 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "") -> list[dict
                 # DisallowUnknownFields, so every projected key is part of the
                 # wire contract and an extra one is a hard decode failure.
                 _OWNED_KEY: str((metadata or {}).get("owner") or "") == GATEWAY_OWNER,
+                "owned": str((metadata or {}).get("owner") or "") == GATEWAY_OWNER,
             }
         )
         cluster_name = (metadata or {}).get("cluster") or getattr(endpoint, "cluster_name", None)
@@ -355,3 +438,91 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "") -> list[dict
             break
     result.sort(key=lambda value: (value["cluster_id"], value["host"], value["port"]))
     return result
+
+
+def _catalog(request: Request, sctx) -> dict[str, Any]:
+    if not hasattr(api, "catalog_recipes"):
+        raise ProtocolError("host_upgrade_required", "Update the SparkRun control checkout to a version with the catalog API")
+    arguments = request.arguments
+    try:
+        if request.operation == "catalog_registries":
+            return {"registries": api.list_registries(sctx=sctx)}
+        if request.operation == "catalog_clusters":
+            return {"clusters": api.list_clusters(sctx=sctx)}
+        if request.operation == "catalog_search":
+            return api.catalog_recipes(sctx=sctx, **arguments)
+        if request.operation == "catalog_resolve":
+            return api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx)
+        if request.operation == "catalog_retain":
+            _require_feature_enabled()
+            api.retain_catalog_recipe(arguments.get("reference", ""), sctx=sctx)
+            return {"retained": True}
+        if request.operation == "catalog_import":
+            _require_feature_enabled()
+            return api.import_recipe(arguments.get("content", ""), sctx=sctx)
+        if request.operation == "catalog_refresh":
+            _require_feature_enabled()
+            from .jobs import start_operation
+
+            return start_operation(request, sctx=sctx)
+        if request.operation == "operation_status":
+            from .jobs import operation_status
+
+            return operation_status(arguments.get("operation_id", ""), sctx=sctx)
+    except api.RecipeNotFound as exc:
+        raise ProtocolError("recipe_not_found", str(exc)) from exc
+    except (api.SparkrunError, ValueError, KeyError) as exc:
+        raise ProtocolError("catalog_invalid", "Recipe selection or catalog request is invalid") from exc
+    raise ProtocolError("unsupported_operation", "Unsupported catalog operation")
+
+
+def _recover_launch(placement, binding, recipe, fingerprint, sctx, deadline):
+    """Reconcile a recorded placement before allowing a retry to launch again."""
+    if not placement:
+        return None
+    from sparkrun.api._resolve import resolve_runtime
+    from sparkrun.core.launcher import wait_for_endpoint_ready
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    import threading
+
+    snapshot = api.status(placement["hosts"], cluster=placement["cluster"], sctx=sctx)
+    if snapshot.errors or len(snapshot.hosts) != len(placement["hosts"]):
+        raise ProtocolError(
+            "recovery_unavailable", "Cannot confirm previous launch status; check the selected cluster before retrying", retryable=True
+        )
+    running = any(w.cluster_id == placement["cluster_id"] for host in snapshot.hosts for w in host.workloads)
+    if not running:
+        return None
+    # Post-launch hooks may have been interrupted. Do not silently repeat them.
+    if recipe.post_exec or recipe.post_commands:
+        raise ProtocolError(
+            "recovery_requires_operator",
+            "A previous launch is still running and its post-launch steps may be incomplete; inspect it with sparkrun status",
+        )
+    for job in api.list_jobs(sctx=sctx):
+        if job.cluster_id == placement["cluster_id"] and job.metadata.get("port"):
+            placement = {**placement, "port": int(job.metadata["port"])}
+            break
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProtocolError("readiness_timeout", "Activation exceeded its readiness budget", retryable=True)
+    cancel = threading.Event()
+    timer = threading.Timer(remaining, cancel.set)
+    timer.daemon = True
+    timer.start()
+    try:
+        wait_for_endpoint_ready(
+            runtime=resolve_runtime(recipe, sctx=sctx),
+            cluster_id=placement["cluster_id"],
+            host_list=placement["hosts"],
+            is_solo=placement["solo"],
+            port=placement["port"],
+            ssh_kwargs=build_ssh_kwargs(sctx.config),
+            cancel=cancel,
+        )
+    finally:
+        timer.cancel()
+    endpoints = _discover(sctx, fingerprint=fingerprint, cluster_id=placement["cluster_id"], cluster_candidates=binding.cluster_candidates)
+    if not endpoints:
+        raise ProtocolError("readiness_failed", "Previous launch is still running but is not serving the expected model", retryable=True)
+    return {"state": "ready", "endpoint": _project(endpoints[0]), "adopted": True}

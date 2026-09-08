@@ -355,6 +355,11 @@ def dedupe_bindings(entries: list[ProjectedBinding]) -> list[ProjectedBinding]:
         if existing is None:
             by_revision[entry.recipe_revision] = entry
             continue
+        if entry.cluster_candidates != existing.cluster_candidates:
+            raise ProjectionError(
+                "Recipe fingerprint %s is bound to conflicting clusters; define separate deployments in the configuration UI"
+                % entry.recipe_revision
+            )
         if entry.recipe < existing.recipe:
             # Keep the lexically-first recipe name, but preserve the richer
             # declaration: dropping a capability because a duplicate lacked it
@@ -415,7 +420,6 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
     # Deferred: sparkrun.proxy.discovery imports sparkrun.api, so a
     # module-level import here would be circular.
     import sparkrun.api as api
-    from sparkrun.api._resolve import resolve_recipe
     from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
 
     resolved: list[ProjectedBinding] = []
@@ -432,7 +436,7 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
         candidates = [str(c) for c in candidates]
 
         try:
-            recipe = resolve_recipe(name, sctx=sctx, overrides=overrides)
+            recipe, normalized = api.resolve_catalog_recipe(name, overrides, sctx=sctx)
         except api.SparkrunError as exc:
             raise ProjectionError("bindings[%d]: recipe %r could not be resolved (%s)" % (index, name, exc)) from exc
 
@@ -444,8 +448,8 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
         protocols = entry.get("native_protocols") or _runtime_protocols(recipe, sctx=sctx)
         resolved.append(
             ProjectedBinding(
-                recipe=getattr(recipe, "qualified_name", None) or name,
-                recipe_revision=derive_recipe_fingerprint(recipe, overrides),
+                recipe=name if name.startswith("catalog:") else getattr(recipe, "qualified_name", None) or name,
+                recipe_revision=derive_recipe_fingerprint(recipe, normalized),
                 model=served,
                 virtual_model=served,
                 cluster_candidates=candidates,

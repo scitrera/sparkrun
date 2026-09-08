@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 #: Current bridge schema. This unreleased integration upgrades both sides together.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 SUPPORTED_VERSIONS = (PROTOCOL_VERSION,)
 
 SUPPORTED_OPERATIONS = (
@@ -23,6 +24,14 @@ SUPPORTED_OPERATIONS = (
     "discover",
     "status",
     "stop",
+    "catalog_registries",
+    "catalog_clusters",
+    "catalog_search",
+    "catalog_resolve",
+    "catalog_retain",
+    "catalog_import",
+    "catalog_refresh",
+    "operation_status",
 )
 
 MAX_REQUEST_BYTES = 1 << 20
@@ -69,15 +78,9 @@ class Request:
     binding: Binding | None = None
     cluster_id: str = ""
     timeout_seconds: float = 900.0
+    arguments: dict[str, Any] = field(default_factory=dict)
     wait: bool = True
-    """``ensure_ready`` only: block until the endpoint answers ``/v1/models``.
-
-    When ``False`` the operation returns as soon as the launch call returns, in
-    state ``activating``, and the caller polls ``status``.  Note this does not
-    make ``ensure_ready`` cheap — the launch itself (model download, image
-    distribution) is synchronous either way; it only skips the readiness wait
-    that follows.
-    """
+    """False starts a recoverable background activation and returns its operation ID."""
 
 
 def read_request(stream: BinaryIO) -> Request:
@@ -129,6 +132,7 @@ def parse_request(value: Any) -> Request:
         "cluster_id",
         "timeout_seconds",
         "wait",
+        "arguments",
     }
     if unknown:
         raise ProtocolError("invalid_request", "request contains unknown fields", schema_version=requested)
@@ -155,7 +159,7 @@ def parse_request(value: Any) -> Request:
     if isinstance(timeout_value, bool) or not isinstance(timeout_value, (int, float)):
         raise ProtocolError("invalid_request", "timeout_seconds must be a number")
     timeout_seconds = float(timeout_value)
-    if timeout_seconds <= 0 or timeout_seconds > MAX_TIMEOUT_SECONDS:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or timeout_seconds > MAX_TIMEOUT_SECONDS:
         raise ProtocolError("invalid_request", "timeout_seconds is outside the supported range")
     if cluster_id and operation not in {"status", "stop"}:
         raise ProtocolError("invalid_request", "cluster_id is not valid for this operation")
@@ -166,7 +170,36 @@ def parse_request(value: Any) -> Request:
     if not wait_value and operation != "ensure_ready":
         raise ProtocolError("invalid_request", "wait is not valid for this operation")
 
+    arguments = value.get("arguments", {})
+    if not isinstance(arguments, dict):
+        raise ProtocolError("invalid_request", "arguments must be an object")
+    allowed = {
+        "catalog_registries": set(),
+        "catalog_clusters": set(),
+        "catalog_search": {"query", "registry", "runtime", "local_only", "offset", "limit"},
+        "catalog_resolve": {"reference", "overrides"},
+        "catalog_import": {"content"},
+        "catalog_retain": {"reference"},
+        "catalog_refresh": set(),
+        "operation_status": {"operation_id"},
+    }.get(operation, set())
+    if set(arguments) - allowed:
+        raise ProtocolError("invalid_request", "operation arguments contain unknown fields")
+    for key in ("query", "registry", "runtime", "reference", "operation_id"):
+        if key in arguments:
+            _required_string(arguments[key], key, 4096 if key == "reference" else 256)
+    for key in ("offset", "limit"):
+        if key in arguments and (isinstance(arguments[key], bool) or not isinstance(arguments[key], int)):
+            raise ProtocolError("invalid_request", "catalog page must be an integer")
+    if "local_only" in arguments and not isinstance(arguments["local_only"], bool):
+        raise ProtocolError("invalid_request", "local_only must be a boolean")
+    if "content" in arguments and (not isinstance(arguments["content"], str) or len(arguments["content"].encode()) > 256 * 1024):
+        raise ProtocolError("invalid_request", "recipe import exceeds its size limit")
+    if "overrides" in arguments:
+        _parse_binding({"recipe": "validation", "overrides": arguments["overrides"]})
+
     return Request(
+        arguments=arguments,
         schema_version=requested,
         request_id=request_id,
         operation=operation,

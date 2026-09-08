@@ -18,7 +18,6 @@ from ._common import (
     recipe_override_options,
     report_launch_validation,
     resolve_cluster_config,
-    resolve_effective_hosts_for_recipe,
     with_host_context,
 )
 
@@ -592,8 +591,8 @@ def load_cmd(
 
       sparkrun proxy load qwen3-1.7b-vllm --solo --gpu-mem 0.8
     """
+    from sparkrun import api
     from sparkrun.core.bootstrap import get_runtime
-    from sparkrun.core.launcher import launch_inference
 
     from ._common import _get_context
 
@@ -602,7 +601,7 @@ def load_cmd(
     config = sctx.config
 
     # Load recipe (defer resolution until overrides are built)
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True)
 
     # Build overrides and resolve runtime (overrides may influence resolution)
     recipe, overrides = _apply_recipe_overrides(
@@ -635,41 +634,39 @@ def load_cmd(
     if validation_failed:
         sys.exit(1)
 
-    # Node count validation, max_nodes enforcement, and solo mode determination
-    host_list, is_solo = resolve_effective_hosts_for_recipe(
-        host_list,
-        recipe,
-        overrides,
-        cluster_def=None,
-        sctx=sctx,
-        solo=solo,
-    )
-
     # Resolve cache dir, transfer mode, and transfer interface from cluster config
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface = cluster_cfg.resolve_transfer_config(config)
 
-    # Launch via shared pipeline (auto_port=True for conflict avoidance)
+    # Preserve the resolved cluster alongside the full candidate host set.
+    # The normal run API owns placement, execution strategies, job metadata,
+    # and fingerprints; the proxy only changes the port/follow defaults.
     click.echo("Loading model: %s" % recipe_name)
-    result = launch_inference(
+    run_options = api.RunOptions(
         recipe=recipe,
-        runtime=runtime,
-        host_list=host_list,
-        overrides=overrides,
-        sctx=sctx,
-        is_solo=is_solo,
+        hosts=tuple(host_list),
+        cluster=cluster_cfg.name,
+        overrides=dict(overrides),
+        solo=solo,
         cache_dir=remote_cache_dir,
         local_cache_dir=local_cache_dir,
         transfer_mode=effective_transfer_mode,
         transfer_interface=effective_transfer_interface,
-        registry_mgr=registry_mgr,
+        topology=cluster_cfg.topology,
         auto_port=True,
         dry_run=dry_run,
         detached=True,
-        # non-root user and non-privileged
-        rootless=True,
-        auto_user=True,
+        follow=False,
     )
+    try:
+        run_plan = api.plan(run_options, sctx=sctx)
+        for note in run_plan.notes:
+            click.echo(note)
+        run_result = api.run(run_options, sctx=sctx, plan=run_plan)
+    except api.SparkrunError as exc:
+        click.echo("Error: %s" % exc, err=True)
+        sys.exit(1)
+    result = run_result.launch_result
 
     if result.rc != 0:
         click.echo("Error: failed to load model (exit code %d)." % result.rc, err=True)
@@ -677,10 +674,13 @@ def load_cmd(
 
     click.echo("Model loaded: %s (port %d)" % (recipe_name, result.serve_port))
 
+    if recipe.post_exec or recipe.post_commands:
+        from sparkrun.core.launcher import post_launch_lifecycle
+
+        post_launch_lifecycle(result, remote_cache_dir=result.effective_cache_dir, dry_run=dry_run, progress=sctx.progress)
+
     if not dry_run:
         # Try to register with a running proxy.
-        from sparkrun import api
-
         proxy_status = api.proxy.status(sctx=sctx)
         if proxy_status.running:
             # Discovery's liveness test is an HTTP probe of /v1/models, so
@@ -704,7 +704,12 @@ def load_cmd(
                     # Not a plain sync: a catalog-driven gateway persists an
                     # activatable route here.  A discovery-driven one (LiteLLM)
                     # falls through to exactly the sync this used to call.
-                    synced = api.proxy.register_loaded_model(recipe_name, sctx=sctx)
+                    synced = api.proxy.register_loaded_model(
+                        recipe_name,
+                        overrides=run_options.overrides,
+                        cluster=run_plan.cluster.name or None,
+                        sctx=sctx,
+                    )
                 except api.proxy.ProxyUpdateFailed as exc:
                     click.echo("Error: %s" % exc, err=True)
                     sys.exit(1)
@@ -728,6 +733,10 @@ def _warn_not_registered(readiness, proxy_status) -> None:
             err=True,
         )
         click.echo("  Check the logs: sparkrun logs <cluster-id>", err=True)
+        return
+
+    if readiness.reason in {"inference", "cancelled"}:
+        click.echo("Warning: startup readiness did not complete (%s); model was not registered." % readiness.reason, err=True)
         return
 
     click.echo(

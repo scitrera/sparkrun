@@ -110,7 +110,6 @@ _KNOWN_KEYS = {
     "cluster_config",
     "runtime_cache",
     "readiness",
-    "sparkroute",
     "capabilities",
     "unsupported_capabilities",
 }
@@ -1115,11 +1114,13 @@ class Recipe:
         # runtime, or revision without reaching into raw YAML itself.
         self.plugin_items: dict[str, Any] = {}
         self._plugin_item_raw: dict[str, Any] = {}
+        self._plugin_item_fingerprints: dict[str, bool] = {}
         for registration in registered_recipe_items():
             if registration.key not in data:
                 continue
-            raw_item = data[registration.key]
-            self._plugin_item_raw[registration.key] = raw_item
+            raw_item = deepcopy(data[registration.key])
+            self._plugin_item_raw[registration.key] = deepcopy(raw_item)
+            self._plugin_item_fingerprints[registration.key] = registration.affects_fingerprint
             try:
                 self.plugin_items[registration.key] = registration.handler.parse(raw_item, self)
             except Exception as error:
@@ -1161,14 +1162,6 @@ class Recipe:
         # undeclared capability is left to the gateway's own policy.
         self.capabilities: list[str] = [str(c) for c in (data.get("capabilities") or [])]
         self.unsupported_capabilities: list[str] = [str(c) for c in (data.get("unsupported_capabilities") or [])]
-
-        # Passive gateway annotations: preserve without requiring its plugin.
-        # The SparkRoute plugin owns the schema; these never become serve flags
-        # or contribute to the workload fingerprint.
-        raw_sparkroute = data.get("sparkroute", {})
-        if not isinstance(raw_sparkroute, dict):
-            raise RecipeError("sparkroute must be a mapping")
-        self.sparkroute: dict[str, Any] = deepcopy(raw_sparkroute)
 
         # Lifecycle hooks
         self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
@@ -1504,6 +1497,24 @@ class Recipe:
         """Return a parsed plugin-owned top-level item."""
 
         return self.plugin_items.get(key, default)
+
+    def export_plugin_items(self, *, fingerprint_only: bool = False) -> dict[str, Any]:
+        """Export canonical plugin data for recipe transport or identity.
+
+        Saved raw values and their identity policy survive an unavailable
+        plugin. Copies keep API consumers from mutating the recipe's state.
+        """
+        result = {}
+        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
+            if fingerprint_only and not self._plugin_item_fingerprints.get(key, True):
+                continue
+            registration = get_recipe_item(key)
+            if registration is not None and key in self.plugin_items:
+                value = registration.handler.export(self.plugin_items[key], self)
+            else:
+                value = self._plugin_item_raw[key]
+            result[key] = deepcopy(value)
+        return result
 
     @classmethod
     def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
@@ -1871,17 +1882,10 @@ class Recipe:
             "env": dict(self.env),
             "command": self.command,
             "metadata": dict(self.metadata),
-            "plugin_items": {
-                key: (
-                    get_recipe_item(key).handler.export(self.plugin_items[key], self)
-                    if get_recipe_item(key) is not None and key in self.plugin_items
-                    else self._plugin_item_raw[key]
-                )
-                for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items))
-            },
+            "plugin_items": self.export_plugin_items(),
+            "plugin_item_fingerprints": dict(self._plugin_item_fingerprints),
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
-            "sparkroute": deepcopy(self.sparkroute),
             "capabilities": list(self.capabilities),
             "unsupported_capabilities": list(self.unsupported_capabilities),
             "pre_exec": list(self.pre_exec),
@@ -1928,11 +1932,21 @@ class Recipe:
         self.command = state.get("command")
         self.metadata = dict(state.get("metadata") or {})
         self.plugin_items = {}
-        self._plugin_item_raw = dict(state.get("plugin_items") or {})
+        self._plugin_item_raw = deepcopy(state.get("plugin_items") or {})
+        self._plugin_item_fingerprints = dict(state.get("plugin_item_fingerprints") or {})
+        # A plugin can be installed after this state was saved. Recover only
+        # keys it now owns; no integration-specific state migration is needed.
+        for registration in registered_recipe_items():
+            key = registration.key
+            if key not in self._plugin_item_raw and key in self._raw:
+                self._plugin_item_raw[key] = deepcopy(self._raw[key])
+        for key in self._plugin_item_raw:
+            registration = get_recipe_item(key)
+            self._plugin_item_fingerprints.setdefault(key, registration.affects_fingerprint if registration else True)
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
-        self.sparkroute = deepcopy(state.get("sparkroute", self._raw.get("sparkroute", {})))
-        self.runtime_config.pop("sparkroute", None)
+        for key in self._plugin_item_raw:
+            self.runtime_config.pop(key, None)
         self.capabilities = list(state.get("capabilities") or [])
         self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
         self.pre_exec = list(state.get("pre_exec") or [])
@@ -1956,7 +1970,7 @@ class Recipe:
         for key, raw_item in self._plugin_item_raw.items():
             registration = get_recipe_item(key)
             if registration is not None:
-                self.plugin_items[key] = registration.handler.parse(raw_item, self)
+                self.plugin_items[key] = registration.handler.parse(deepcopy(raw_item), self)
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -2075,9 +2089,6 @@ class Recipe:
         if self.readiness:
             d["readiness"] = dict(self.readiness)
 
-        if self.sparkroute:
-            d["sparkroute"] = deepcopy(self.sparkroute)
-
         # -- Metadata (absorb promoted keys) --
         d["metadata"] = meta = dict(self.metadata)
         if self.description:
@@ -2138,12 +2149,7 @@ class Recipe:
 
         # Plugin items stay at the top level they claimed. Unknown state from
         # a serialized recipe is preserved verbatim if its plugin is disabled.
-        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
-            registration = get_recipe_item(key)
-            if registration is not None and key in self.plugin_items:
-                d[key] = registration.handler.export(self.plugin_items[key], self)
-            else:
-                d[key] = self._plugin_item_raw[key]
+        d.update(self.export_plugin_items())
 
         # add distribution_config iff it was provided in the input recipe
         dist_cfg = self.distribution_config

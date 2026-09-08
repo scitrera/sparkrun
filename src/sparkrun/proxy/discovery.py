@@ -67,7 +67,7 @@ class DiscoveredEndpoint:
     recipe_revision: str = ""
     native_protocols: list[str] = field(default_factory=lambda: ["openai"])
     capabilities: list[str] = field(default_factory=list)
-    sparkroute: dict = field(default_factory=dict)
+    plugin_items: dict = field(default_factory=dict)
 
 
 def discover_endpoints(
@@ -203,14 +203,14 @@ def _endpoint_from_job(
 
     protocols = ["openai"]
     capabilities = []
-    sparkroute = {}
+    plugin_items = {}
     if meta.get("recipe_state"):
         try:
             from sparkrun.core.recipe import Recipe
             from sparkrun.api._resolve import resolve_runtime
 
             recipe = Recipe._deserialize(meta["recipe_state"])
-            sparkroute = recipe.sparkroute
+            plugin_items = recipe.export_plugin_items()
             runtime = resolve_runtime(recipe)
             protocols = runtime.native_protocols(recipe)
             capabilities = sorted(set(recipe.capabilities or []) | set(runtime.native_capabilities(recipe)))
@@ -223,7 +223,7 @@ def _endpoint_from_job(
         recipe_revision=str(meta.get("recipe_fingerprint") or ""),
         native_protocols=protocols,
         capabilities=capabilities,
-        sparkroute=sparkroute,
+        plugin_items=plugin_items,
         model=meta.get("model", "") or "",
         served_model_name=served_name,
         runtime=(job.runtime or meta.get("runtime") or "") or "",

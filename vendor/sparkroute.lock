@@ -5,10 +5,10 @@ version = "0.1.0"
 module = "sparkrun.plugins.sparkroute"
 feature = "gateway.sparkroute"
 repository = "git@github.com:sparksq/sparkrun-sparkroute-plugin.git"
-commit = "233eb3aa6d58e391d2601c4a2a0db9e4eef98d3d"
-tree = "50ec33ee6371a9a75ca290e64071f72bb90daf55"
+commit = "d419486b4d24d91aa56c9b3b3f5ec2714eb14592"
+tree = "2e72dd18165724389d9023e490c5214a132cce57"
 sparkrun = ">=0.3.8,<0.4"
-content_sha256 = "8e286b450e980693664defd2fdb42c0c61afcd90833d5c0bce0878eabf214d49"
+content_sha256 = "d110f2aaf7dba2779b929cf005a9031095641035ada5b74c987bcac1a6f5b760"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/LICENSE"
@@ -100,7 +100,7 @@ sha256 = "d01204e39247b78fb184be9c8cc630dc3346e77d226c30bb35e84682c32e1c3e"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_live.py"
-sha256 = "1a94e4ebfd9799eec30458847787f32eb111d71b9b9808c0f09e3b8565a79684"
+sha256 = "c9ba9847782cffbfd5d2b612d37b81b5b8d4c16f14b9445194f3bc5490ac1b95"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_metadata.py"

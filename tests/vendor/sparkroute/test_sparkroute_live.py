@@ -150,6 +150,28 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         assert payload["request_id"] == "live-capabilities"
         assert payload["schema_version"] == 4
         assert payload["ok"] is True
+        # A later CLI invocation has the persisted PID but no Popen handle.
+        # Restart repeatedly on the same ports and private credential database.
+        from sparkrun.api.proxy._ops import _stop_and_wait
+
+        for _ in range(2):
+            previous = engine
+            engine = SparkrouteEngine(
+                host="127.0.0.1",
+                port=data_port,
+                master_key="test-only-token",
+                state_dir=tmp_path / "supervisor",
+                proxy_config=config,
+            )
+            old_pid = engine.current_pid()
+            assert engine._proc is None
+            assert _stop_and_wait(engine)
+            if previous._proc is not None:
+                previous._proc.wait(timeout=5)
+            assert engine.start() == 0
+            assert engine.current_pid() != old_pid
+            assert _json(engine.admin_url + "/v1/ui/bootstrap", token=engine.credential.read_admin_token())["edition"] == "standalone"
+            assert {"assistant", "coding"} <= {entry["id"] for entry in _json(base + "/v1/models", token="test-only-token")["data"]}
     finally:
         engine.stop()
         upstream.shutdown()

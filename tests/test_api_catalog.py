@@ -197,10 +197,10 @@ def test_vllm_native_api_options_and_version_defaults(catalog, runtime):
     data["container"] = "custom/image:latest"
     path.write_text(yaml.safe_dump(data))
     unknown = api.get_recipe_details(str(path), sctx=sctx)
-    assert unknown["native_protocols"] == ["openai"]
-    assert "responses" not in unknown["capabilities"]
-    data["metadata"]["native_apis"] = ["chat_completions", "responses", "messages"]
+    assert unknown["native_protocols"] == ["openai", "anthropic"]
+    assert "responses" in unknown["capabilities"]
+    data["metadata"]["native_apis"] = ["chat_completions"]
     path.write_text(yaml.safe_dump(data))
     declared = api.get_recipe_details(str(path), sctx=sctx)
-    assert declared["native_protocols"] == ["openai", "anthropic"]
-    assert "responses" in declared["capabilities"]
+    assert declared["native_protocols"] == ["openai"]
+    assert "responses" not in declared["capabilities"]

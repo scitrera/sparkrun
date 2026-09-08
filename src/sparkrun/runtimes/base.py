@@ -316,8 +316,8 @@ class RuntimePlugin(Plugin):
         """Known native APIs, with an explicit recipe metadata override.
 
         Metadata describes the serving API and does not change workload identity.
-        Unknown images default to Chat Completions. Runtime families can provide
-        version-specific defaults without claiming every optional model feature.
+        The generic floor is Chat Completions. Runtime families provide their
+        own defaults without claiming every optional model feature.
         """
         declared = (getattr(recipe, "metadata", None) or {}).get("native_apis")
         if declared is None:

@@ -377,6 +377,35 @@ def test_runtime_hook_supplies_protocols_and_a_binding_may_override():
     assert overridden[0].native_protocols == ["openai"]
 
 
+@pytest.mark.parametrize("apis", [None, ["chat_completions"], ["messages"]])
+def test_nightly_vllm_runtime_declarations_reach_existing_loaded_bindings(apis):
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+    from sparkrun.plugins.sparkroute.projection import resolve_bindings
+
+    recipe = Recipe(
+        {
+            "recipe_version": "2",
+            "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "runtime": "vllm",
+            "container": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-b12x:latest",
+            "metadata": {} if apis is None else {"native_apis": apis},
+        }
+    )
+    # proxy load persists recipe/cluster, not a snapshot of runtime API defaults.
+    with (
+        mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(recipe, {})),
+        mock.patch("sparkrun.api._resolve.resolve_runtime", return_value=VllmDistributedRuntime()),
+    ):
+        bindings = resolve_bindings([{"recipe": "@official/deepseek", "cluster": "sparks25"}])
+    deployment = build_sparkrun_set(bindings)["deployments"][0]
+    assert deployment["native_protocols"] == (
+        ["openai", "anthropic"] if apis is None else ["openai"] if apis == ["chat_completions"] else ["anthropic"]
+    )
+    assert deployment.get("capabilities", []) == (["responses"] if apis is None else [])
+    assert deployment["title"] == "sparkrun:sparks25:deepseek-ai/DeepSeek-V4-Flash-0731"
+
+
 def test_unresolvable_runtime_degrades_to_openai_rather_than_failing():
     """Omitting a dialect costs a translation; failing the reconcile would take
     down configuration for every other binding."""

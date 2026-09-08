@@ -211,7 +211,7 @@ def resolve_catalog_recipe(reference: str, overrides: dict | None = None, *, sct
     Returns (Recipe, launch overrides). Image and env overrides are applied to
     the recipe before runtime selection and fingerprint derivation.
     """
-    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.recipe import Recipe, RecipeError
     from sparkrun.core.resolve import apply_recipe_overrides
     from sparkrun.utils import coerce_value
 
@@ -229,7 +229,7 @@ def resolve_catalog_recipe(reference: str, overrides: dict | None = None, *, sct
         env = ["%s=%s" % (key, values.pop(key)) for key in list(values) if key.startswith("env.")]
         recipe, values = apply_recipe_overrides(env, image=image, recipe=recipe, **values)
         return recipe, values
-    except (ValueError, TypeError) as exc:
+    except (RecipeError, ValueError, TypeError) as exc:
         raise SparkrunError("Recipe is invalid: %s" % type(exc).__name__) from exc
 
 
@@ -319,7 +319,7 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
         "defaults": defaults,
         "metadata": _declared_facets(path),
         "recipe_revision": derive_recipe_fingerprint(recipe, normalized),
-        "sparkroute": recipe.sparkroute,
+        "plugin_items": recipe.export_plugin_items(),
         "native_api_options": runtime.native_api_options(),
         "native_protocols": list(runtime.native_protocols(recipe) or ("openai",)),
         "capabilities": sorted(set(getattr(recipe, "capabilities", []) or []) | set(runtime.native_capabilities(recipe))),

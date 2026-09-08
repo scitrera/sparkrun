@@ -42,7 +42,11 @@ owned by another plugin — a second owner must not be able to silently
 reinterpret an existing recipe surface. Parsing failures name both the owner
 and the key; validation issues are namespaced as `snapshot.<issue>`.
 
-Parsed items are read with `recipe.plugin_item("snapshot")`.
+Parsed items are read with `recipe.plugin_item("snapshot")`. Use
+`recipe.export_plugin_items()` for detached canonical values keyed by their
+registered recipe keys. Catalog previews and discovered endpoints carry these
+values in their generic `plugin_items` mapping; integrations interpret their own
+entries and adapt them to their own wire protocol.
 
 Four properties are load-bearing:
 
@@ -56,24 +60,31 @@ Four properties are load-bearing:
 - **A raw item survives its plugin being unavailable.** Reading a serialized
   recipe with the plugin disabled preserves the item verbatim rather than
   discarding it, so disabling a plugin never silently rewrites recipes.
-- **Items participate in `derive_recipe_fingerprint`**, using the handler's
-  canonical export. They are declared configuration; omitting them would make
-  two recipes with different extension policy share every cache and provenance
-  record keyed off that digest. The fingerprint part is appended only when an
-  item is present, so recipes predating the seam hash byte-identically.
+- **Items participate in `derive_recipe_fingerprint` by default**, using the
+  handler's canonical export. Existing execution plugins retain their identity
+  behavior. A part is appended only when an item is present, so recipes predating
+  the seam hash byte-identically.
 
-Note the contrast with `capabilities:` / `unsupported_capabilities:`, which are
-core keys parsed as real attributes *specifically* to stay out of the
-fingerprint: describing what a deployment can do must not change what it is.
-A plugin item is the opposite — it changes how the workload is produced.
+A plugin supplying passive annotations can opt out of workload identity:
 
-The optional top-level `sparkroute:` mapping is also passive gateway metadata.
-Core preserves it as `recipe.sparkroute` through YAML export, cached recipe state,
-controller catalog previews, and endpoint discovery even when the gateway plugin
-is disabled. It is excluded from serve flags and workload identity. The SparkRoute
-plugin owns validation and projection of its `capabilities` and `request_profiles`
-fields; enabling or changing these does not imply a different serving workload.
-See the SparkRoute plugin's recipe-settings documentation for the schema.
+```python
+register_recipe_item(
+    "annotations", AnnotationHandler(), owner=__name__, affects_fingerprint=False
+)
+```
+
+This keeps annotation edits from changing the workload fingerprint while retaining
+normal parsing, validation and transport. Items contributing an execution strategy
+or preparation steps cannot opt out. The per-item identity policy is saved with
+the recipe so it remains stable when the plugin is unavailable. Older saved plugin
+items default to participating unless their registered owner declares otherwise.
+
+The owning plugin must be enabled to recognize its key when loading fresh recipe
+YAML. With no registration, unknown top-level keys retain the existing runtime
+configuration behavior and validation diagnostics. Already serialized plugin
+items remain preserved even without their owner. A registered owner may also
+recover its key from raw recipe data in older saved state; core does not maintain
+integration-specific migrations or schemas.
 
 ## Owning how a recipe is executed
 

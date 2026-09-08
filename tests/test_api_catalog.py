@@ -206,13 +206,26 @@ def test_vllm_native_api_options_and_version_defaults(catalog, runtime):
     assert "responses" not in declared["capabilities"]
 
 
-def test_passive_gateway_annotations_survive_catalog_without_changing_launch_revision(catalog):
+def test_plugin_annotations_survive_catalog_without_changing_launch_revision(catalog, passive_recipe_item):
     sctx, root, data = catalog
     path = root / "one/same.yaml"
     original = api.get_recipe_details(str(path), sctx=sctx)
-    data["sparkroute"] = {"capabilities": ["vision"], "request_profiles": {"low": {"chat_completions": {"temperature": 0.2}}}}
+    data[passive_recipe_item] = {"labels": ["vision"], "options": {"low": {"temperature": 0.2}}}
     path.write_text(yaml.safe_dump(data))
     changed = api.get_recipe_details(str(path), sctx=sctx)
-    assert changed["sparkroute"] == data["sparkroute"]
+    assert changed["plugin_items"] == {passive_recipe_item: data[passive_recipe_item]}
     assert changed["recipe_revision"] == original["recipe_revision"]
+    assert "tests.annotations" in changed["required_plugins"]
     assert not any(issue["code"] == "unknown-top-level-key" for issue in changed["issues"])
+
+
+def test_plugin_parse_failures_use_catalog_error_surface(catalog, passive_recipe_item):
+    from sparkrun.core.recipe import RecipeError
+
+    sctx, root, data = catalog
+    path = root / "one/same.yaml"
+    data[passive_recipe_item] = []
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(api.SparkrunError, match="Recipe is invalid") as error:
+        api.get_recipe_details(str(path), sctx=sctx)
+    assert isinstance(error.value.__cause__, RecipeError)

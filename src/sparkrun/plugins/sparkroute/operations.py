@@ -466,6 +466,8 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
 def _catalog(request: Request, sctx) -> dict[str, Any]:
     if not hasattr(api, "catalog_recipes"):
         raise ProtocolError("host_upgrade_required", "Update the sparkrun control checkout to a version with the catalog API")
+    from .recipe_config import catalog_sparkroute, SparkrouteRecipeError
+
     arguments = request.arguments
     try:
         if request.operation == "catalog_registry":
@@ -486,14 +488,14 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
         if request.operation == "catalog_search":
             return api.catalog_recipes(sctx=sctx, **arguments)
         if request.operation == "catalog_resolve":
-            return api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx)
+            return catalog_sparkroute(api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx))
         if request.operation == "catalog_retain":
             _require_feature_enabled()
             api.retain_catalog_recipe(arguments.get("reference", ""), sctx=sctx)
             return {"retained": True}
         if request.operation == "catalog_import":
             _require_feature_enabled()
-            return api.import_recipe(arguments.get("content", ""), sctx=sctx)
+            return catalog_sparkroute(api.import_recipe(arguments.get("content", ""), sctx=sctx))
         if request.operation == "catalog_refresh":
             _require_feature_enabled()
             from .jobs import start_operation
@@ -505,6 +507,8 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
             return operation_status(arguments.get("operation_id", ""), sctx=sctx)
     except api.RecipeNotFound as exc:
         raise ProtocolError("recipe_not_found", str(exc)) from exc
+    except SparkrouteRecipeError as exc:
+        raise ProtocolError("catalog_invalid", str(exc)) from exc
     except (api.SparkrunError, ValueError, KeyError) as exc:
         raise ProtocolError("catalog_invalid", "Recipe selection or catalog request is invalid") from exc
     raise ProtocolError("unsupported_operation", "Unsupported catalog operation")

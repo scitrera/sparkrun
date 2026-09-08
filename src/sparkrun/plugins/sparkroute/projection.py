@@ -27,6 +27,7 @@ Three properties are load-bearing and each has a failure mode behind it:
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import json
 import logging
 from typing import Any
@@ -168,6 +169,7 @@ def build_sparkrun_set(
         with every list deterministically ordered.
     """
     deployments: list[dict[str, Any]] = []
+    profiles: dict[str, dict[str, Any]] = {}
     models: dict[str, dict[str, Any]] = {}
 
     for entry in sorted(entries, key=lambda e: e.recipe_revision):
@@ -224,6 +226,7 @@ def build_sparkrun_set(
 
         model = models.setdefault(entry.virtual_model, {"name": entry.virtual_model, "targets": []})
         model["targets"].append(name)
+        _collect_profiles(profiles, entry.virtual_model, entry.request_profiles, name)
         # An embedding route must require the capability, so a binding that
         # loses the declaration fails validation instead of failing requests.
         if EMBEDDING_CAPABILITY in declared:
@@ -249,6 +252,7 @@ def build_sparkrun_set(
             deployment["capability_policy"] = {"unknown": "try"}
         deployments.append(deployment)
         models[upstream_model] = {"name": upstream_model, "targets": [name]}
+        _collect_profiles(profiles, upstream_model, (discovered_apis or {}).get(upstream_model, {}).get("request_profiles", {}), name)
 
     deployments.sort(key=lambda deployment: deployment["name"])
 
@@ -279,6 +283,7 @@ def build_sparkrun_set(
         if "aliases" in model:
             model["aliases"] = sorted(model["aliases"])
 
+    _append_profiles(virtual_models, profiles)
     return {
         "providers": [{"name": SPARKRUN_PROVIDER, "type": "sparkrun"}],
         "deployments": deployments,
@@ -306,6 +311,7 @@ class ProjectedBinding:
         "unsupported_capabilities",
         "native_protocols",
         "cold_start",
+        "request_profiles",
     )
 
     def __init__(
@@ -317,6 +323,7 @@ class ProjectedBinding:
         virtual_model: str,
         cluster_candidates: list[str] | None = None,
         overrides: dict[str, str] | None = None,
+        request_profiles: dict[str, Any] | None = None,
         capabilities: list[str] | None = None,
         unsupported_capabilities: list[str] | None = None,
         native_protocols: list[str] | None = None,
@@ -328,6 +335,7 @@ class ProjectedBinding:
         self.virtual_model = virtual_model
         self.cluster_candidates = list(cluster_candidates or ())
         self.overrides = {str(k): str(v) for k, v in (overrides or {}).items()}
+        self.request_profiles = deepcopy(request_profiles or {})
         self.capabilities = list(capabilities or ())
         self.unsupported_capabilities = list(unsupported_capabilities or ())
         self.native_protocols = list(native_protocols or (DEFAULT_PROTOCOL,))
@@ -362,6 +370,12 @@ def dedupe_bindings(entries: list[ProjectedBinding]) -> list[ProjectedBinding]:
                 "Recipe fingerprint %s is bound to conflicting clusters; define separate deployments in the configuration UI"
                 % entry.recipe_revision
             )
+        merged_profiles = deepcopy(existing.request_profiles)
+        for selector, parameters in entry.request_profiles.items():
+            if selector in merged_profiles and merged_profiles[selector] != parameters:
+                raise ProjectionError(f"Recipes {existing.recipe!r} and {entry.recipe!r} define conflicting request profile {selector!r}")
+            merged_profiles[selector] = deepcopy(parameters)
+        existing.request_profiles = entry.request_profiles = merged_profiles
         if entry.recipe < existing.recipe:
             # Keep the lexically-first recipe name, but preserve the richer
             # declaration: dropping a capability because a duplicate lacked it
@@ -456,6 +470,12 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
         if cold_start not in ("wait", "reject"):
             raise ProjectionError("bindings[%d]: cold_start must be 'wait' or 'reject', got %r" % (index, cold_start))
 
+        from .recipe_config import recipe_sparkroute, SparkrouteRecipeError
+
+        try:
+            settings = recipe_sparkroute(recipe)
+        except SparkrouteRecipeError as error:
+            raise ProjectionError(str(error)) from error
         served = str(entry.get("model") or getattr(recipe, "effective_served_model_name", "") or recipe.model)
         protocols = entry.get("native_protocols") or _runtime_protocols(recipe, sctx=sctx)
         resolved.append(
@@ -468,8 +488,10 @@ def resolve_bindings(bindings: list[dict[str, Any]], *, sctx: Any = None) -> lis
                 overrides=overrides,
                 # A binding may narrow or extend what the recipe declares;
                 # neither side can be inferred, so both are explicit.
+                request_profiles=settings.get("request_profiles", {}),
                 capabilities=sorted(
                     set(str(c) for c in (entry.get("capabilities") or getattr(recipe, "capabilities", []) or []))
+                    | set(settings.get("capabilities", []))
                     | set(_runtime_capabilities(recipe, sctx=sctx))
                 ),
                 unsupported_capabilities=[
@@ -500,3 +522,32 @@ __all__ = [
     "deployment_name",
     "resolve_bindings",
 ]
+
+
+def _collect_profiles(profiles, parent, declarations, deployment):
+    for selector, overrides in declarations.items():
+        name = f"{parent}:{selector}"
+        profile = profiles.setdefault(name, {"parent": parent, "overrides": deepcopy(overrides), "targets": set()})
+        if profile["overrides"] != overrides:
+            raise ProjectionError(f"Recipes serving {parent!r} define conflicting request profile {selector!r}")
+        profile["targets"].add(deployment)
+
+
+def _append_profiles(models, profiles):
+    by_name = {model["name"]: model for model in models}
+    occupied = set(by_name) | {alias for model in models for alias in model.get("aliases", [])}
+    for name, profile in sorted(profiles.items()):
+        parent = by_name[profile["parent"]]
+        suffix = name[len(parent["name"]) :]
+        aliases = [alias + suffix for alias in parent.get("aliases", [])]
+        for public_name in [name, *aliases]:
+            if public_name in occupied:
+                raise ProjectionError(f"Recipe request profile conflicts with existing model or alias {public_name!r}")
+            occupied.add(public_name)
+        model = deepcopy(parent)
+        model.update(name=name, request_overrides=deepcopy(profile["overrides"]))
+        if aliases:
+            model["aliases"] = aliases
+        model["pools"] = [{"priority": 0, "targets": [{"deployment": target, "weight": 1} for target in sorted(profile["targets"])]}]
+        models.append(model)
+    models.sort(key=lambda model: model["name"])

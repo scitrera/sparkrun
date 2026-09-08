@@ -785,7 +785,7 @@ class SparkrouteEngine(GatewaySupervisor):
                 with contextlib.suppress(OSError):
                     temporary.unlink(missing_ok=True)
 
-    def _read_discovered_apis(self) -> dict[str, dict[str, list[str]]]:
+    def _read_discovered_apis(self) -> dict[str, dict[str, Any]]:
         try:
             value = json.loads((self.state_dir / "sparkroute-discovery-apis.json").read_text())
             if isinstance(value, dict) and all(
@@ -802,25 +802,43 @@ class SparkrouteEngine(GatewaySupervisor):
         return {}
 
     def _persist_discovered_apis(self, endpoints: list) -> None:
-        snapshot: dict[str, dict[str, list[str]]] = {}
+        from .recipe_config import parse_sparkroute, SparkrouteRecipeError
+
+        snapshot: dict[str, dict[str, Any]] = {}
+        declared_profiles: dict[str, dict[str, Any]] = {}
         for endpoint in endpoints:
             if not getattr(endpoint, "healthy", False):
                 continue
             protocols = list(getattr(endpoint, "native_protocols", None) or ["openai"])
-            capabilities = list(getattr(endpoint, "capabilities", None) or [])
+            try:
+                settings = parse_sparkroute(getattr(endpoint, "sparkroute", {}) or {}, source="discovered recipe")
+            except SparkrouteRecipeError as error:
+                raise SparkrouteConfigError(str(error)) from error
+            capabilities = sorted(set(getattr(endpoint, "capabilities", None) or []) | set(settings.get("capabilities", [])))
+            profiles = settings.get("request_profiles", {})
             for model in getattr(endpoint, "actual_models", None) or [
                 getattr(endpoint, "served_model_name", None) or getattr(endpoint, "model", "")
             ]:
                 if not model:
                     continue
+                declared = declared_profiles.setdefault(model, {})
+                for selector, parameters in profiles.items():
+                    if selector in declared and declared[selector] != parameters:
+                        raise SparkrouteConfigError(f"Discovered recipes serving {model!r} define conflicting request profiles")
+                    declared[selector] = parameters
                 if model in snapshot:
                     # One discovered model can cover multiple jobs: advertise
                     # only APIs shared by all candidates for that model.
                     shared_protocols = [p for p in protocols if p in snapshot[model]["native_protocols"]]
                     shared_capabilities = [c for c in capabilities if c in snapshot[model]["capabilities"]]
+                    previous_profiles = snapshot[model].get("request_profiles", {})
+                    common = set(profiles) & set(previous_profiles)
+                    shared_profiles = {key: profiles[key] for key in sorted(common)}
                 else:
-                    shared_protocols, shared_capabilities = protocols, capabilities
+                    shared_protocols, shared_capabilities, shared_profiles = protocols, capabilities, profiles
                 snapshot[model] = {"native_protocols": shared_protocols, "capabilities": shared_capabilities}
+                if shared_profiles:
+                    snapshot[model]["request_profiles"] = shared_profiles
         if snapshot == self._read_discovered_apis():
             return
         self.state_dir.mkdir(parents=True, exist_ok=True)

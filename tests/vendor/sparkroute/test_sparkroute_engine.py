@@ -539,58 +539,36 @@ def test_sync_does_not_remember_a_model_that_already_has_a_binding(tmp_path):
     assert config.save_calls == 1
 
 
-def test_manual_load_persists_a_binding_before_reconcile(tmp_path):
+@pytest.mark.parametrize("bindings", [[], [{"recipe": "@official/qwen", "cluster": "spark-a"}]])
+def test_manual_load_requests_discovery_without_creating_or_changing_bindings(tmp_path, bindings):
+    config = _MutableProxyConfig(bindings=bindings, discovered_models=["served/qwen"])
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    with mock.patch.object(engine, "reconcile") as reconcile:
+        assert engine.register_loaded_model("@official/qwen", {"tensor_parallel": 2}, "spark-a") is None
+    assert config.bindings == bindings
+    assert config.discovered_models == ["served/qwen"]
+    assert config.save_calls == 0
+    reconcile.assert_not_called()
+
+
+def test_manual_load_and_unload_use_host_discovery_and_remove_a_stopped_workload(tmp_path):
+    from sparkrun.api.proxy import _ops
+
     config = _MutableProxyConfig(bindings=[])
     engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
-    candidate = SimpleNamespace(recipe="@official/qwen", recipe_revision="revision-a")
-
+    endpoint = SimpleNamespace(healthy=True, actual_models=["served/qwen"], served_model_name=None, model="metadata/qwen")
     with (
-        mock.patch.object(engine_mod, "resolve_bindings", side_effect=[[candidate], []]),
-        mock.patch.object(engine, "reconcile", return_value=(2, 0)) as reconcile,
+        mock.patch.object(_ops, "_running_engine", return_value=engine),
+        mock.patch.object(engine, "is_running", return_value=True),
+        mock.patch.object(_ops, "_discover", side_effect=[[endpoint], []]),
+        mock.patch.object(engine, "reconcile", return_value=(1, 0)),
     ):
-        assert engine.register_loaded_model("@official/qwen", {"tensor_parallel": 2}, "spark-a") == (2, 0)
-
-    assert config.bindings == [
-        {
-            "recipe": "@official/qwen",
-            "overrides": {"tensor_parallel": "2"},
-            "cluster": "spark-a",
-        }
-    ]
-    assert config.save_calls == 1
-    reconcile.assert_called_once_with(reason="sparkrun proxy load")
-
-
-def test_manual_load_is_idempotent_by_recipe_revision(tmp_path):
-    existing_binding = {"recipe": "@official/qwen", "cluster": "spark-a"}
-    config = _MutableProxyConfig(bindings=[existing_binding])
-    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
-    candidate = SimpleNamespace(recipe="@official/qwen", recipe_revision="same-revision")
-
-    with (
-        mock.patch.object(engine_mod, "resolve_bindings", side_effect=[[candidate], [candidate]]),
-        mock.patch.object(engine, "reconcile", return_value=(0, 0)),
-    ):
-        assert engine.register_loaded_model("@alias/qwen") == (0, 0)
-
-    assert config.bindings == [existing_binding]
-    assert config.save_calls == 0
-
-
-def test_manual_load_promotes_a_discovered_model_without_leaving_stale_state(tmp_path):
-    config = _MutableProxyConfig(bindings=[], discovered_models=["served/qwen"])
-    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
-    candidate = SimpleNamespace(recipe="@official/qwen", recipe_revision="revision-a", virtual_model="served/qwen")
-
-    with (
-        mock.patch.object(engine_mod, "resolve_bindings", side_effect=[[candidate], []]),
-        mock.patch.object(engine, "reconcile", return_value=(2, 1)),
-    ):
-        assert engine.register_loaded_model("@official/qwen") == (2, 1)
-
-    assert config.bindings == [{"recipe": "@official/qwen"}]
-    assert config.discovered_models == []
-    assert config.save_calls == 1
+        assert _ops.register_loaded_model("@official/qwen").proxy_running
+        assert config.bindings == []
+        assert config.discovered_models == ["served/qwen"]
+        assert _ops.unregister_loaded_model("@official/qwen").proxy_running
+        assert config.bindings == []
+        assert config.discovered_models == []
 
 
 def test_manual_unload_removes_all_override_variants(tmp_path):
@@ -609,13 +587,13 @@ def test_manual_unload_removes_all_override_variants(tmp_path):
 
     with (
         mock.patch.object(engine_mod, "resolve_bindings", return_value=resolved),
-        mock.patch.object(engine, "reconcile", return_value=(0, 4)) as reconcile,
+        mock.patch.object(engine, "reconcile") as reconcile,
     ):
-        assert engine.unregister_loaded_model("@official/qwen") == (0, 4)
+        assert engine.unregister_loaded_model("@official/qwen") is None
 
     assert config.bindings == [{"recipe": "@official/other"}]
     assert config.save_calls == 1
-    reconcile.assert_called_once_with(reason="sparkrun proxy unload")
+    reconcile.assert_not_called()
 
 
 def test_admin_client_tracks_live_token_changes_without_reconstruction(tmp_path):

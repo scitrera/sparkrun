@@ -943,51 +943,17 @@ class SparkrouteEngine(GatewaySupervisor):
         recipe: str,
         overrides: dict[str, Any] | None = None,
         cluster: str | None = None,
-    ) -> tuple[int, int]:
-        """Persist a manual load as an activatable managed binding.
+    ) -> None:
+        """Request the host's normal discovery sync after a manual load.
 
-        SparkRoute reconciliation is intentionally catalog-driven. A warm
-        endpoint alone must not become the desired state, because deleting a
-        route when that endpoint later stops would make cold activation
-        impossible. ``proxy load`` is an explicit user request, however, so it
-        is also the right point to add that recipe to the binding catalog.
+        Loading a workload is not an opt-in to future automatic activation.
+        Returning None uses api.proxy's discovery path and leaves explicit
+        recipe bindings unchanged. On-demand recipes belong in the UI or an
+        explicitly authored proxy.yaml binding.
         """
-        if self.proxy_config is None:
-            raise SparkrouteConfigError("SparkRoute model registration requires proxy.yaml")
+        return None
 
-        binding: dict[str, Any] = {"recipe": str(recipe)}
-        normalized_overrides = {str(key): str(value) for key, value in (overrides or {}).items() if value is not None}
-        if normalized_overrides:
-            binding["overrides"] = dict(sorted(normalized_overrides.items()))
-        if cluster:
-            binding["cluster"] = str(cluster)
-
-        try:
-            candidate = resolve_bindings([binding], sctx=self.sctx)[0]
-            existing_bindings = list(self.proxy_config.bindings)
-            existing = resolve_bindings(existing_bindings, sctx=self.sctx)
-        except (ProjectionError, IndexError) as exc:
-            raise SparkrouteConfigError(str(exc)) from exc
-
-        changed = False
-        if all(current.recipe_revision != candidate.recipe_revision for current in existing):
-            self.proxy_config.set_bindings(existing_bindings + [binding])
-            changed = True
-
-        # Promote a warm-only import to the durable activatable binding. The
-        # generated document already de-duplicates it, but removing the stale
-        # snapshot now prevents it from resurfacing after a future unload.
-        imported = set(getattr(self.proxy_config, "discovered_models", []) or ())
-        virtual_model = getattr(candidate, "virtual_model", None)
-        if virtual_model in imported:
-            imported.remove(virtual_model)
-            self.proxy_config.set_discovered_models(sorted(imported))
-            changed = True
-        if changed:
-            self.proxy_config.save()
-        return self.reconcile(reason="sparkrun proxy load")
-
-    def unregister_loaded_model(self, recipe: str) -> tuple[int, int]:
+    def unregister_loaded_model(self, recipe: str) -> None:
         """Remove every managed binding resolving to *recipe*.
 
         A recipe may have several override variants. ``proxy unload`` already
@@ -999,7 +965,7 @@ class SparkrouteEngine(GatewaySupervisor):
 
         bindings = list(self.proxy_config.bindings)
         if not bindings:
-            return self.reconcile(reason="sparkrun proxy unload")
+            return None
         try:
             resolved = resolve_bindings(bindings, sctx=self.sctx)
         except ProjectionError as exc:
@@ -1014,7 +980,9 @@ class SparkrouteEngine(GatewaySupervisor):
         if len(retained) != len(bindings):
             self.proxy_config.set_bindings(retained)
             self.proxy_config.save()
-        return self.reconcile(reason="sparkrun proxy unload")
+        # Rescan even when there was no binding: the stopped workload may have
+        # been discovered, and its last warm snapshot must not survive unload.
+        return None
 
     def list_models_via_api(self) -> list[dict[str, Any]]:
         """Every model the gateway serves, aliases included.

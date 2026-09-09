@@ -59,8 +59,9 @@ API operations, then parameter objects, matching SparkRoute's `request_overrides
   At most 64 profiles and 256 KiB of settings are accepted. Malformed JSON values,
   non-finite numbers, unknown operations, and ambiguous names are rejected.
 
-`proxy load` bindings follow their recipe on subsequent `proxy sync`. Healthy
-workloads discovered from normal `sparkrun run` carry the settings saved at launch;
+Explicit recipe bindings follow their recipe on subsequent `proxy sync`. Normal
+`sparkrun run` and `sparkrun proxy load` workloads are discovery-only and carry
+the settings saved at launch;
 editing the source file alone does not alter that saved recipe state. Multiple
 recipes serving the same public model may share an identical profile, but its
 routing pool only includes recipes declaring it. Conflicting definitions fail

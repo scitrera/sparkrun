@@ -761,25 +761,56 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
 
       sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
     """
-    from sparkrun.cli._stop_logs import _stop_recipe
-    from ._common import _get_context
+    from sparkrun import api
+    from ._common import _get_context, _load_recipe, resolve_host_context
 
     sctx = _get_context(ctx)
-    _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, sctx.config, tp_override=None, dry_run=dry_run)
+    recipe, _path, _reg = _load_recipe(sctx.config, recipe_name)
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
+    if dry_run:
+        click.echo("Would stop %s on %s and remove its proxy registration." % (recipe_name, ", ".join(hctx.host_list)))
+        return
 
-    if not dry_run:
-        # Sync proxy to remove the now-stale model entry.
-        from sparkrun import api
+    try:
+        result = api.stop(
+            recipe=recipe,
+            hosts=tuple(hctx.host_list),
+            cluster=hctx.cluster_name,
+            cache_dir=str(sctx.config.cache_dir),
+            sctx=sctx,
+        )
+    except api.JobNotFound:
+        # A saved activation binding can outlive its workload. Unloading it
+        # must still retire the registration when discovery confirms absence.
+        click.echo("No running workload found for this recipe; removing its proxy registration.")
+    except api.AmbiguousWorkload as exc:
+        click.echo("Error: Multiple workloads match this recipe: %s" % ", ".join(exc.cluster_ids), err=True)
+        click.echo("Stop the intended workloads by job ID, then retry proxy unload. Proxy registration was kept.", err=True)
+        sys.exit(1)
+    except api.SparkrunError as exc:
+        click.echo("Error: %s. Proxy registration was kept." % exc, err=True)
+        sys.exit(1)
+    else:
+        for error in result.errors:
+            click.echo("Error: %s" % error, err=True)
+        if not result.success:
+            click.echo("Workload NOT fully stopped. Proxy registration was kept; check sparkrun status before retrying.", err=True)
+            sys.exit(1)
+        click.echo("Workload stopped on %d host(s)." % len(result.hosts_targeted))
 
-        if api.proxy.status(sctx=sctx).running:
-            click.echo("Syncing proxy models...")
-            try:
-                synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
-            except api.proxy.ProxyUpdateFailed as exc:
-                click.echo("Error: %s" % exc, err=True)
-                sys.exit(1)
-            if synced.removed:
-                click.echo("Removed %d stale model(s) from proxy." % synced.removed)
+    if api.proxy.status(sctx=sctx).running:
+        click.echo("Removing proxy registration and syncing models...")
+        try:
+            synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
+        except api.proxy.ProxyUpdateFailed as exc:
+            click.echo("Error: %s" % exc, err=True)
+            sys.exit(1)
+        if synced.removed:
+            click.echo("Removed %d stale model(s) from proxy." % synced.removed)
+        else:
+            click.echo("Proxy registration removed; model list already in sync.")
+    else:
+        click.echo("Proxy is not running; saved proxy registration was not changed.")
 
 
 # ---------------------------------------------------------------------------

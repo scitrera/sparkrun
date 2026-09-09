@@ -750,7 +750,7 @@ def _warn_not_registered(readiness, proxy_status) -> None:
 
 
 @proxy.command("unload")
-@click.argument("recipe_name")
+@click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @dry_run_option
 @click.pass_context

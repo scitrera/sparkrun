@@ -1695,12 +1695,42 @@ a run on the cluster. `--ulimit memlock=-1:-1` is not optional (RDMA pins
 memory; `ibv_reg_mr` fails without it), and `--device` entries are enumerated
 from `/dev/infiniband/*` at runtime rather than passing the directory.
 
-Gated behind `cli.setup.rdma_test` (off `stable`, on `beta`/`alpha` via
-`channel_defaults`) for the `builder.uv_venv` reason — it mutates hosts. The
-gate is friction exactly when a user's networking is already broken, so it
-should be dropped once the image has field mileage. `setup check`'s `rdma` check
-is the cheap peer: it reports devices present/ACTIVE from the *same* probe and
-never sends a byte, pointing at this command for the rest.
+**Two gates, split at the suite boundary, and the axis is *maturity* — not
+blast radius.** perftest is the proven "did my cable work?" check, and gating
+it was friction exactly when a user's networking is already broken; it ships on
+every channel under `cli.setup.rdma_test`, now a kill switch (`default=True`,
+no channel overrides — the `executor.docker` shape). The collective is young —
+mpirun across containers, the purpose-built nccl-tests image, a bus-bandwidth
+verdict — so `--suite nccl` / `all` ride alpha under `cli.setup.rdma_test.nccl`.
+This *narrows* beta, which had the collective under the single flag.
+
+Deliberately **not** split on "needs the container": the perftest suite falls
+back to the image on a host without perftest, and refusing that would break the
+proven check on non-DGX-OS hosts for no gain. The image is incidental to the
+axis.
+
+`api/setup/_rdma.py:available_suites(config)` is the single source of truth and
+has two consumers, which is what keeps the help honest:
+
+- **The refusal** (`rdma_test`), checked before the CX7 probe *and* before the
+  dry-run branches — a dry run must not plan a suite the real run would refuse,
+  and the refusal must not follow a fan-out of SSH. The CLI re-checks first
+  purely to fail before its `Testing RDMA fabric across N host(s)` banner can
+  claim work that will not happen; both raise `gated_suite_message(suite)`, one
+  wording so the enable instruction cannot drift.
+- **The help**, which **omits** a gated suite rather than listing it as
+  unavailable — from the one-line summary (what `setup --help` shows), the
+  `Suites:` block, the examples, the `--suite` metavar, shell completion, and
+  the NCCL-only `--size`. Built at import and passed as `help=` (Click prefers
+  it over `__doc__`), so it is display-only: an import-time read cannot see a
+  `--config` override, which is why enforcement re-resolves at runtime. The
+  `_SuiteChoice` still *accepts* every suite, so a gated value reaches the
+  actionable error instead of Click's `'nccl' is not one of 'perftest'`, which
+  names no way forward.
+
+`setup check`'s `rdma` check is the cheap peer: it reports devices
+present/ACTIVE from the *same* probe and never sends a byte, pointing at this
+command for the rest.
 
 ### Inference Gateway (`proxy/` + `api/proxy/`)
 

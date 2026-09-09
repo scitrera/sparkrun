@@ -579,14 +579,13 @@ def test_manual_unload_removes_all_override_variants(tmp_path):
     ]
     config = _MutableProxyConfig(bindings=bindings)
     engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
-    resolved = [
-        SimpleNamespace(recipe="@official/qwen", recipe_revision="one"),
-        SimpleNamespace(recipe="@official/qwen", recipe_revision="two"),
-        SimpleNamespace(recipe="@official/other", recipe_revision="other"),
-    ]
+
+    def resolve(reference, **kwargs):
+        path = "/recipes/other.yaml" if reference == "@official/other" else "/recipes/qwen.yaml"
+        return SimpleNamespace(source_path=path), {}
 
     with (
-        mock.patch.object(engine_mod, "resolve_bindings", return_value=resolved),
+        mock.patch("sparkrun.api.resolve_catalog_recipe", side_effect=resolve),
         mock.patch.object(engine, "reconcile") as reconcile,
     ):
         assert engine.unregister_loaded_model("@official/qwen") is None
@@ -594,6 +593,47 @@ def test_manual_unload_removes_all_override_variants(tmp_path):
     assert config.bindings == [{"recipe": "@official/other"}]
     assert config.save_calls == 1
     reconcile.assert_not_called()
+
+
+@pytest.mark.parametrize("target", ["@official/qwen", "source-path"])
+def test_unload_matches_registry_reference_and_cached_path(tmp_path, target):
+    recipe_path = tmp_path / "qwen.yaml"
+    other_path = tmp_path / "other.yaml"
+    for path in (recipe_path, other_path):
+        path.write_text('sparkrun_version: "2"\nmodel: same/model\nruntime: sglang\n')
+    config = _MutableProxyConfig(
+        bindings=[{"recipe": str(recipe_path)}, {"recipe": "@official/qwen", "overrides": {"port": 30001}}, {"recipe": str(other_path)}]
+    )
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    from sparkrun.api._context import resolve_sctx
+
+    sctx = resolve_sctx(None)
+    engine.sctx = sctx
+    with mock.patch.object(sctx.registry_manager, "find_recipe_in_registries", return_value=[("official", recipe_path)]):
+        engine.unregister_loaded_model(str(recipe_path) if target == "source-path" else target)
+    # Same model/content is not enough to remove an independent source file.
+    assert config.bindings == [{"recipe": str(other_path)}]
+    assert config.save_calls == 1
+
+
+def test_unload_resolution_failure_does_not_partially_remove_bindings(tmp_path):
+    bindings = [{"recipe": "/recipes/qwen.yaml"}, {"recipe": "missing"}]
+    config = _MutableProxyConfig(bindings=bindings)
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    import sparkrun.api as api
+
+    with mock.patch(
+        "sparkrun.api.resolve_catalog_recipe",
+        side_effect=[
+            (SimpleNamespace(source_path="/recipes/qwen.yaml"), {}),
+            (SimpleNamespace(source_path="/recipes/qwen.yaml"), {}),
+            api.SparkrunError("missing recipe"),
+        ],
+    ):
+        with pytest.raises(SparkrouteConfigError, match="missing recipe"):
+            engine.unregister_loaded_model("@official/qwen")
+    assert config.bindings == bindings
+    assert config.save_calls == 0
 
 
 def test_admin_client_tracks_live_token_changes_without_reconstruction(tmp_path):

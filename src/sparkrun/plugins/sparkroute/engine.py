@@ -966,17 +966,20 @@ class SparkrouteEngine(GatewaySupervisor):
         bindings = list(self.proxy_config.bindings)
         if not bindings:
             return None
-        try:
-            resolved = resolve_bindings(bindings, sctx=self.sctx)
-        except ProjectionError as exc:
-            raise SparkrouteConfigError(str(exc)) from exc
+        import sparkrun.api as api
 
-        target = str(recipe)
-        retained = [
-            binding
-            for binding, current in zip(bindings, resolved, strict=True)
-            if str(binding.get("recipe") or "") != target and current.recipe != target
-        ]
+        try:
+            target_recipe, _ = api.resolve_catalog_recipe(str(recipe), sctx=self.sctx)
+            target = Path(target_recipe.source_path).resolve()
+            retained = []
+            for binding in bindings:
+                # Compare the resolved source, not @registry/name against a
+                # cached YAML path. Overrides do not change recipe identity.
+                current, _ = api.resolve_catalog_recipe(str(binding.get("recipe") or ""), sctx=self.sctx)
+                if Path(current.source_path).resolve() != target:
+                    retained.append(binding)
+        except api.SparkrunError as exc:
+            raise SparkrouteConfigError(str(exc)) from exc
         if len(retained) != len(bindings):
             self.proxy_config.set_bindings(retained)
             self.proxy_config.save()

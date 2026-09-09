@@ -19,8 +19,8 @@ one unit while fitting no single extension point. It contributes:
   :mod:`.bridge`, :mod:`.operations`) the gateway drives as a child process to
   discover, activate and stop workloads.
 
-Both halves are gated by one flag, ``gateway.sparkroute``, off on every
-channel — and it gates *loading*, not just use: with it off this module is
+Both halves are gated by one flag, ``gateway.sparkroute``. The host distribution
+owns its channel defaults, and the flag gates loading: with it off this module is
 never imported, so there is no gateway registration and no bridge command. One
 flag rather than a separate presence flag because the two are not
 independently useful: no point loading the plugin if the gateway will not be

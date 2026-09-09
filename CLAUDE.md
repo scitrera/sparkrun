@@ -1643,9 +1643,11 @@ Three mechanisms, deliberately separate:
   is what lets an out-of-tree plugin substitute an in-tree implementation.
   litellm registers in core, not from a plugin: `proxy` must resolve to
   *something* with every plugin absent.
-- **Availability** — `gateway.<name>` feature flag. `gateway.litellm` ships
-  **enabled on every channel** (`default=True`, like `executor.docker`); a
-  plugin-contributed gateway would ship off.
+- **Availability** — `gateway.<name>` feature flag. `gateway.litellm` defaults
+  on for stable/beta and off for alpha; the bundled `gateway.sparkroute` plugin
+  defaults on only for alpha. Explicit config/env overrides take precedence.
+  Update its immutable source through `scripts/vendor-sparkroute.py update
+  --latest`, then `verify`; see `docs/SPARKROUTE.md`.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
   `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
   `--gateway`) must be known *and* enabled; with no name, the default wins when
@@ -2435,10 +2437,10 @@ hard-codes `"docker"` when no layer names an executor — `_default_executor_nam
 returns docker when enabled, else the sole enabled executor, else raises "name
 one / set `default_executor`" (never silently runs on a disabled backend).
 
-**Gateway gate (`gateway.litellm`)**: same shape as the docker gate — ships
-enabled on every channel, exists so an alternate inference gateway can be added
-as a peer. Exclusivity ("one gateway at a time") is arbitrated at *resolution*,
-not by the flag registry. See Inference Gateway above.
+**Gateway gates**: `gateway.litellm` defaults on for stable/beta;
+`gateway.sparkroute` defaults on for alpha. Both remain overridable. Exclusivity
+("one gateway at a time") is arbitrated at *resolution*, not by the flag
+registry. See Inference Gateway above and `docs/SPARKROUTE.md`.
 
 **Visibility-only gate**: `cli.setup.features` (via `channel_defaults`, **on for
 `beta`/`alpha`, off for `stable`**) is different — it does NOT gate execution.

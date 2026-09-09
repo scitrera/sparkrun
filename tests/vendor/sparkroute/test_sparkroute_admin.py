@@ -138,7 +138,7 @@ def test_transport_failure_is_retryable_and_hides_request_context():
 # ---------------------------------------------------------------------------
 
 
-def _created(secret="llmgw_v1.cc_abc.def"):
+def _created(secret="test-only-reconciler-key"):
     """The credential command's real payload shape (``IssuedCredential``)."""
     return subprocess.CompletedProcess(
         [],
@@ -151,13 +151,13 @@ def _created(secret="llmgw_v1.cc_abc.def"):
 def test_credential_is_minted_offline_and_stored_owner_only(tmp_path):
     credential = ReconcilerCredential(tmp_path)
     with mock.patch.object(cred_mod.subprocess, "run", return_value=_created()) as run:
-        assert credential.ensure(tmp_path / "llm-gateway") == "llmgw_v1.cc_abc.def"
+        assert credential.ensure(tmp_path / "llm-gateway") == "test-only-reconciler-key"
 
     cmd = run.call_args.args[0]
     assert cmd[1:3] == ["client-credentials", "create"]
     assert "config_reconcile:sparkrun,status_read" in cmd
     assert stat.S_IMODE(credential.secret_file.stat().st_mode) == 0o600
-    assert credential.read_secret() == "llmgw_v1.cc_abc.def"
+    assert credential.read_secret() == "test-only-reconciler-key"
 
 
 def test_the_secret_never_appears_in_argv(tmp_path):

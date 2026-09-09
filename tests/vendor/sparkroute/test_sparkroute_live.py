@@ -130,6 +130,18 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         bootstrap = _json(engine.admin_url + "/v1/ui/bootstrap", token=engine.credential.read_admin_token())
         assert bootstrap["edition"] == "standalone"
         assert bootstrap["features"]["sparkrun_catalog"] is True
+        assert bootstrap["features"]["config_presets"] is True
+        presets = _json(engine.admin_url + "/v1/config/presets", token=engine.credential.read_admin_token())
+        preset = _json(
+            engine.admin_url + "/v1/config/presets/save",
+            {
+                "name": "Integration",
+                "expected_active_revision": presets["active_revision"],
+                "expected_presets_revision": presets["presets_revision"],
+            },
+            engine.credential.read_admin_token(),
+        )
+        assert engine.reconcile(reason="preserve selected operator preset") == (0, 0)
         catalog = _json(
             engine.admin_url + "/v1/sparkrun/catalog",
             {"operation": "catalog_clusters", "arguments": {}},
@@ -171,6 +183,9 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
             assert engine.start() == 0
             assert engine.current_pid() != old_pid
             assert _json(engine.admin_url + "/v1/ui/bootstrap", token=engine.credential.read_admin_token())["edition"] == "standalone"
+            resumed = _json(engine.admin_url + "/v1/config/presets", token=engine.credential.read_admin_token())
+            assert resumed["active_preset"] == preset["id"]
+            assert next(item["name"] for item in resumed["presets"] if item["id"] == preset["id"]) == "Integration"
             assert {"assistant", "coding"} <= {entry["id"] for entry in _json(base + "/v1/models", token="test-only-token")["data"]}
     finally:
         engine.stop()

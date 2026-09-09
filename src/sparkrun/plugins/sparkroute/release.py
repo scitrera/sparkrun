@@ -59,13 +59,7 @@ from sparkrun.plugins.sparkroute._gateway_version import __version__ as SPARKROU
 
 logger = logging.getLogger(__name__)
 
-#: GitHub repository publishing the SparkRoute releases.
-#:
-#: Tracks the upstream rename off ``scitrera/foxsci-route``; the checkout's
-#: ``go.mod`` declares ``module github.com/sparksq/sparkroute``.  Note that a Go
-#: module path is not by itself a GitHub slug — nothing downloads today (see
-#: :data:`RELEASE_CHECKSUMS`), so this stays inert until a release is pinned,
-#: and pinning one is when the slug gets confirmed against a real asset URL.
+#: GitHub repository publishing the verified SparkRoute release archives.
 SPARKROUTE_REPO = "sparksq/sparkroute"
 
 #: The single SparkRoute version this sparkrun release runs.
@@ -79,10 +73,15 @@ SPARKROUTE_BINARY = "sparkroute"
 #:
 #: Populated from the release's published ``checksums.txt`` when a version is
 #: pinned.  An absent entry is deliberately fatal — see the module docstring.
-#: The repository has published no tagged release yet, so this is empty and
-#: every platform fails closed; development goes through
-#: :data:`BINARY_OVERRIDE_ENV`.
-RELEASE_CHECKSUMS: dict[tuple[str, str, str], str] = {}
+#: Source: https://github.com/sparksq/sparkroute/releases/tag/v0.0.1
+RELEASE_CHECKSUMS: dict[tuple[str, str, str], str] = {
+    ("0.0.1", "darwin", "amd64"): "599c266609a477222e7c560b5ef9e3e8ac7df83bbe7f5e3cf6bf4433c1c28121",
+    ("0.0.1", "darwin", "arm64"): "9cb8537698acd2b4f4ad9414345c7f02fda0756a6e5a75085c0c175131712af1",
+    ("0.0.1", "linux", "amd64"): "42dedeaab9be22c341acb7481a70140198ac31543faf5d44e97c0af82f4cb990",
+    ("0.0.1", "linux", "arm64"): "cd3f89a6d27299e966c2122457feb1ac3e8dca63464c2ebe7f4d67f3c6a0f75e",
+    ("0.0.1", "windows", "amd64"): "576a8f90a5db08c00786f5ec2ae9a17b1c25d114ede7f3b63877483b6516050a",
+    ("0.0.1", "windows", "arm64"): "c64d43653612f2aa9578d835def86a8599f021c2494b08dcb9687c7cf06d1731",
+}
 
 #: Point at a locally-built binary instead of a release asset.  Development
 #: aid for working on SparkRoute itself; skips version and digest checks, so
@@ -90,9 +89,7 @@ RELEASE_CHECKSUMS: dict[tuple[str, str, str], str] = {}
 BINARY_OVERRIDE_ENV = "SPARKRUN_SPARKROUTE_BINARY"
 
 #: Names this variable had before, newest first, still honoured so an existing
-#: development setup does not silently start downloading a release instead —
-#: which, with no checksums pinned, would surface as a hard failure rather than
-#: as the override quietly being ignored.
+#: development setup continues to use its explicitly selected binary.
 LEGACY_BINARY_OVERRIDE_ENVS = (
     "SPARKRUN_FOXSCI_ROUTE_BINARY",
     "SPARKRUN_LLM_GATEWAY_BINARY",

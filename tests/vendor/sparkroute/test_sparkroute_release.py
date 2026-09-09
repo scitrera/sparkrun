@@ -138,11 +138,13 @@ def test_unpinned_platform_refuses_to_download(monkeypatch, tmp_path):
     urlopen.assert_not_called()
 
 
-def test_no_checksum_is_pinned_yet():
-    """SparkRoute has published no tagged release, so every platform fails
-    closed.  When assets are published this table gains their digests and this
-    test is replaced by one asserting the pinned set."""
-    assert release.RELEASE_CHECKSUMS == {}
+def test_default_release_has_valid_pins_for_every_supported_platform():
+    expected = {(release.SPARKROUTE_VERSION, system, arch) for system in ("darwin", "linux", "windows") for arch in ("amd64", "arm64")}
+    assert expected <= release.RELEASE_CHECKSUMS.keys()
+    for key in expected:
+        digest = release.RELEASE_CHECKSUMS[key]
+        assert len(digest) == 64
+        assert len(bytes.fromhex(digest)) == 32
 
 
 def test_download_verifies_then_unpacks_an_executable(pinned, payload, tmp_path):

@@ -285,18 +285,14 @@ FEATURE_CLI_SETUP_RDMA_TEST = register_feature(
     )
 )
 
-# The LiteLLM gateway is the only inference-gateway implementation today and
-# ships ENABLED on every channel (``default=True``, no channel overrides), like
-# ``executor.docker``.  It carries a flag so an alternate gateway can be added
-# as a peer rather than a special case, and so a deployment that doesn't want
-# the LiteLLM dependency can drop it.  Exactly one gateway is used at a time:
-# that is arbitrated at *resolution* time (see
-# :func:`sparkrun.proxy.gateway.resolve_gateway`), not by the flag registry,
-# which has no notion of mutually-exclusive flags.
+# Stable and beta use LiteLLM; alpha exercises the bundled SparkRoute plugin.
+# These remain ordinary feature defaults, so explicit config/env overrides win.
+# Gateway selection uses the existing resolver after applying these gates.
 FEATURE_GATEWAY_LITELLM = register_feature(
     FeatureFlag(
         name="gateway.litellm",
-        description="LiteLLM gateway behind 'sparkrun proxy' (enabled on all channels; one gateway is used at a time)",
+        description="LiteLLM gateway behind 'sparkrun proxy' (enabled by default on stable and beta)",
+        channel_defaults={CHANNEL_ALPHA: False},
         default=True,
     )
 )
@@ -327,5 +323,10 @@ FEATURE_CLI_SETUP_FEATURES = register_feature(
 
 
 FEATURE_GATEWAY_SPARKROUTE = register_feature(
-    FeatureFlag(name="gateway.sparkroute", description="SparkRoute gateway and workload bridge", default=False)
+    FeatureFlag(
+        name="gateway.sparkroute",
+        description="SparkRoute gateway and workload bridge (enabled by default on alpha)",
+        channel_defaults={CHANNEL_ALPHA: True},
+        default=False,
+    )
 )

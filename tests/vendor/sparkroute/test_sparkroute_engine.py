@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION.
 
-"""Tests for the ``llm-gateway`` engine — bootstrap, launch, and reconcile.
+"""Tests for the SparkRoute engine — bootstrap, launch, and reconcile.
 
-The contract is the llm-gateway repo's `SPARKRUN_MANAGED_CONFIG_HANDOFF.md` and
-`SPARKRUN_MANAGED_CONFIG_RESPONSE.md`. What these pin down:
+The contract is documented in ``docs/SPARKROUTE_BRIDGE.md`` and SparkRoute's
+public ``docs/SPARKRUN_ON_DEMAND.md`` guide. These tests cover:
 
 * SQLite configuration mode with the credential minted **before** first start,
   because the gateway refuses that mode without one;

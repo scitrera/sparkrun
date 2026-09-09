@@ -5,9 +5,9 @@
 
 """Tests for the recipe-catalog → managed-set projection.
 
-The contract is the llm-gateway repo's `SPARKRUN_MANAGED_CONFIG_HANDOFF.md`
-plus its response document. Four properties carry weight, each with a concrete
-failure behind it:
+The contract is documented in ``docs/SPARKROUTE_BRIDGE.md`` and SparkRoute's
+public ``docs/SPARKRUN_ON_DEMAND.md`` guide. Four properties carry weight, each
+with a concrete failure behind it:
 
 * **catalog, not discovery** — a deployment must exist for the gateway to be
   able to activate its workload, so an offline workload must not delete it;

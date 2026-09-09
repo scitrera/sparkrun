@@ -30,9 +30,8 @@ durable **binding catalog** for activatable workloads, and the last explicit
 only the latter; an offline workload can therefore never delete the
 ``activatable`` deployment the gateway needs in order to start it again.
 
-Contract: ``SPARKRUN_MANAGED_CONFIG_HANDOFF.md`` and
-``SPARKRUN_MANAGED_CONFIG_RESPONSE.md`` in the llm-gateway repository;
-sparkrun-side replies in ``docs/SPARKROUTE_MANAGED_CONFIG_RESPONSE.md``.
+Contract: ``docs/SPARKROUTE_BRIDGE.md`` and the public SparkRoute integration guide:
+https://github.com/sparksq/sparkroute/blob/v0.0.1/docs/SPARKRUN_ON_DEMAND.md.
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import click
 
-from .._common import HIDE_ADVANCED_OPTIONS, _get_context
+from .._common import HIDE_ADVANCED_OPTIONS, _get_context, json_option, print_json
 from . import setup
 
 
@@ -35,13 +35,20 @@ def setup_plugins(ctx):
 
 
 @setup_plugins.command("list")
+@json_option()
 @click.pass_context
-def setup_plugins_list(ctx):
+def setup_plugins_list(ctx, output_json):
     """List every known plugin, with its version and gate state."""
     from sparkrun.core.plugin_inventory import SOURCE_EXTERNAL, list_plugins
 
     sctx = _get_context(ctx)
     plugins = list_plugins(config=sctx.config, v=sctx.variables)
+
+    if output_json:
+        # `version: null` is the machine spelling of unknown; the "unknown"
+        # string belongs to the human rendering below.
+        print_json([p.to_dict() for p in plugins])
+        return
 
     if not plugins:
         click.echo("No plugins found.")

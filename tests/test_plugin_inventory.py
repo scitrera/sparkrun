@@ -294,6 +294,96 @@ def test_the_group_is_functional_even_when_hidden(runner, monkeypatch, fake_in_t
     assert "cli_hidden" in result.output
 
 
+def test_json_output_is_a_bare_array_of_plugin_objects(runner, tmp_path, fake_in_tree, monkeypatch):
+    import json
+
+    from sparkrun.cli import main
+
+    fake_in_tree("cli_json", "__version__ = '1.4'\n\ndef register(v): pass")
+    load_in_tree_plugins(None)
+
+    result = runner.invoke(main, ["setup", "plugins", "list", "--json"])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.output)
+    assert isinstance(payload, list)
+    row = next(r for r in payload if r["name"] == "cli_json")
+    assert row == {
+        "name": "cli_json",
+        "source": SOURCE_IN_TREE,
+        "module": "inv_plugins.cli_json",
+        "enabled": True,
+        "loaded": True,
+        "feature_flag": "test.inv.cli_json",
+        "version": "1.4",
+        "version_source": VERSION_FROM_MODULE,
+        "path": None,
+    }
+
+
+def test_json_spells_an_unknown_version_as_null(runner, fake_in_tree):
+    """'unknown' is a display rendering.
+
+    Emitting it here would be indistinguishable from a plugin that declared
+    the literal string "unknown" as its version.
+    """
+    import json
+
+    from sparkrun.cli import main
+
+    fake_in_tree("cli_json_undeclared", "def register(v): pass")
+    load_in_tree_plugins(None)
+
+    result = runner.invoke(main, ["setup", "plugins", "list", "--json"])
+    row = next(r for r in json.loads(result.output) if r["name"] == "cli_json_undeclared")
+    assert row["version"] is None
+    assert row["version_source"] is None
+
+
+def test_json_serializes_an_external_plugins_path(runner, tmp_path, monkeypatch):
+    """``Path`` is why ``PluginInfo`` hand-writes ``to_dict``.
+
+    The JSON encoder's dataclass fallback would emit a ``Path`` it cannot
+    serialize.
+    """
+    import json
+
+    from sparkrun.cli import main
+
+    plugin_dir = _external_dir(tmp_path, "inv_ext_json", "__version__ = '7.0'")
+    load_external_plugins(None, paths=[plugin_dir])
+    monkeypatch.setattr(
+        SparkrunConfig,
+        "external_plugin_paths",
+        property(lambda self: [plugin_dir]),
+    )
+
+    result = runner.invoke(main, ["setup", "plugins", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    row = next(r for r in json.loads(result.output) if r["name"] == "inv_ext_json")
+    assert row["path"] == str(plugin_dir)
+    assert row["version"] == "7.0"
+
+
+def test_features_json_is_a_bare_array_carrying_the_channel(runner):
+    import json
+
+    from sparkrun.cli import main
+
+    from sparkrun.core.features import all_features
+
+    result = runner.invoke(main, ["setup", "features", "list", "--json"])
+    assert result.exit_code == 0, result.output
+
+    payload = json.loads(result.output)
+    assert isinstance(payload, list)
+    assert [r["name"] for r in payload] == [f.name for f in all_features()]
+    assert set(payload[0]) == {"name", "description", "enabled", "source", "override", "channel"}
+    # The channel is what every flag resolved under, so it is per-row rather
+    # than an envelope — the array shape is the convention for list commands.
+    assert len({r["channel"] for r in payload}) == 1
+
+
 def test_an_enabled_plugin_that_failed_to_import_is_distinguishable(runner, fake_in_tree):
     """``on`` and ``on (load failed)`` are the diagnostic; collapsing them hides
     exactly the case someone runs this to find."""

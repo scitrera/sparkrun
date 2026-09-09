@@ -265,3 +265,7 @@ The `STATE` column separates the gate from the outcome. `on (load failed)`
 means the flag resolves on but the import raised — run with `-v` for the
 traceback. `off` means the plugin was never imported at all, which is the
 point of the gate.
+
+`--json` emits the same rows as an array, where an unknown version is `null`
+rather than the string `"unknown"` — the latter is a display rendering, and
+would be indistinguishable from a plugin that declared it.

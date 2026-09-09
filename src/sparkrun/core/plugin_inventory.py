@@ -102,6 +102,27 @@ class PluginInfo:
             return self.version
         return "unknown"
 
+    def to_dict(self) -> dict:
+        """Canonical mapping for ``--json``.
+
+        Hand-written rather than left to ``dataclasses.asdict``, which would
+        emit a ``Path`` the JSON encoder cannot serialize. ``version`` stays
+        ``null`` when unknown — the string "unknown" is a *display* rendering,
+        and emitting it here would be indistinguishable from a plugin that
+        declared "unknown" as its version.
+        """
+        return {
+            "name": self.name,
+            "source": self.source,
+            "module": self.module,
+            "enabled": self.enabled,
+            "loaded": self.loaded,
+            "feature_flag": self.feature_flag,
+            "version": self.version,
+            "version_source": self.version_source,
+            "path": str(self.path) if self.path is not None else None,
+        }
+
 
 def _module_version(dotted: str) -> tuple[str | None, str | None]:
     """Read ``__version__`` off the module loaded as plugin *dotted*."""

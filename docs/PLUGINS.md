@@ -227,3 +227,41 @@ Four rules worth knowing before you rely on this:
 Nothing is fetched until something clones it, so suggest `sparkrun registry
 update` after your plugin is first enabled rather than paying a clone inside
 the next `sparkrun run`.
+
+## Declaring a version
+
+Set `__version__` on your plugin's top-level module or package:
+
+```python
+# sparkrun_thunder/__init__.py
+__version__ = "0.2.0"
+```
+
+`sparkrun setup plugins list` reports it beside the plugin's source and gate
+state:
+
+```
+NAME              VERSION  SOURCE    STATE  FLAG
+sparkroute        0.1.0    in-tree   on     gateway.sparkroute
+sparkrun_thunder  0.2.0    external  off    core.external_plugins
+```
+
+It is optional, and a plugin that declares nothing is reported `unknown` rather
+than being given a version it did not claim. Two consequences of that rule:
+
+- **The installed-distribution fallback is out-of-tree only.** If your plugin
+  is pip-installed and declares no `__version__`, sparkrun falls back to the
+  version of the distribution providing that top-level module. An in-tree
+  plugin gets no such fallback: its package resolves to the `sparkrun`
+  distribution, so the fallback would report sparkrun's version as the
+  plugin's — wrong precisely where it matters, since a vendored plugin carries
+  its own release line.
+- **A version is only read off a module sparkrun loaded as a plugin.** A
+  disabled plugin is never imported just to read its version, so it lists as
+  `unknown`; and a same-named module importable for unrelated reasons is not
+  consulted.
+
+The `STATE` column separates the gate from the outcome. `on (load failed)`
+means the flag resolves on but the import raised — run with `-v` for the
+traceback. `off` means the plugin was never imported at all, which is the
+point of the gate.

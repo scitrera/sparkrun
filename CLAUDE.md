@@ -234,6 +234,54 @@ let an integration participate in a launch without forking it. See
 Items / Recipe Execution Strategies / Launch Materialization sections below for
 the rationale.
 
+### Plugin Inventory (`core/plugin_inventory.py`)
+
+`list_plugins()` is the console-free source behind `sparkrun setup plugins list`
+— the inventory peer of the two loaders: they decide what to *load*, it reports
+what exists. Scope is **plugin modules**, exactly the set
+`in_tree_plugins` / `external_plugins` govern; a runtime or executor shipped in
+core has no version distinct from sparkrun's and is already enumerated by
+`list-runtimes` / `list-executors`.
+
+Both halves enumerate through the loaders' own helpers
+(`iter_in_tree_plugin_names`, `iter_plugin_module_names`) rather than a second
+`iter_modules` call, for the reason `resolve_builder` and `_has_eugr_signal`
+learned the hard way: a catalog that disagrees with the thing it describes is
+read as an answer, and is worse than no catalog.
+
+**Nothing here imports a plugin.** Enumeration is directory-level; a version is
+read only off a module some loader already imported. So a gated-off plugin is
+listed (you cannot decide whether to enable a gate without seeing what it
+governs) while staying unimported — reported `unknown`, not resolved by
+importing something the user switched off. Note this also means external
+plugins are enumerated even when `core.external_plugins` is off; that flag
+exists to avoid *importing* untrusted code, and reading directory entries for a
+command the user explicitly typed costs nothing it protects.
+
+Version resolution is `module.__version__` → (out-of-tree only) the installed
+distribution providing that top-level module → `None`, meaning **unknown** and
+rendered as such. Three rules are load-bearing:
+
+- **The distribution fallback is out-of-tree only.** Every in-tree plugin's
+  package maps to the `sparkrun` distribution, so applying it there reports
+  sparkrun's version as the plugin's — wrong exactly where it matters, since
+  `sparkroute` is vendored from its own repo at its own version. The honest
+  answer is "the plugin did not say", the same `exists=None` / `CX7Persistence.UNKNOWN`
+  rule.
+- **`sys.modules` is not the record.** `load_plugin_module` — the one point
+  both loaders pass through — records what it loaded, because an external
+  plugin's top-level name may be importable for unrelated reasons and
+  attributing a stranger's `__version__` to it is a wrong answer, not a missing
+  one.
+- **`enabled` and `loaded` stay separate**, and the difference is the whole
+  diagnostic value: gate on but not loaded means the import raised. Collapsing
+  them to on/off hides the case someone runs the command to find.
+
+Visibility is `HIDE_ADVANCED_OPTIONS` (`SPARKRUN_ADVANCED`), the
+`throttle-gpu-clock` / `uninstall` precedent — visibility only, since someone
+debugging a plugin that will not load needs the command either way. Author-facing
+contract: `docs/PLUGINS.md`.
+
 **Layering trap.** `init_sparkrun` runs on the console-free `sparkrun.api` path,
 and plugin scanning imports *every* submodule of a plugin package. So the CLI
 registry lives in `core/cli_registry.py` (Click-free; `cli/ext.py` re-exports it

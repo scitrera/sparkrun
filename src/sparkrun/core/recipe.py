@@ -20,19 +20,19 @@ from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
 from sparkrun.core.readiness import parse_recipe_readiness
 from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
-from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
+from sparkrun.utils.text import (
+    mask_non_placeholder_braces,
+    render_template,
+    sanitize_line_continuations,
+    unmask_braces,
+    uses_brace_escapes,
+)
 
 if TYPE_CHECKING:
     from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
 
 logger = logging.getLogger(__name__)
-
-# Matches a backslash followed by trailing whitespace before a newline.
-# In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
-# an escaped space — a common YAML editing mistake that silently breaks
-# multi-line commands.
-_TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
 
 _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
 # --kv-cache-dtype (vllm/sglang/atlas: --kv-cache-dtype) or tokenary (--kvcache-dtype),
@@ -1374,9 +1374,9 @@ class Recipe:
         # sparkrun.orchestration.hooks.render_hook_command).
         rendered = render_template(rendered, config_chain, escapes=escapes)
 
-        # Fix trailing spaces after backslash line-continuations.
-        # ``\<space><newline>`` → ``\<newline>``
-        rendered = _TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
+        # Repair backslash line-continuations broken by a trailing blank.
+        # ``\<blank><newline>`` → ``\<newline>``
+        rendered = sanitize_line_continuations(rendered)
 
         return rendered
 

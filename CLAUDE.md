@@ -667,8 +667,30 @@ Five things are load-bearing:
   `clocks` key **only** when mixed, so a consumer that never sees it is
   reading a single-clock timeline and may sum freely, and
   `format_launch_timings` annotates foreign rows `[remote:h1]` so the tree
-  does not read as one arithmetic whole. Nothing produces a foreign-clock
-  span yet — this is the seam a log probe plugs into.
+  does not read as one arithmetic whole. The rank-local startup observation
+  (`orchestration/startup.py`) is what produces foreign-clock spans today:
+  `serve.startup_port_open` / `_http_ready` / `_ttft`, on `host:<head>`.
+- **A sibling is not always a term.** Those three are elapsed from *one*
+  origin — the container's `State.StartedAt` — so they overlap, which the
+  clock discriminator alone does not say (they share a clock with each
+  other). `composition="non_additive"` + `timing_semantics` is the second
+  marker, and it is what stops a consumer summing a 46s startup into 68s. It
+  is also why the `sparkrun run` recap renders them as their **own block**
+  (`format_startup_readiness`) rather than as rows in the tree, whose
+  siblings otherwise read as a stage breakdown — and why the tree then
+  `omit=`s them (`STARTUP_SPAN_NAMES`). A row in that tree reads as a *term*
+  in its total, so a non-additive one shows the same figure twice and breaks
+  the only property the tree has. Omission is **display-only and the
+  caller's** (not a rule keyed off `composition`): the spans stay in
+  `export()` for diagnostics and benchmark metadata, and dropping a
+  non-additive span whose figures appear nowhere else would be the opposite
+  mistake.
+- **The startup spans are deduped per timeline, not per result.** They were
+  once skipped whenever `LaunchResult.startup_observation` was already set —
+  which is true both for a repeated wait *and* for a strategy-supplied
+  receipt, so ColdSnap's `rank0-acceptance-v1` measurement reached the live
+  log line and the benchmark artifact but never the timeline. `timeline.find`
+  is the idempotency check that distinguishes them.
 
 **Time to first inference** is `serve.port_open` + `serve.health_ok`, recorded
 by `wait_for_serve_ready`. Note which stage is the long pole: sglang and vLLM
@@ -766,11 +788,21 @@ Four properties are load-bearing:
   start failing everything scripted around `sparkrun run`. It warns instead,
   and stays silent for `cancelled`.
 
-**Timings are on by default.** `--no-timings` (hidden) suppresses the *table
+**Timings are on by default.** `--no-timings` (hidden) suppresses the *tables
 only* — the readiness watch and its "endpoint ready" line still run, because
 "the endpoint is up now" is worth having while logs scroll whether or not you
 want a breakdown afterwards. `--collect-diagnostics` keeps the timeline for its
 own record regardless.
+
+The finalize step prints **two** blocks, and the startup one does not need the
+timeline: it reads `LaunchResult.startup_observation` (set by the watcher *or*
+by the post-hook path's synchronous wait, which is why it is read off the
+result and not off the local `readiness`, which is `None` on that path). It is
+a deliberate repeat of the live line — that line is written the instant the
+endpoint answers, which on a long launch is thousands of log lines above where
+the reader ends up, and it is the one number nothing else in the recap carries.
+`startup_readiness_durations` is the shared projection so the two renderings
+cannot print different figures for the same launch.
 
 **Sinks**: `run` (tree, on by default), `--collect-diagnostics` (`run_timeline`
 NDJSON record — additive to that collector's own phases, which bracket a

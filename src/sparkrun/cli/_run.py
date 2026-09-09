@@ -103,25 +103,23 @@ def _echo_endpoint_ready(readiness) -> None:
 
     Goes to stderr so a caller piping the log stream keeps it uncontaminated.
     """
+    from sparkrun.utils.cli_formatters import startup_readiness_durations
     from sparkrun.utils.text import format_duration
 
     observation = getattr(readiness, "startup_observation", None)
     if observation:
-        start = observation["container_started_unix_ns"]
-
-        def duration(key):
-            return "%.3fs" % ((observation[key] - start) / 1e9) if key in observation else "unavailable"
-
-        endpoint_only = observation.get("inference_requested") is False
+        # Same projection the end-of-launch block renders from, so the two
+        # reports of the same launch cannot print different numbers.
+        durations = startup_readiness_durations(observation)
         click.secho(
             "\n[sparkrun] %s ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
             % (
-                "Endpoint" if endpoint_only else "Inference",
+                "Endpoint" if observation.get("inference_requested") is False else "Inference",
                 readiness.head_ip,
                 readiness.port,
-                duration("port_open_unix_ns"),
-                duration("http_ready_unix_ns"),
-                "not applicable (inference disabled)" if endpoint_only else duration("first_token_unix_ns"),
+                durations["port_open"],
+                durations["http_ready"],
+                durations["ttft"],
                 observation["measurement"],
             ),
             fg="green",
@@ -962,22 +960,50 @@ def run(
                 click.secho("\n[sparkrun] CRITICAL: Container died unexpectedly after detached launch.", fg="red", err=True, bold=True)
                 result.rc = 1
 
-    # Printed last, and only here.  The table is multi-line, so it cannot be
-    # emitted while `docker logs -f` is writing to the same terminal without
-    # being shredded mid-render — the live half of the report is the single
-    # line `_echo_endpoint_ready` injects.  By this point the stream has
-    # stopped and nothing else is writing.
+    # Printed last, and only here.  The tables are multi-line, so they cannot
+    # be emitted while `docker logs -f` is writing to the same terminal
+    # without being shredded mid-render — the live half of the report is the
+    # single line `_echo_endpoint_ready` injects.  By this point the stream
+    # has stopped and nothing else is writing.
+    #
+    # The startup block repeats that line's three numbers deliberately: it was
+    # printed the instant the endpoint answered, which on a long launch is
+    # thousands of log lines above where the user is now looking.
     #
     # A watcher still polling when the user interrupts leaves `serve.*` open,
     # which `format_launch_timings` renders "did not finish" — the honest
     # reading of "we stopped watching", not a claim that the stage failed.
-    if show_timings and sctx.timing is not None:
-        from sparkrun.utils.cli_formatters import format_launch_timings
+    if show_timings:
+        from sparkrun.utils.cli_formatters import STARTUP_SPAN_NAMES, format_launch_timings, format_startup_readiness
 
-        _timings = format_launch_timings(sctx.timing.export(), max_depth=_timing_tree_depth(ctx))
-        if _timings:
-            click.echo()
-            click.echo(_timings)
+        # Read off the result rather than off `readiness`: the watcher path
+        # stores the observation there, and the post-hook path — which has no
+        # watcher, so `readiness` is None above — reaches the same field
+        # through its own synchronous wait.  Empty for a legacy endpoint wait,
+        # whose two stages the tree below already carries.
+        _startup = format_startup_readiness(
+            getattr(result, "startup_observation", None),
+            host=host_list[0] if host_list else None,
+        )
+        # The startup spans are dropped from the tree exactly when the block
+        # above rendered them: the tree's rows sum to its total and those
+        # three do not belong to that sum, so leaving them in shows the same
+        # figures twice and breaks the one property the tree has.  They stay
+        # in the export, which is what diagnostics and benchmark metadata read.
+        _timings = (
+            format_launch_timings(
+                sctx.timing.export(),
+                max_depth=_timing_tree_depth(ctx),
+                omit=STARTUP_SPAN_NAMES if _startup else frozenset(),
+            )
+            if sctx.timing is not None
+            else ""
+        )
+        for _block in (_startup, _timings):
+            if _block:
+                click.echo()
+                click.echo(_block)
+        if _startup or _timings:
             click.echo()
 
     # --- Diagnostics finalize ---

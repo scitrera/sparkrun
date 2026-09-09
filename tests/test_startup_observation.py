@@ -350,6 +350,79 @@ def test_startup_spans_are_foreign_overlapping_and_not_duplicated(capsys):
     output = capsys.readouterr().err
     assert "TTR port-open 1.000s, HTTP-ready 2.000s, TTFT 3.000s" in output
     assert "rank0-acceptance-v1" in output
+    # Overlapping spans are marked so a consumer summing the tree's siblings
+    # cannot silently report a 6s startup for a 3s one.
+    assert all(span["attrs"]["composition"] == "non_additive" for span in spans)
+
+
+def test_strategy_receipt_reaches_the_timeline():
+    """A receipt sparkrun did not measure is still the launch's own timing.
+
+    Suppressing it left ColdSnap launches with no startup rows at all in the
+    timing tree, the diagnostics record or the benchmark artifact.
+    """
+    from sparkrun.core.timing import Timeline
+
+    result = launch()
+    result.timeline = Timeline()
+    result.startup_observation = observation()
+    with patch.object(startup, "run_probe") as send:
+        assert wait_for_serve_ready(result).ready
+        wait_for_serve_ready(result)  # Reused, not re-recorded.
+    send.assert_not_called()
+    spans = result.timeline.export()["spans"]
+    assert {span["name"] for span in spans} == {"serve.startup_port_open", "serve.startup_http_ready", "serve.startup_ttft"}
+    assert len(spans) == 3
+
+
+def test_startup_readiness_block_repeats_the_live_line():
+    from sparkrun.utils.cli_formatters import format_startup_readiness, startup_readiness_durations
+
+    data = observation()
+    block = format_startup_readiness(data, host="spark-01")
+    assert "rank 0 on spark-01, elapsed from container start" in block
+    assert "measurement: rank0-acceptance-v1" in block
+    for label, value in (("TTR port-open", "1.000s"), ("TTR HTTP-ready", "2.000s"), ("TTFT", "3.000s")):
+        assert any(line.strip().startswith(label) and line.endswith(value) for line in block.splitlines())
+    # Same projection as the live line, so the two cannot disagree.
+    assert startup_readiness_durations(data) == {"port_open": "1.000s", "http_ready": "2.000s", "ttft": "3.000s"}
+    # A legacy endpoint wait measures nothing from container start.
+    assert format_startup_readiness(None) == ""
+    assert format_startup_readiness({}) == ""
+
+
+def test_startup_spans_leave_the_tree_but_stay_in_the_export():
+    """Rendered once, in the block built for them; never as tree rows.
+
+    The tree's rows sum to its total and these three are not terms in it, so
+    a row here would show the same figure twice and break the one property
+    the tree has.
+    """
+    from sparkrun.core.timing import ROOT, Timeline
+    from sparkrun.utils.cli_formatters import STARTUP_SPAN_NAMES, format_launch_timings
+
+    timeline = Timeline()
+    with timeline.span("run", label="run"):
+        pass
+    timeline.add_span("serve.startup_ttft", clock="host:h1", duration_s=46.4, parent=ROOT, composition="non_additive")
+    export = timeline.export()
+    tree = format_launch_timings(export, omit=STARTUP_SPAN_NAMES)
+    assert "serve.startup_ttft" not in tree
+    assert "run" in tree
+    # Display only: the diagnostics record and benchmark metadata read this.
+    assert "serve.startup_ttft" in {span["name"] for span in export["spans"]}
+    assert "serve.startup_ttft" in format_launch_timings(export)
+
+
+def test_startup_readiness_block_reports_unobserved_metrics_honestly():
+    from sparkrun.utils.cli_formatters import format_startup_readiness
+
+    endpoint_only = format_startup_readiness(endpoint_observation())
+    assert "not applicable (inference disabled)" in endpoint_only
+    partial = observation()
+    partial.pop("http_ready_unix_ns")
+    assert "unavailable" in format_startup_readiness(partial)
+    assert "0.000s" not in format_startup_readiness(partial)
 
 
 def test_inference_configuration_defaults_and_overrides(tmp_path):

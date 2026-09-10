@@ -6,7 +6,7 @@
 """Project sparkrun's recipe catalog into the gateway's ``sparkrun`` managed set.
 
 See ``docs/SPARKROUTE_BRIDGE.md`` and the public SparkRoute integration guide:
-https://github.com/sparksq/sparkroute/blob/v0.0.1/docs/SPARKRUN_ON_DEMAND.md.
+https://github.com/sparksq/sparkroute/blob/v0.0.2/docs/SPARKRUN_ON_DEMAND.md.
 
 Three properties are load-bearing and each has a failure mode behind it:
 

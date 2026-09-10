@@ -31,7 +31,7 @@ only the latter; an offline workload can therefore never delete the
 ``activatable`` deployment the gateway needs in order to start it again.
 
 Contract: ``docs/SPARKROUTE_BRIDGE.md`` and the public SparkRoute integration guide:
-https://github.com/sparksq/sparkroute/blob/v0.0.1/docs/SPARKRUN_ON_DEMAND.md.
+https://github.com/sparksq/sparkroute/blob/v0.0.2/docs/SPARKRUN_ON_DEMAND.md.
 """
 
 from __future__ import annotations
